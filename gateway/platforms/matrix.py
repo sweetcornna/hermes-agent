@@ -36,6 +36,7 @@ import time
 from dataclasses import dataclass
 
 from html import escape as _html_escape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -106,6 +107,91 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
+
+_MATRIX_ALLOWED_HTML_TAGS = frozenset({
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "code",
+    "del",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "strong",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "ul",
+})
+_MATRIX_VOID_HTML_TAGS = frozenset({"br", "hr"})
+
+
+class _MatrixHtmlSanitizer(HTMLParser):
+    """Allowlist Matrix formatted_body HTML generated from Markdown."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = tag.lower()
+        if normalized not in _MATRIX_ALLOWED_HTML_TAGS:
+            return
+
+        attr_text = self._safe_attrs(normalized, attrs)
+        self.parts.append(f"<{normalized}{attr_text}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized = tag.lower()
+        if normalized in _MATRIX_ALLOWED_HTML_TAGS and normalized not in _MATRIX_VOID_HTML_TAGS:
+            self.parts.append(f"</{normalized}>")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(_html_escape(data, quote=False))
+
+    def handle_entityref(self, name: str) -> None:
+        self.parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self.parts.append(f"&#{name};")
+
+    def handle_comment(self, data: str) -> None:
+        return
+
+    def get_html(self) -> str:
+        return "".join(self.parts)
+
+    @staticmethod
+    def _safe_attrs(tag: str, attrs: list[tuple[str, str | None]]) -> str:
+        safe: list[str] = []
+        for raw_name, raw_value in attrs:
+            name = raw_name.lower()
+            value = raw_value or ""
+            if tag == "a" and name == "href":
+                safe_href = MatrixAdapter._sanitize_link_url(value)
+                safe.append(f' href="{_html_escape(safe_href, quote=True)}"')
+            elif tag == "code" and name == "class":
+                classes = [
+                    cls for cls in value.split()
+                    if re.fullmatch(r"language-[A-Za-z0-9_+-]+", cls)
+                ]
+                if classes:
+                    safe.append(f' class="{_html_escape(" ".join(classes), quote=True)}"')
+        return "".join(safe)
 
 
 @dataclass
@@ -2743,11 +2829,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
-            return html
+            return self._sanitize_matrix_html(html)
         except ImportError:
             pass
 
-        return self._markdown_to_html_fallback(text)
+        return self._sanitize_matrix_html(self._markdown_to_html_fallback(text))
 
     # ------------------------------------------------------------------
     # Regex-based Markdown -> HTML (no extra dependencies)
@@ -2761,6 +2847,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if scheme in {"javascript", "data", "vbscript"}:
             return ""
         return stripped.replace('"', "&quot;")
+
+    @staticmethod
+    def _sanitize_matrix_html(html: str) -> str:
+        """Sanitize Matrix formatted_body HTML before adapter delivery."""
+        sanitizer = _MatrixHtmlSanitizer()
+        sanitizer.feed(html or "")
+        sanitizer.close()
+        return sanitizer.get_html()
 
     @staticmethod
     def _markdown_to_html_fallback(text: str) -> str:

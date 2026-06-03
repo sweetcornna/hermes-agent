@@ -1659,6 +1659,55 @@ class TestMatrixMarkdownHtmlSecurity:
         assert "<script>" not in result
 
 
+class TestMatrixMarkdownLibraryHtmlSecurity:
+    """Tests for sanitizing HTML returned by the optional markdown package."""
+
+    def test_markdown_library_raw_html_is_sanitized(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        class FakeMarkdown:
+            def __init__(self, *args, **kwargs):
+                self.preprocessors = {}
+
+            def convert(self, text):
+                assert "payload" in text
+                return (
+                    '<p>payload <img src=x onerror="alert(1)"> '
+                    '<a href="javascript:alert(1)" onclick="x()">bad</a> '
+                    '<script>alert(2)</script></p>'
+                )
+
+            def reset(self):
+                pass
+
+        fake_markdown = types.SimpleNamespace(Markdown=FakeMarkdown)
+
+        with patch.dict(sys.modules, {"markdown": fake_markdown}):
+            result = _make_adapter()._markdown_to_html("payload")
+
+        assert "<img" not in result
+        assert "<script" not in result
+        assert "onerror" not in result
+        assert "onclick" not in result
+        assert 'href="javascript:' not in result
+        assert '<a href="">bad</a>' in result
+
+    def test_sanitizer_preserves_matrix_links_and_code_classes(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        result = MatrixAdapter._sanitize_matrix_html(
+            '<a href="https://matrix.to/#/@alice:example.org">Alice</a> '
+            '<pre><code class="language-python evil">print()</code></pre>'
+        )
+
+        assert (
+            '<a href="https://matrix.to/#/@alice:example.org">Alice</a>'
+            in result
+        )
+        assert '<code class="language-python">' in result
+        assert "evil" not in result
+
+
 # ---------------------------------------------------------------------------
 # Markdown to HTML: extended formatting tests
 # ---------------------------------------------------------------------------
