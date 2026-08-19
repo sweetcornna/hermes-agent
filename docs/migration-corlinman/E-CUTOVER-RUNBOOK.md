@@ -115,7 +115,15 @@ D3 的全部验证在 macOS / SQLite **3.53.1** 上完成；生产是 **3.40.1 �
 
 Telegram 侧**物理上不可能重复投递**，是把 provider → 生成 → 投递整条链路暴露出来的最安全场所。
 
-### 4.1 启用四个 Telegram 任务
+### 4.1 安装并启用四个 Telegram 任务
+
+> **顺序不可省一步**：`install` 建出来的任务是 **PAUSED** 的
+> （`installer.py` 先 `create_job` 再立刻 `pause_job`；`create_job` 本身没有"建成暂停"模式，
+> 安装器在注释里明写这个微秒级窗口"不是竞态但也不隐瞒"，暂停失败会点名报错）。
+> 而 `hermes cron run` **拒绝执行 paused 任务**（"Job is paused/disabled; resume it before running."）。
+> 所以是 **install → resume → run** 三步，不是两步。
+> 另：`hermes cron list` 只列启用任务，装完显示 "No scheduled jobs" 是正常的，
+> 要看全量用 `hermes corlinman-jobs status`。
 
 `hermes.competition_daily` / `hermes.diary_summary` / `hermes.analysis_digest` / `hermes.youtube_daily`
 
@@ -396,3 +404,56 @@ _qq_monitor_query(instance='default', group=183287894) -> 39 行
 `hermes plugins list` 四个插件均 `bundled`：
 `corlinman_jobs` / `grantley` / `onebot-platform` / `qzone` —— 全部 `not enabled`，
 **部署 ≠ 启用**，当前不产生任何行为。
+
+---
+
+# 阶段 4 执行记录（2026-08-19 16:0x JST）
+
+## 落地配置
+
+| 键 | 值 | 理由 |
+|---|---|---|
+| `platforms.telegram.enabled` | `false` → **`true`** | 阶段 4 |
+| `platforms.telegram.extra.require_mention` | **`true`**（新增） | 上游默认 **false**，不设它等于让 bot 回复所在**每个群的每条消息** |
+| `plugins.enabled` | 新增 `[corlinman_jobs]` | 插件启用走白名单，与 `entries` 无关 |
+
+备份：`/opt/hermes/data/config.yaml.bak.stage4.20260819-155925`
+
+**启用 Telegram 前先清空了积压**：6 条待处理更新（2 条数天前的私聊 `/start`、`hi`，
+来自用户本人 chat `1114483029`；4 条入群成员事件）。私聊不受 `require_mention` 约束，
+不清的话 bot 一上线就会去回一条数天前的"hi"。内容已在本文件与 00-PLAN 中留档后丢弃。
+
+## 已完成
+
+| 步骤 | 结果 |
+|---|---|
+| 重启 hermes | PID 3192484，`active` |
+| 插件发现 | `corlinman_jobs` = **enabled**；`hermes corlinman-jobs` CLI 注册成功（`plan/install/status`） |
+| Telegram 适配器 | 与 `149.154.166.110:443` 建立 **2 条** TLS 连接 |
+| 归档未受影响 | 重启前 132 行 → 重启后 136 行，继续增长 |
+| `plan --only`（dry run） | preflight **3 ok / 1 warn**，warn 为信息性 |
+| `install --only` | 写 4 个文件、建 4 个任务，**全部 paused**，下次运行时间正确 |
+
+`status` 报的两个 FAIL 都落在**我没有安装**的任务上，属预期：
+6 个未安装脚本属于跳过的 8 个任务；`qzone_state` 是阶段 5 的事，它正确地挡住了 qzone 任务。
+
+## 阻塞：`hermes.analysis_digest` 首次真实运行失败
+
+```
+'utf-8' codec can't decode byte 0xa3 in position 45: invalid start byte
+```
+
+**失败在 2.5 秒内，没有烧掉模型调用**（15:06:16.59 → 15:06:19.08）。任务已重新 paused。
+
+这正是把 Telegram 排在 QQ 之前的意义：整条 provider → 生成 → 投递链路的第一个真实缺陷，
+暴露在一个**物理上不可能重复投递、也不可能公开发帖**的渠道上。
+
+已排除：locale（服务与 `sudo -u hermes` 下均为 UTF-8）、物料脚本本身（单跑成功）、
+`_run_job_script` 的管道解码（那条路径会带 `Script execution failed:` 前缀，实际错误没有）。
+字节偏移也对不上我最初怀疑的全角括号。已派专门的调试任务（Opus，跨层且显性假设已尽数排除）。
+
+## 手册自身的第四个缺陷（已修）
+
+原 4.1/4.2 写作"启用四个任务 → `hermes cron trigger`"，两处都错：
+安装建出来的是 **paused**，且 CLI **没有 `trigger` 子命令**。
+正确顺序是 **install → resume → run**，命令是 `hermes cron run`。
