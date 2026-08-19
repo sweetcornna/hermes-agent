@@ -1463,3 +1463,62 @@ hermes 与 corlinman 各持一条 WS 连接并存，未互相挤掉。
 `D47-digest-prereduction-notes.md` 卷进了一个与之无关的提交。
 内容无损（D47 的 `b3f02f166` 携带最终版），但该文档历史被拆到两个提交。
 **教训：并发子智能体在场时，提交必须按显式路径 add，不得用 `-A`。**
+
+---
+
+## 25. 阶段 4 前置核查：D29 经受住了检验（2026-08-19）
+
+上线前把 D29「重复投递物理上不可能」当作**待证命题**重新查了一遍，而不是引用自己的记录。
+
+### 查出来的事实
+
+corlinman 的 `[channels.telegram]` **是启用的**，且我移植的 `deliver` 串就抄自它的任务定义。
+它的活调度器（`/opt/corlinman/execution-state/scheduler.sqlite`，不是 `data/` 下那个停在 7-27 的旧库）
+里有 **78 条**投向本群的记录：
+
+```
+chat:-1003990634877:topic:680   40 次   最近 08-18 16:00
+chat:-1003990634877:topic:11    20 次   最近 08-18 00:30
+chat:-1003990634877:topic:13    18 次   最近 08-18 10:02
+```
+
+看到这里像是 D29 被推翻。但这些 effect **全部 `state='unknown'`、`receipt_json` 为 `NULL`**
+—— 而同表的 qzone effect 是 `state='sent'`。**effect 表记的是"打算投"，不是"投到了"。**
+
+### 决定性检验
+
+用 corlinman 自己的 token 在生产机上做只读探测（不发任何消息，token 不出机器）：
+
+```
+corlinman bot: @Cornna_bot  id=5420007505
+getChat(-1003990634877)      -> 400 Bad Request: chat not found
+getChatMember(自己)           -> 400 Bad Request: chat not found
+```
+
+**旧 bot 不在该群，够不到。** hermes 的 bot（`8720715962`）此前已用 `sendChatAction`
+验证可达 topic 11/12/13/680。
+
+⇒ **D29 的结论与理由都成立**，现在是实测而非断言。**阶段 4 可以安全执行。**
+
+### 顺带查出的第七个"配置写着 X、实际是 Y"
+
+corlinman 的四个 Telegram 任务长期 `non_zero_exit / builtin_not_ok`，
+配上"bot 不在群里"，**那 78 次投递没有一次真的送达过**。
+所以 hermes 上线 Telegram 不是"接管"，是**把一个从未真正工作过的功能第一次跑通**。
+
+（同一份运行记录还显示 `persona.decay` 每小时 `non_zero_exit`，558 次——与既有结论一致；
+唯一稳定成功的是 `system.update_check`，而它属于 `DROPPED_JOBS`。）
+
+### 我在这一段里的两处错判
+
+1. 看到 78 条 effect 就写下"D29 是错的"——**把投递意图当成了投递事实**。
+   正确做法是先分辨 `state` 语义，再下结论。
+2. 先前说"手册漏了第五个 Telegram 任务 `daily_agenda`"——**错的**。
+   `daily_agenda` 在源系统就是 `source_enabled=False`，D2 的 spec 记录准确，手册写"四个"正确。
+   真正的偏差只在 topic 枚举：四个启用任务落在 **13 / 680 / 680 / 11**，
+   topic 12 属于那个禁用任务，且 **680 承载两个任务**。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D53 | 维持 D29，阶段 4 照原计划执行，无需先停 corlinman 的 Telegram 任务 | 旧 bot 不在群内，实测 `chat not found`；停它反而是对生产系统的无谓改动 |
+| D54 | 手册 4.1 的 topic 表述改为按任务列出，不再写成 11/12/13/680 的并列 | 原写法暗示一一映射，实际 680 有两个任务、12 对应禁用任务，上线时会误判"少投了一个" |

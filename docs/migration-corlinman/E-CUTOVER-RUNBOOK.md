@@ -119,11 +119,26 @@ Telegram 侧**物理上不可能重复投递**，是把 provider → 生成 → 
 
 `hermes.competition_daily` / `hermes.diary_summary` / `hermes.analysis_digest` / `hermes.youtube_daily`
 
-目标 `-1003990634877`（`Corn Agents`，forum supergroup），topic `11` / `12` / `13` / `680`
-——四个 topic 已验证有效，bot 为 administrator。
+目标 `-1003990634877`（`Corn Agents`，forum supergroup）。**逐任务对应**（D54）：
+
+| 任务 | topic |
+|---|---|
+| `hermes.diary_summary` | 11 |
+| `hermes.competition_daily` | 13 |
+| `hermes.analysis_digest` | 680 |
+| `hermes.youtube_daily` | 680 |
+
+> topic **680 承载两个任务**；topic **12** 属于 `hermes.daily_agenda`，
+> 该任务在源系统即 `source_enabled=False`，**不在本阶段范围内**。
+> 旧写法「topic 11/12/13/680」暗示一一映射，会让人误判"少投了一个"。
+
+四个 topic 均已用 `sendChatAction` 验证可达，bot 为 administrator。
 
 ### 4.2 验证
-逐个 `hermes cron trigger <name>`，确认消息真的落进对应 topic。
+逐个 `hermes cron run <name>`，确认消息真的落进对应 topic。
+
+> CLI **没有 `trigger` 子命令**——实际是 `list / status / tick / notepad / edit / pause / resume / run`
+> （`hermes_cli/cron.py:628-659`）。手册原先写的 `trigger` 会直接报错。
 
 ### 4.3 回滚
 `hermes cron pause <name>`。
