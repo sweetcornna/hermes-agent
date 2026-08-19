@@ -22,8 +22,11 @@ from croniter import croniter
 
 from plugins.corlinman_jobs import prompts
 from plugins.corlinman_jobs.specs import (
+    ALL_SPECS,
     DROPPED_JOBS,
     JOB_SPECS,
+    MONITOR_NAMES,
+    MONITOR_SPECS,
     SPECS_BY_NAME,
     TELEGRAM_CHAT_ID,
     TIMEZONE,
@@ -63,15 +66,21 @@ def midnight():
 
 
 class TestInvariantTimezone:
-    """Invariant 1 — every spec declares its zone explicitly."""
+    """Invariant 1 — every spec declares its zone explicitly.
+
+    Checked across ALL_SPECS (the nine scheduler jobs plus the three
+    monitors — D2): the contract is about what hermes cron will actually
+    evaluate schedules against, and that is one process-wide clock shared
+    by everything this plugin installs, not just the original nine.
+    """
 
     def test_every_spec_declares_a_timezone(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert spec.timezone, f"{spec.name} has no declared timezone"
 
     def test_all_specs_declare_the_same_zone(self):
         """hermes cron evaluates one process-wide clock; two zones cannot both hold."""
-        assert {spec.timezone for spec in JOB_SPECS} == {TIMEZONE}
+        assert {spec.timezone for spec in ALL_SPECS} == {TIMEZONE}
 
     def test_the_declared_zone_is_real(self):
         ZoneInfo(TIMEZONE)  # raises if the name is not in the tz database
@@ -86,12 +95,22 @@ class TestInvariantTimezone:
         assert decay.source_timezone == "UTC"
         assert decay.timezone == TIMEZONE
 
+    def test_monitor_source_timezones_are_recorded_as_unset(self):
+        """None of the three monitors declared their own timezone in
+        config.toml, and none was set on the instance either (A1 §4) — the
+        blank string is the whole reason D25's -1h compensation exists, and
+        it must stay visible rather than be quietly filled in."""
+        for name in MONITOR_NAMES:
+            spec = spec_by_name(name)
+            assert spec.source_timezone == ""
+            assert spec.timezone == TIMEZONE
+
 
 class TestInvariantNothingEnabled:
     """Invariant 2 — the migration installs nothing in a running state."""
 
     def test_no_spec_installs_enabled(self):
-        assert [s.name for s in JOB_SPECS if s.install_enabled] == []
+        assert [s.name for s in ALL_SPECS if s.install_enabled] == []
 
     def test_disabled_reason_distinguishes_the_two_cases(self):
         """"Off in production" and "off for the migration" are different facts."""
@@ -104,28 +123,34 @@ class TestInvariantNothingEnabled:
         assert "at cutover" in competition.disabled_reason
 
     def test_public_feed_writers_are_flagged_and_never_agent_dry_runnable(self):
-        writers = {s.name for s in JOB_SPECS if s.writes_public_feed}
+        writers = {s.name for s in ALL_SPECS if s.writes_public_feed}
         assert writers == {
             "hermes.qzone_daily",
             "hermes.qzone_reply",
             "hermes.qzone_friends",
         }
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert spec.dry_run_agent_safe is not spec.writes_public_feed
 
 
 class TestInvariantStagger:
-    """Invariant 3 — nothing lands on the hour, and nothing collides."""
+    """Invariant 3 — nothing lands on the hour, and nothing collides.
+
+    Checked across ALL_SPECS: the three monitors share the same
+    max_parallel_jobs=2 / SQLite DELETE-mode constraint (P1) as the nine
+    scheduler jobs, so a monitor colliding with a D1 job would be exactly
+    as unsafe as two D1 jobs colliding with each other.
+    """
 
     def test_no_job_fires_on_the_hour(self, midnight):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             for moment in _fire_times(spec.schedule, midnight):
                 assert moment.minute != 0, f"{spec.name} fires at {moment:%H:%M}"
 
     def test_no_two_jobs_ever_share_a_minute(self, midnight):
         """One job per minute — max_parallel_jobs is 2 and must not be raised."""
         occupied: dict[datetime, str] = {}
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             for moment in _fire_times(spec.schedule, midnight):
                 clash = occupied.get(moment)
                 assert clash is None, (
@@ -138,7 +163,7 @@ class TestInvariantStagger:
         decay = spec_by_name("persona.decay")
         others = {
             moment.minute
-            for spec in JOB_SPECS
+            for spec in ALL_SPECS
             if spec.name != decay.name
             for moment in _fire_times(spec.schedule, midnight)
         }
@@ -149,13 +174,127 @@ class TestInvariantStagger:
     def test_every_schedule_is_a_parseable_cron_expression(self):
         from cron.jobs import parse_schedule
 
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             parsed = parse_schedule(spec.schedule)
             assert parsed["kind"] == "cron", f"{spec.name} is not a recurring cron job"
 
     def test_every_stagger_choice_is_justified_in_writing(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert spec.stagger_reason.strip(), f"{spec.name} has no stagger reason"
+
+
+class TestMonitors:
+    """D2 — the three QQ group-digest monitors, a separate corlinman
+    subsystem (config-driven, not job-definition-driven; A1 §4) kept in its
+    own MONITOR_SPECS tuple rather than folded into JOB_SPECS/DROPPED_JOBS,
+    so TestSourceMapping's "12 source jobs" accounting keeps meaning
+    exactly the 12 scheduler jobs it always has.
+    """
+
+    def test_three_monitors_are_accounted_for(self):
+        assert len(MONITOR_SPECS) == 3
+        assert {s.name for s in MONITOR_SPECS} == MONITOR_NAMES == {
+            "qunjlu",
+            "sanhu",
+            "jlu",
+        }
+
+    def test_all_specs_is_the_union(self):
+        assert ALL_SPECS == JOB_SPECS + MONITOR_SPECS
+        assert len(ALL_SPECS) == 12
+
+    def test_delivery_targets_match_the_contract(self):
+        """A1 §4: sanhu/jlu -> private chat 2104743984; qunjlu -> back into
+        group 183287894, but D26 keeps it suppressed at deliver=local."""
+        assert spec_by_name("sanhu").deliver == "onebot:2104743984"
+        assert spec_by_name("jlu").deliver == "onebot:2104743984"
+        assert spec_by_name("qunjlu").deliver == "local"
+
+    def test_qunjlu_carries_no_toolset_either(self):
+        """Belt and suspenders with deliver=local (D26): even if something
+        else routed around the deliver gate, qunjlu's agent turn has no
+        tool capable of sending anything to QQ on its own."""
+        for name in MONITOR_NAMES:
+            assert spec_by_name(name).enabled_toolsets == ()
+
+    def test_qunjlu_is_the_only_group_target(self):
+        assert spec_by_name("qunjlu").params["target_type"] == "group"
+        assert spec_by_name("sanhu").params["target_type"] == "user"
+        assert spec_by_name("jlu").params["target_type"] == "user"
+
+    def test_source_groups_match_the_contract(self):
+        assert spec_by_name("sanhu").params["group_id"] == "980927602"
+        assert spec_by_name("jlu").params["group_id"] == "183287894"
+        assert spec_by_name("qunjlu").params["group_id"] == "183287894"
+
+    def test_qunjlu_filters_to_the_one_watched_user(self):
+        """qunjlu's source has watch_user_ids=['1076712858'], the only one
+        of the three with a sender filter at all (A1 §4)."""
+        qunjlu = spec_by_name("qunjlu")
+        assert qunjlu.params["watch_user_ids"] == ("1076712858",)
+        assert qunjlu.params["focus_user_ids"] == ()
+
+    def test_jlu_focuses_without_filtering(self):
+        """jlu has no watch_user_ids, so it collects everyone; focus only
+        ★-marks 1076712858's lines (source _QqMonitorSource.collection_ids:
+        an empty watch_user_ids means "no filter", independent of focus)."""
+        jlu = spec_by_name("jlu")
+        assert jlu.params["watch_user_ids"] == ()
+        assert jlu.params["focus_user_ids"] == ("1076712858",)
+
+    def test_all_three_share_the_common_contract(self):
+        """schedule_type=daily / window_minutes=1440 / send_when_empty=false
+        / style_extra="" — verbatim from A1 §4 for all three."""
+        for name in MONITOR_NAMES:
+            params = spec_by_name(name).params
+            assert params["window_minutes"] == 1440
+            assert params["send_when_empty"] is False
+            assert params["style_extra"] == ""
+
+    def test_schedules_are_the_documented_minus_one_hour_compensation(self):
+        """D25: nominal 09:00/10:00/11:00 -> actual 08:00/09:00/10:00 China
+        time, then staggered a few minutes off the hour (D2's own stagger,
+        clear of D1's occupied minutes)."""
+        assert spec_by_name("qunjlu").schedule == "5 8 * * *"
+        assert spec_by_name("sanhu").schedule == "5 9 * * *"
+        assert spec_by_name("jlu").schedule == "5 10 * * *"
+
+    def test_none_of_the_three_write_the_public_qzone_feed(self):
+        """They send a QQ message (group or private chat), not a QQ空间
+        post — a different, narrower risk category from
+        hermes.qzone_daily/reply/friends, which is why writes_public_feed
+        is False here even though qunjlu's target is a group."""
+        for name in MONITOR_NAMES:
+            assert spec_by_name(name).writes_public_feed is False
+            assert spec_by_name(name).dry_run_agent_safe is True
+
+    def test_every_monitor_carries_a_behavioural_note(self):
+        for name in MONITOR_NAMES:
+            assert spec_by_name(name).notes.strip()
+
+    def test_qunjlus_notes_explain_the_suppression_mechanism(self):
+        """D26 must be traceable from the spec itself, not only from prose
+        in a migration document that can drift out of sync with the code."""
+        notes = spec_by_name("qunjlu").notes
+        assert "group_replies_enabled" in notes
+        assert "deliver" in notes
+
+    def test_monitor_prompts_come_from_the_prompts_module(self):
+        assert spec_by_name("sanhu").prompt == prompts.qq_monitor_digest(
+            focus_user_ids=(), style_extra=""
+        )
+        assert spec_by_name("qunjlu").prompt == prompts.qq_monitor_digest(
+            focus_user_ids=(), style_extra=""
+        )
+
+    def test_jlus_prompt_carries_the_focus_instructions(self):
+        assert prompts.QQ_MONITOR_FOCUS_PROMPT in spec_by_name("jlu").prompt
+
+    def test_sanhu_and_qunjlu_prompts_omit_the_focus_instructions(self):
+        """Neither has a focus_user_ids entry — the focus paragraph would
+        be an instruction about members that do not exist for this job."""
+        assert prompts.QQ_MONITOR_FOCUS_PROMPT not in spec_by_name("sanhu").prompt
+        assert prompts.QQ_MONITOR_FOCUS_PROMPT not in spec_by_name("qunjlu").prompt
 
 
 class TestSourceMapping:
@@ -172,6 +311,13 @@ class TestSourceMapping:
 
     def test_job_names_are_unique(self):
         names = [s.name for s in JOB_SPECS]
+        assert len(names) == len(set(names))
+
+    def test_all_spec_names_are_unique_and_match_the_lookup_table(self):
+        """SPECS_BY_NAME spans ALL_SPECS (scheduler jobs + monitors) — the
+        nine-only check above stays scoped to the twelve-job accounting;
+        this one is the whole-plugin version of the same invariant."""
+        names = [s.name for s in ALL_SPECS]
         assert len(names) == len(set(names))
         assert set(names) == set(SPECS_BY_NAME)
 
@@ -195,22 +341,25 @@ class TestSourceMapping:
 
 
 class TestJobShape:
-    """Properties ``cron.jobs.create_job`` will enforce anyway — caught here first."""
+    """Properties ``cron.jobs.create_job`` will enforce anyway — caught here
+    first. Checked across ALL_SPECS: these are shape invariants the
+    installer relies on for every job it creates, monitors included.
+    """
 
     def test_no_agent_jobs_have_a_script_and_no_prompt(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             if spec.no_agent:
                 assert spec.script, f"{spec.name} is no_agent with no script"
                 assert spec.prompt is None
 
     def test_agent_jobs_have_a_prompt(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             if not spec.no_agent:
                 assert spec.prompt and spec.prompt.strip(), f"{spec.name} has no prompt"
 
     def test_agent_jobs_name_their_toolsets(self):
         """None would mean "hermes default", which no migrated job wants."""
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             if not spec.no_agent:
                 assert spec.enabled_toolsets is not None, spec.name
 
@@ -218,12 +367,16 @@ class TestJobShape:
         for name in ("hermes.qzone_daily", "hermes.qzone_reply", "hermes.qzone_friends"):
             assert "onebot" in spec_by_name(name).enabled_toolsets
 
-    def test_diary_is_the_only_tool_free_turn(self):
-        empty = [s.name for s in JOB_SPECS if s.enabled_toolsets == ()]
-        assert empty == ["hermes.diary_summary"]
+    def test_tool_free_turns_are_diary_and_the_three_monitors(self):
+        """hermes.diary_summary matches the source's tools_enabled=False;
+        the three monitors carry no toolset because delivery is cron's own
+        deliver step (or, for qunjlu, deliberately nowhere — D26), not a
+        tool call."""
+        empty = {s.name for s in ALL_SPECS if s.enabled_toolsets == ()}
+        assert empty == {"hermes.diary_summary", "sanhu", "jlu", "qunjlu"}
 
     def test_script_filenames_are_unique_and_plain(self):
-        scripts = [s.script for s in JOB_SPECS if s.script]
+        scripts = [s.script for s in ALL_SPECS if s.script]
         assert len(scripts) == len(set(scripts))
         for name in scripts:
             assert name.endswith(".py")
@@ -273,7 +426,7 @@ class TestJobShape:
                 assert spec.deliver == "local"
 
     def test_every_spec_carries_a_behavioural_note(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert spec.notes.strip(), f"{spec.name} has no notes"
 
 

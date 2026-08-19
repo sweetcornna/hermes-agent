@@ -30,6 +30,7 @@ def _clean_env(monkeypatch):
         "QZONE_PERSONA_ID",
         "QZONE_STATE_DIR",
         "QZONE_QQ_INSTANCE_ID",
+        "QQ_GROUP_HISTORY_DB",
     ):
         monkeypatch.delenv(var, raising=False)
     # read_raw_config() would otherwise reach for the real config.yaml.
@@ -50,6 +51,29 @@ def qzone_ledgers(tmp_path, monkeypatch):
     monkeypatch.setenv("QZONE_STATE_DIR", str(root))
     monkeypatch.setenv("QZONE_PERSONA_ID", "grantley")
     return root
+
+
+@pytest.fixture
+def qq_history_db(tmp_path, monkeypatch):
+    """A reachable qq_group_history.sqlite with the real schema, one row."""
+    import sqlite3
+
+    path = tmp_path / "qq_group_history.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE group_messages (id INTEGER PRIMARY KEY, instance_id TEXT, "
+        "group_id TEXT, sender_user_id TEXT, sender_name TEXT, message_id TEXT, "
+        "event_time_ms INTEGER, received_at_ms INTEGER, text TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO group_messages (instance_id, group_id, sender_user_id, "
+        "sender_name, event_time_ms, received_at_ms, text) VALUES "
+        "('default', '980927602', '1', 'a', 0, 0, 'hi')"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("QQ_GROUP_HISTORY_DB", str(path))
+    return path
 
 
 class TestTimezone:
@@ -218,6 +242,61 @@ class TestQzoneState:
         assert check.level == FAIL
 
 
+class TestQqGroupHistory:
+    def test_fails_when_the_store_does_not_exist(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("QQ_GROUP_HISTORY_DB", str(tmp_path / "nope.sqlite"))
+        check = preflight.check_qq_group_history()
+        assert check.level == FAIL
+        assert check.blocking
+        assert "not found" in check.message
+
+    def test_fails_on_the_wrong_schema(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        path = tmp_path / "wrong.sqlite"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE not_the_right_table (x INTEGER)")
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("QQ_GROUP_HISTORY_DB", str(path))
+        check = preflight.check_qq_group_history()
+        assert check.level == FAIL
+        assert "wrong schema" in check.message
+
+    def test_warns_but_does_not_block_when_reachable_and_empty(self, tmp_path, monkeypatch):
+        """Unlike qzone's ledgers, an empty store is a legitimate quiet day —
+        all three monitors have send_when_empty=false, so it just means no
+        digest, not an unmigrated dedup ledger."""
+        import sqlite3
+
+        path = tmp_path / "empty.sqlite"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE group_messages (id INTEGER PRIMARY KEY, instance_id TEXT, "
+            "group_id TEXT, sender_user_id TEXT, sender_name TEXT, message_id TEXT, "
+            "event_time_ms INTEGER, received_at_ms INTEGER, text TEXT)"
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("QQ_GROUP_HISTORY_DB", str(path))
+        check = preflight.check_qq_group_history()
+        assert check.level == WARN
+        assert not check.blocking
+
+    def test_ok_when_reachable_and_populated(self, qq_history_db):
+        check = preflight.check_qq_group_history()
+        assert check.level == OK
+        assert "1 row" in check.message
+
+    def test_default_path_lives_under_the_plugins_own_state_dir(self, monkeypatch):
+        from plugins.corlinman_jobs import installer
+
+        monkeypatch.delenv("QQ_GROUP_HISTORY_DB", raising=False)
+        assert installer.qq_group_history_db_path() == (
+            installer.state_dir() / "qq_group_history.sqlite"
+        )
+
+
 class TestTelegram:
     def test_warns_when_no_token_is_configured(self):
         check = preflight.check_telegram()
@@ -242,7 +321,7 @@ class TestScriptsInstalled:
         assert check.level == FAIL
         assert "not installed" in check.message
 
-    def test_ok_after_a_real_install(self, monkeypatch, qzone_ledgers):
+    def test_ok_after_a_real_install(self, monkeypatch, qzone_ledgers, qq_history_db):
         from plugins.corlinman_jobs import installer
 
         monkeypatch.setenv("HERMES_TIMEZONE", TIMEZONE)
@@ -252,7 +331,9 @@ class TestScriptsInstalled:
         check = preflight.check_scripts_installed()
         assert check.level == OK
 
-    def test_warns_when_an_installed_script_drifts(self, monkeypatch, qzone_ledgers):
+    def test_warns_when_an_installed_script_drifts(
+        self, monkeypatch, qzone_ledgers, qq_history_db
+    ):
         from plugins.corlinman_jobs import installer
 
         monkeypatch.setenv("HERMES_TIMEZONE", TIMEZONE)
@@ -268,7 +349,35 @@ class TestScriptsInstalled:
 class TestRunChecks:
     def test_qq_checks_can_be_left_out(self):
         keys = {c.key for c in preflight.run_checks(include_qq=False, include_scripts=False)}
-        assert "onebot" not in keys and "qzone_state" not in keys
+        assert "onebot" not in keys
+        assert "qzone_state" not in keys
+        assert "qq_group_history" not in keys
+
+    def test_qzone_and_history_default_to_mirroring_include_qq(self):
+        """Existing callers that only ever set include_qq keep behaving
+        exactly as before — the three flags used to be one."""
+        with_qq = {c.key for c in preflight.run_checks(include_scripts=False)}
+        without_qq = {
+            c.key for c in preflight.run_checks(include_qq=False, include_scripts=False)
+        }
+        assert {"onebot", "qzone_state", "qq_group_history"} <= with_qq
+        assert not ({"onebot", "qzone_state", "qq_group_history"} & without_qq)
+
+    def test_qzone_and_history_can_be_set_independently_of_qq(self):
+        """The installer's own calls: sanhu/jlu need onebot but never
+        qzone; qunjlu needs the history store but never onebot."""
+        keys = {
+            c.key
+            for c in preflight.run_checks(
+                include_qq=True,
+                include_qzone=False,
+                include_qq_history=True,
+                include_scripts=False,
+            )
+        }
+        assert "onebot" in keys
+        assert "qzone_state" not in keys
+        assert "qq_group_history" in keys
 
     def test_script_check_can_be_left_out(self):
         """An install cannot require the files it is about to write."""
@@ -284,6 +393,7 @@ class TestRunChecks:
             "scripts",
             "onebot",
             "qzone_state",
+            "qq_group_history",
             "telegram",
         }
 
@@ -294,7 +404,7 @@ class TestRunChecks:
         assert {c.key for c in blocking} == {"timezone"}
 
     def test_a_fully_configured_profile_has_no_blockers(
-        self, monkeypatch, qzone_ledgers
+        self, monkeypatch, qzone_ledgers, qq_history_db
     ):
         from plugins.corlinman_jobs import installer
 

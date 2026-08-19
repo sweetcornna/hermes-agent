@@ -12,15 +12,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from dataclasses import replace
 
 import pytest
 
 from plugins.corlinman_jobs import installer, preflight
 from plugins.corlinman_jobs.installer import DIARY_CHANNELS, NO_TOOLS_SENTINEL
-from plugins.corlinman_jobs.specs import JOB_SPECS, TIMEZONE, spec_by_name
+from plugins.corlinman_jobs.specs import ALL_SPECS, JOB_SPECS, TIMEZONE, spec_by_name
 
-#: Jobs that need no QQ session — the subset installable on a bare profile.
+#: Jobs that need no QQ session at all — the subset installable on a bare
+#: profile with none of onebot/qzone_state/qq_group_history configured.
+#: Scoped to the original nine scheduler jobs on purpose: qunjlu (a
+#: monitor) needs no onebot connectivity (deliver=local) but does need
+#: qq_group_history, so it does not belong in "needs nothing QQ-shaped".
 NON_QQ = tuple(s.name for s in JOB_SPECS if not installer.needs_qq(s))
 
 
@@ -34,6 +39,7 @@ def _clean_env(monkeypatch):
         "TELEGRAM_BOT_TOKEN",
         "QZONE_PERSONA_ID",
         "QZONE_STATE_DIR",
+        "QQ_GROUP_HISTORY_DB",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
@@ -41,9 +47,26 @@ def _clean_env(monkeypatch):
     )
 
 
+def _make_qq_history_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE group_messages (id INTEGER PRIMARY KEY, instance_id TEXT, "
+        "group_id TEXT, sender_user_id TEXT, sender_name TEXT, message_id TEXT, "
+        "event_time_ms INTEGER, received_at_ms INTEGER, text TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO group_messages (instance_id, group_id, sender_user_id, "
+        "sender_name, event_time_ms, received_at_ms, text) VALUES "
+        "('default', '980927602', '1', 'a', 0, 0, 'hi')"
+    )
+    conn.commit()
+    conn.close()
+
+
 @pytest.fixture
 def ready(monkeypatch, tmp_path):
-    """A profile where every preflight check passes, QQ included."""
+    """A profile where every preflight check passes, QQ included — all
+    twelve jobs (nine scheduler jobs + three monitors) installable."""
     root = tmp_path / "qzone-state"
     (root / "qzone_post_log").mkdir(parents=True)
     (root / "qzone_post_log" / "grantley.json").write_text(
@@ -55,6 +78,9 @@ def ready(monkeypatch, tmp_path):
     monkeypatch.setenv("ONEBOT_WS_URL", "ws://127.0.0.1:3001")
     monkeypatch.setenv("HERMES_TIMEZONE", TIMEZONE)
     monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "2")
+    history_db = tmp_path / "qq_group_history.sqlite"
+    _make_qq_history_db(history_db)
+    monkeypatch.setenv("QQ_GROUP_HISTORY_DB", str(history_db))
     return root
 
 
@@ -72,7 +98,7 @@ def _jobs():
 class TestGeneratedScripts:
     def test_one_script_per_scripted_job_plus_the_library(self):
         planned = installer.planned_files()
-        expected = {s.script for s in JOB_SPECS if s.script}
+        expected = {s.script for s in ALL_SPECS if s.script}
         assert set(planned) == expected | {installer.LIB_FILENAME}
 
     def test_the_library_is_copied_verbatim(self):
@@ -97,7 +123,7 @@ class TestGeneratedScripts:
             assert "Do not edit" in text
 
     def test_entry_scripts_import_the_shared_library(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             if not spec.script:
                 continue
             text = installer.render_entry_script(spec)
@@ -145,7 +171,7 @@ class TestGeneratedScripts:
         assert "redirect_stdout(sys.stderr)" in text
 
     def test_no_other_script_silences_its_output(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             if spec.script and spec.name != "persona.decay":
                 assert installer.script_call(spec)[2] is False
 
@@ -193,7 +219,7 @@ class TestToolsetTranslation:
         assert resolved == []
 
     def test_no_agent_jobs_carry_no_toolsets(self):
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             if spec.no_agent:
                 assert installer._spec_job_fields(spec)["enabled_toolsets"] is None
 
@@ -216,7 +242,7 @@ class TestDryRun:
 
     def test_plan_reports_every_job_and_file_it_would_touch(self):
         plan = installer.plan()
-        assert {a.name for a in plan.jobs} == {s.name for s in JOB_SPECS}
+        assert {a.name for a in plan.jobs} == {s.name for s in ALL_SPECS}
         assert {a.action for a in plan.jobs} == {"create"}
         assert {a.action for a in plan.files} == {"create"}
 
@@ -228,7 +254,7 @@ class TestDryRun:
     def test_plan_is_ready_on_a_configured_profile(self, ready):
         plan = installer.plan()
         assert not plan.blocked
-        assert len(plan.would_create) == len(JOB_SPECS)
+        assert len(plan.would_create) == len(ALL_SPECS)
 
     def test_plan_skips_the_qq_checks_when_no_qq_job_is_selected(self, monkeypatch):
         monkeypatch.setenv("HERMES_TIMEZONE", TIMEZONE)
@@ -287,7 +313,6 @@ class TestInstallRefusals:
             replace(s, install_enabled=True) if s.name == "persona.decay" else s
             for s in JOB_SPECS
         )
-        monkeypatch.setattr(installer, "JOB_SPECS", poisoned)
         monkeypatch.setattr(
             installer, "select_specs", lambda only=None: poisoned
         )
@@ -316,7 +341,7 @@ class TestInstallProducts:
         execute the script.
         """
         root = installer.scripts_dir().resolve()
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             if not spec.script:
                 continue
             resolved = (installer.scripts_dir() / spec.script).resolve()
@@ -325,7 +350,7 @@ class TestInstallProducts:
             assert resolved.suffix == ".py"  # runs under sys.executable, not bash
 
     def test_every_job_exists(self):
-        assert set(_jobs()) == {s.name for s in JOB_SPECS}
+        assert set(_jobs()) == {s.name for s in ALL_SPECS}
 
     def test_every_job_is_paused(self):
         for name, job in _jobs().items():
@@ -351,24 +376,24 @@ class TestInstallProducts:
 
     def test_schedules_are_the_staggered_ones(self):
         jobs = _jobs()
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert jobs[spec.name]["schedule_display"] == spec.schedule
             assert jobs[spec.name]["schedule"]["expr"] == spec.schedule
 
     def test_delivery_targets_survive(self):
         jobs = _jobs()
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert jobs[spec.name]["deliver"] == spec.deliver
 
     def test_script_and_no_agent_flags_survive(self):
         jobs = _jobs()
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert jobs[spec.name]["script"] == spec.script
             assert jobs[spec.name]["no_agent"] is spec.no_agent
 
     def test_prompts_survive(self):
         jobs = _jobs()
-        for spec in JOB_SPECS:
+        for spec in ALL_SPECS:
             assert jobs[spec.name]["prompt"] == (spec.prompt or "")
 
     def test_toolsets_survive(self):
@@ -378,7 +403,7 @@ class TestInstallProducts:
         assert jobs["persona.decay"]["enabled_toolsets"] is None
 
     def test_the_result_lists_what_it_did(self):
-        assert len(self.result.created) == len(JOB_SPECS)
+        assert len(self.result.created) == len(ALL_SPECS)
         assert set(self.result.written) == set(installer.planned_files())
         assert self.result.skipped == ()
         assert self.result.unpaused == ()
@@ -386,7 +411,7 @@ class TestInstallProducts:
     def test_the_manifest_records_the_files_and_the_job_ids(self):
         manifest = installer.read_manifest()
         assert set(manifest["files"]) == set(installer.planned_files())
-        assert set(manifest["jobs"]) == {s.name for s in JOB_SPECS}
+        assert set(manifest["jobs"]) == {s.name for s in ALL_SPECS}
         assert manifest["repo_root"] == str(installer.repo_root())
 
     def test_drift_is_clean_immediately_after(self):
@@ -400,7 +425,7 @@ class TestIdempotency:
         second = installer.install()
         assert second.ok
         assert second.created == ()
-        assert set(second.skipped) == {s.name for s in JOB_SPECS}
+        assert set(second.skipped) == {s.name for s in ALL_SPECS}
         assert {n: j["id"] for n, j in _jobs().items()} == {
             n: j["id"] for n, j in first.items()
         }
@@ -523,7 +548,7 @@ class TestPartialInstall:
         assert installer.install(only=["hermes.daily_agenda"]).ok
         second = installer.install()
         assert second.ok
-        assert set(_jobs()) == {s.name for s in JOB_SPECS}
+        assert set(_jobs()) == {s.name for s in ALL_SPECS}
         assert "hermes.daily_agenda" in second.skipped
 
 
@@ -550,7 +575,7 @@ class TestCli:
     def test_install_reports_every_created_job_as_paused(self, ready, capsys):
         assert self._run("install") == 0
         out = capsys.readouterr().out
-        assert out.count("created (paused)") == len(JOB_SPECS)
+        assert out.count("created (paused)") == len(ALL_SPECS)
         assert "Every job is PAUSED" in out
 
     def test_install_exits_nonzero_when_blocked(self, capsys):
@@ -568,7 +593,7 @@ class TestCli:
         out = capsys.readouterr().out
         assert "ENABLED" not in out
         paused = [line for line in out.splitlines() if ": paused " in line]
-        assert len(paused) == len(JOB_SPECS)
+        assert len(paused) == len(ALL_SPECS)
 
     def test_no_action_prints_usage(self, capsys):
         assert installer.corlinman_jobs_command(argparse.Namespace()) == 2

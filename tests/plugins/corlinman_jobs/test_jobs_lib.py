@@ -594,6 +594,260 @@ class TestQzoneRecentPosts:
 
 
 # ---------------------------------------------------------------------------
+# QQ group monitor digests (sanhu / jlu / qunjlu) — D2
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def qq_history_db(tmp_path):
+    """A qq_group_history.sqlite with the real corlinman_server schema."""
+    path = tmp_path / "qq_group_history.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE group_messages (id INTEGER PRIMARY KEY, instance_id TEXT, "
+        "group_id TEXT, sender_user_id TEXT, sender_name TEXT, message_id TEXT, "
+        "event_time_ms INTEGER, received_at_ms INTEGER, text TEXT)"
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _add_group_message(
+    db, *, instance_id="default", group_id="183287894", sender_id="1",
+    sender_name="某人", received_at, text,
+):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO group_messages (instance_id, group_id, sender_user_id, "
+        "sender_name, event_time_ms, received_at_ms, text) VALUES (?,?,?,?,?,?,?)",
+        (
+            instance_id, group_id, sender_id, sender_name,
+            int(received_at.timestamp() * 1000), int(received_at.timestamp() * 1000),
+            text,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestQqMonitorWindowDesc:
+    def test_whole_days(self):
+        assert lib._qq_monitor_window_desc(1440) == "最近 1 天"
+        assert lib._qq_monitor_window_desc(2880) == "最近 2 天"
+
+    def test_whole_hours(self):
+        assert lib._qq_monitor_window_desc(180) == "最近 3 小时"
+
+    def test_odd_minutes(self):
+        assert lib._qq_monitor_window_desc(90) == "最近 90 分钟"
+
+
+class TestQqMonitorCollectionIds:
+    def test_no_watch_list_means_no_filter(self):
+        """Ported from _QqMonitorSource.collection_ids: empty watch_user_ids
+        means "everyone", not "filter to nobody" — this is what lets jlu
+        collect the whole group while only ★-marking its focus member."""
+        assert lib._qq_monitor_collection_ids([], []) == ()
+        assert lib._qq_monitor_collection_ids([], ["1076712858"]) == ()
+
+    def test_watch_list_narrows_and_absorbs_focus(self):
+        assert lib._qq_monitor_collection_ids(["1076712858"], []) == ("1076712858",)
+        assert lib._qq_monitor_collection_ids(["1"], ["1", "2"]) == ("1", "2")
+
+
+class TestQqMonitorFormatLines:
+    def test_marks_focus_members_and_formats_the_stamp(self):
+        tz = ZoneInfo(TZ)
+        rows = [(int(datetime(2026, 8, 18, 9, 5, tzinfo=tz).timestamp() * 1000),
+                  "1076712858", "目前5成仓", 0, "早")]
+        lines = lib._qq_monitor_format_lines(rows, ["1076712858"], tz)
+        assert lines == ["★[08-18 09:05] 目前5成仓(1076712858): 早"]
+
+    def test_non_focus_members_get_no_marker(self):
+        tz = ZoneInfo(TZ)
+        rows = [(0, "999", "路人", 0, "水")]
+        lines = lib._qq_monitor_format_lines(rows, ["1076712858"], tz)
+        assert lines[0].startswith("[") and "★" not in lines[0]
+
+    def test_truncates_an_overlong_message(self):
+        tz = ZoneInfo(TZ)
+        rows = [(0, "1", "x", 0, "长" * (lib.QQ_MONITOR_LINE_CAP + 50))]
+        line = lib._qq_monitor_format_lines(rows, [], tz)[0]
+        assert len(line.rsplit(": ", 1)[1]) == lib.QQ_MONITOR_LINE_CAP
+
+
+class TestMainQqMonitorDigest:
+    def test_empty_window_prints_nothing(self, qq_history_db, capsys):
+        """All three migrated monitors have send_when_empty=false (A1 §4);
+        empty stdout is hermes's own signal to skip the model call and the
+        delivery entirely."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        rc = lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="qunjlu", now=now,
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "no messages in the window" in captured.err
+
+    def test_collects_the_window_and_renders_a_header(self, qq_history_db, capsys):
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        _add_group_message(
+            qq_history_db, received_at=now - timedelta(hours=2), text="早上好",
+        )
+        rc = lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="sanhu", now=now,
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "群 183287894 最近 1 天的消息汇总（共 1 条）。" in out
+        assert "早上好" in out
+
+    def test_only_the_configured_group_and_instance_are_collected(self, qq_history_db, capsys):
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        _add_group_message(
+            qq_history_db, group_id="980927602", received_at=now - timedelta(hours=1),
+            text="别的群",
+        )
+        _add_group_message(
+            qq_history_db, instance_id="other", received_at=now - timedelta(hours=1),
+            text="别的实例",
+        )
+        _add_group_message(
+            qq_history_db, received_at=now - timedelta(hours=1), text="这才是它",
+        )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="jlu", now=now,
+        )
+        out = capsys.readouterr().out
+        assert "这才是它" in out
+        assert "别的群" not in out
+        assert "别的实例" not in out
+
+    def test_outside_the_window_is_excluded(self, qq_history_db, capsys):
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        _add_group_message(
+            qq_history_db, received_at=now - timedelta(days=2), text="太久以前",
+        )
+        rc = lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="qunjlu", now=now,
+        )
+        assert rc == 0
+        assert capsys.readouterr().out == ""
+
+    def test_watch_user_ids_filters_the_query(self, qq_history_db, capsys):
+        """qunjlu's contract: only 1076712858, everyone else in the group
+        excluded (A1 §4)."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        _add_group_message(
+            qq_history_db, sender_id="1076712858", received_at=now - timedelta(hours=1),
+            text="监控对象说的话",
+        )
+        _add_group_message(
+            qq_history_db, sender_id="999999999", received_at=now - timedelta(hours=1),
+            text="别人说的话",
+        )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=["1076712858"], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="qunjlu", now=now,
+        )
+        out = capsys.readouterr().out
+        assert "监控对象说的话" in out
+        assert "别人说的话" not in out
+
+    def test_focus_without_watch_collects_everyone_and_marks_the_focus_member(
+        self, qq_history_db, capsys
+    ):
+        """jlu's contract: no watch_user_ids, so everyone is collected;
+        focus only marks 1076712858's lines and adds the closing header."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        _add_group_message(
+            qq_history_db, sender_id="1076712858", received_at=now - timedelta(hours=1),
+            text="监控对象说的话",
+        )
+        _add_group_message(
+            qq_history_db, sender_id="999999999", received_at=now - timedelta(hours=1),
+            text="别人也在说话",
+        )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=["1076712858"], window_minutes=1440,
+            timezone=TZ, monitor_id="jlu", now=now,
+        )
+        out = capsys.readouterr().out
+        assert "监控对象说的话" in out
+        assert "别人也在说话" in out
+        assert "重点关注：1076712858" in out
+        assert "★" in out
+
+    def test_over_the_prompt_cap_keeps_only_the_newest_and_flags_truncation(
+        self, qq_history_db, capsys
+    ):
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        total = lib.QQ_MONITOR_PROMPT_MESSAGE_CAP + 10
+        for i in range(total):
+            _add_group_message(
+                qq_history_db,
+                received_at=now - timedelta(minutes=total - i),
+                text=f"msg-{i}",
+            )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="sanhu", now=now,
+        )
+        out = capsys.readouterr().out
+        assert f"共 {lib.QQ_MONITOR_PROMPT_MESSAGE_CAP} 条，仅展示最新一部分" in out
+        assert "msg-0 " not in out and "msg-0\n" not in out and not out.endswith("msg-0")
+        # The newest message (msg-<total-1>) must have survived the cap.
+        assert f"msg-{total - 1}" in out
+
+    def test_a_missing_database_is_a_loud_failure(self, tmp_path):
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        with pytest.raises(SystemExit) as excinfo:
+            lib.main_qq_monitor_digest(
+                db_path=str(tmp_path / "nope.sqlite"), instance_id="default",
+                group_id="183287894", watch_user_ids=[], focus_user_ids=[],
+                window_minutes=1440, timezone=TZ, monitor_id="qunjlu", now=now,
+            )
+        assert "qq_group_history_unavailable" in str(excinfo.value)
+
+    def test_a_wrong_schema_database_is_a_loud_failure(self, tmp_path):
+        path = tmp_path / "wrong.sqlite"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE not_it (x INTEGER)")
+        conn.commit()
+        conn.close()
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        with pytest.raises(SystemExit) as excinfo:
+            lib.main_qq_monitor_digest(
+                db_path=str(path), instance_id="default", group_id="183287894",
+                watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+                timezone=TZ, monitor_id="qunjlu", now=now,
+            )
+        assert "qq_group_history_query_failed" in str(excinfo.value)
+
+    def test_it_never_calls_any_send_or_publish_capable_function(self):
+        """The monitors' delivery is cron's own deliver step (or, for
+        qunjlu, nowhere at all — D26); this library never sends anything
+        itself, same invariant as the qzone corpus script above."""
+        source = LIB_PATH.read_text(encoding="utf-8")
+        assert "qzone_publish" not in source
+        assert "SendGroupMsg" not in source
+        assert "SendPrivateMsg" not in source
+
+
+# ---------------------------------------------------------------------------
 # hermes.daily_agenda
 # ---------------------------------------------------------------------------
 
