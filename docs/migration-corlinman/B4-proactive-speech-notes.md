@@ -35,9 +35,10 @@
 
 | File | Lines | What |
 |---|---:|---|
-| `plugins/platforms/onebot/proactive.py` | 638 | New. Config resolution, the gate ladder, prompt composition, the SKIP hatch, the resident loop. |
-| `plugins/platforms/onebot/adapter.py` | +73 / −8 | Lifecycle wiring (start on connect, stop on disconnect), context-buffer hygiene, the `proactive_*` YAML keys. |
-| `tests/gateway/test_onebot_proactive.py` | 664 | 78 tests, fully offline. |
+| `plugins/platforms/onebot/proactive.py` | 797 (new) | Config resolution, the gate ladder, prompt composition, the SKIP hatch, the resident loop. |
+| `plugins/platforms/onebot/adapter.py` | +85 / −7 | Lifecycle wiring (start on connect, stop on disconnect), context-buffer hygiene, the `proactive_*` YAML keys. |
+| `plugins/platforms/onebot/README.md` | +85 / −9 | Documents the feature; removes the "not implemented" entry. |
+| `tests/gateway/test_onebot_proactive.py` | 879 (new) | 78 tests, fully offline. |
 
 No file outside `plugins/platforms/onebot/` and `tests/gateway/` was touched.
 `plugins/platforms/onebot/` is a migration-created directory; the invariant
@@ -206,6 +207,8 @@ the top-3 cap and the 300-char snippet cap, all already tested.
 ## 7. Ported test coverage
 
 `tests/gateway/test_onebot_proactive.py`, 78 tests, all offline.
+Command and result: `.venv/bin/python -m pytest tests/gateway/test_onebot_proactive.py -q`
+→ **78 passed**. Whole OneBot suite (7 files): **382 passed**.
 
 Ported from `test_qq_proactive.py` (all 34 cases): config resolution and
 defaults, whitelist intersection, probability clamping, timezone/context
