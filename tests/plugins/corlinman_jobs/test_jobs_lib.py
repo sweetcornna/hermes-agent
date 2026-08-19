@@ -1,0 +1,906 @@
+"""The job-side library: what each ``main_*`` puts on stdout, and when.
+
+Three behaviours carry the whole design and are asserted for every entry
+point:
+
+* **stdout is the product.** For an agent job it becomes the ``## Script
+  Output`` block; for a ``no_agent`` job it *is* the delivered message.
+* **diagnostics go to stderr**, where hermes drops them on success and
+  surfaces them inside a ``## Script Error`` block on failure.
+* **empty stdout is a decision, not an accident** — hermes skips the model
+  call and the delivery entirely, so a script that has nothing to say must
+  say nothing, and a script whose silence would be misread must print its
+  documented marker instead.
+
+Nothing here opens a socket, a QQ session or a Telegram connection. The one
+function that reaches into another package (``main_qzone_recent_posts``)
+reads through ``plugins.qzone.state``'s public surface, and the tests stub
+that surface rather than fabricate its files.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sqlite3
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+LIB_PATH = REPO_ROOT / "plugins" / "corlinman_jobs" / "scripts" / "corlinman_jobs_lib.py"
+TZ = "Asia/Shanghai"
+
+
+def _load_lib():
+    """Import the library the way the installed copy is imported: by filename,
+    as a top-level module with no package context."""
+    spec = importlib.util.spec_from_file_location("corlinman_jobs_lib", LIB_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+lib = _load_lib()
+
+
+@pytest.fixture
+def state_db(monkeypatch):
+    """A real hermes state database, built from hermes's own schema."""
+    from hermes_state_common import SCHEMA_SQL
+
+    path = lib.hermes_home() / "state.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA_SQL)
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _add_session(db, session_id, source="telegram", user_id="1114483029"):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO sessions (id, source, user_id, started_at) VALUES (?,?,?,?)",
+        (session_id, source, user_id, 0.0),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _add_message(db, session_id, role, content, when, *, active=1, display_kind=None):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp, active, display_kind) "
+        "VALUES (?,?,?,?,?,?)",
+        (session_id, role, content, when.timestamp(), active, display_kind),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Output discipline
+# ---------------------------------------------------------------------------
+
+
+class TestOutputDiscipline:
+    def test_log_writes_to_stderr_not_stdout(self, capsys):
+        lib.log("a diagnostic")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "a diagnostic" in captured.err
+
+    def test_the_library_imports_nothing_from_the_hermes_tree(self):
+        """The installed copy lives in $HERMES_HOME/scripts with no package
+        context, and the cron subprocess env strips hermes-owned PYTHONPATH."""
+        source = LIB_PATH.read_text(encoding="utf-8")
+        banned = ("from hermes", "import hermes", "from tools", "from cron")
+        top_level = [
+            line
+            for line in source.splitlines()
+            if not line.startswith((" ", "\t")) and line.startswith(("import ", "from "))
+        ]
+        for line in top_level:
+            assert not line.startswith(banned), line
+
+    def test_yaml_is_imported_lazily(self):
+        """Only the agenda job needs it; an import-time failure would take
+        every other job down with it."""
+        source = LIB_PATH.read_text(encoding="utf-8")
+        assert "\nimport yaml" not in source
+        assert "import yaml" in source
+
+
+class TestLocations:
+    def test_hermes_home_follows_the_environment(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
+        assert lib.hermes_home() == tmp_path / "elsewhere"
+
+    def test_hermes_home_falls_back_for_a_hand_run(self, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert lib.hermes_home() == Path.home() / ".hermes"
+
+    def test_job_state_dir_is_created_under_the_profile(self):
+        directory = lib.job_state_dir()
+        assert directory.is_dir()
+        assert directory == lib.hermes_home() / "plugin-data" / "corlinman_jobs"
+
+    def test_state_dir_is_not_corlinmans_resolve_data_dir_antipattern(self):
+        """The source resolved its data dir from an app-state attribute that
+        was never populated, and failed silently 1260 times. There is exactly
+        one explicit resolution here and it cannot come back empty."""
+        assert lib.job_state_dir().is_absolute()
+
+
+# ---------------------------------------------------------------------------
+# Text handling
+# ---------------------------------------------------------------------------
+
+
+class TestRedact:
+    def test_strips_an_openai_style_key(self):
+        out = lib.redact("here is sk-abcdefghijklmnopqrstuvwxyz123 ok")
+        assert "sk-abcdefghijkl" not in out
+        assert "[REDACTED]" in out
+
+    def test_keeps_the_label_of_a_keyed_secret(self):
+        out = lib.redact("api_key: hunter2hunter2hunter2")
+        assert out.startswith("api_key=[REDACTED]")
+
+    def test_strips_a_bearer_token_but_keeps_the_scheme(self):
+        out = lib.redact("Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123")
+        assert "Bearer [REDACTED]" in out
+        assert "abcdefghij" not in out
+
+    def test_leaves_ordinary_prose_alone(self):
+        text = "今天写了一点代码，晚上去跑步。"
+        assert lib.redact(text) == text
+
+    def test_handles_empty_input(self):
+        assert lib.redact("") == ""
+
+
+class TestDecodeContent:
+    def test_plain_text_passes_through(self):
+        assert lib.decode_content("hello") == "hello"
+
+    def test_multimodal_json_is_flattened_to_its_text_parts(self):
+        raw = lib.CONTENT_JSON_PREFIX + json.dumps(
+            [{"type": "text", "text": "a"}, {"type": "image", "url": "x"},
+             {"type": "text", "text": "b"}]
+        )
+        assert lib.decode_content(raw) == "a b"
+
+    def test_a_broken_sentinel_payload_returns_the_raw_string(self):
+        raw = lib.CONTENT_JSON_PREFIX + "{not json"
+        assert lib.decode_content(raw) == raw
+
+    def test_none_becomes_empty(self):
+        assert lib.decode_content(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# hermes.diary_summary
+# ---------------------------------------------------------------------------
+
+
+class TestDiaryMaterial:
+    def test_collects_todays_user_messages(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=12, minute=30)
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "user", "早上去跑步了", now.replace(hour=8))
+        _add_message(state_db, "s1", "user", "晚上写了点代码", now.replace(hour=21, minute=0))
+
+        assert lib.main_diary_material(
+            user_id="1114483029",
+            channels=["telegram", "gateway"],
+            timezone=TZ,
+            now=now.replace(hour=23, minute=50),
+        ) == 0
+        out = capsys.readouterr().out
+        assert "采集到用户消息：2 条" in out
+        assert "【08:30】早上去跑步了" in out
+        assert "【21:00】晚上写了点代码" in out
+
+    def test_prints_the_no_material_marker_rather_than_nothing(self, state_db, capsys):
+        """Silence would make hermes skip the run; the source still delivered
+        its fixed "no diary" sentence, so the script must speak."""
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=23, minute=50)
+        assert lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        ) == 0
+        out = capsys.readouterr().out
+        assert lib.NO_DIARY_MATERIAL in out
+        assert out.strip()
+
+    def test_excludes_assistant_turns(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "assistant", "我的回答", now.replace(hour=9))
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert lib.NO_DIARY_MATERIAL in capsys.readouterr().out
+
+    def test_excludes_other_users_and_other_channels(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        _add_session(state_db, "mine", source="telegram", user_id="1114483029")
+        _add_session(state_db, "theirs", source="telegram", user_id="999")
+        _add_session(state_db, "elsewhere", source="discord", user_id="1114483029")
+        _add_message(state_db, "theirs", "user", "别人的消息", now.replace(hour=9))
+        _add_message(state_db, "elsewhere", "user", "别的渠道", now.replace(hour=9))
+        _add_message(state_db, "mine", "user", "我的消息", now.replace(hour=9))
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram", "gateway"], timezone=TZ, now=now
+        )
+        out = capsys.readouterr().out
+        assert "我的消息" in out
+        assert "别人的消息" not in out
+        assert "别的渠道" not in out
+
+    def test_excludes_compaction_noise(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        _add_session(state_db, "s1")
+        _add_message(
+            state_db, "s1", "user", lib.NOISE_PREFIXES[0] + " blah", now.replace(hour=9)
+        )
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert lib.NO_DIARY_MATERIAL in capsys.readouterr().out
+
+    def test_excludes_inactive_and_display_only_rows(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "user", "已压缩", now.replace(hour=9), active=0)
+        _add_message(
+            state_db, "s1", "user", "只是显示", now.replace(hour=9), display_kind="status"
+        )
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert lib.NO_DIARY_MATERIAL in capsys.readouterr().out
+
+    def test_redacts_secrets_before_they_reach_the_prompt(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        _add_session(state_db, "s1")
+        _add_message(
+            state_db, "s1", "user",
+            "配置了 sk-abcdefghijklmnopqrstuvwxyz123", now.replace(hour=9),
+        )
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        out = capsys.readouterr().out
+        assert "sk-abcdefghijkl" not in out
+        assert "[REDACTED]" in out
+
+    def test_truncates_an_overlong_message(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        _add_session(state_db, "s1")
+        _add_message(
+            state_db, "s1", "user", "长" * (lib.MAX_MESSAGE_CHARS + 50), now.replace(hour=9)
+        )
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert "已截断" in capsys.readouterr().out
+
+    def test_deduplicates_identical_messages_at_the_same_instant(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        moment = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "user", "重复", moment)
+        _add_message(state_db, "s1", "user", "重复", moment)
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert "采集到用户消息：1 条" in capsys.readouterr().out
+
+    def test_ignores_yesterday(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ)).replace(hour=20)
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "user", "昨天的事", now - timedelta(days=1))
+        lib.main_diary_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert lib.NO_DIARY_MATERIAL in capsys.readouterr().out
+
+    def test_a_missing_database_is_a_loud_failure(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
+        with pytest.raises(SystemExit) as excinfo:
+            lib.main_diary_material(
+                user_id="x", channels=["telegram"], timezone=TZ,
+                now=datetime.now(ZoneInfo(TZ)),
+            )
+        assert "state database not found" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# hermes.analysis_digest
+# ---------------------------------------------------------------------------
+
+
+class TestAnalysisMaterial:
+    def test_keeps_only_keyword_hits(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ))
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "user", "今天的分析结论是这样", now - timedelta(hours=2))
+        _add_message(state_db, "s1", "user", "晚饭吃了面", now - timedelta(hours=1))
+        assert lib.main_analysis_material(
+            user_id="1114483029", channels=["telegram", "gateway"], timezone=TZ, now=now
+        ) == 0
+        out = capsys.readouterr().out
+        assert "分析结论" in out
+        assert "晚饭" not in out
+        assert "命中记录：1 条" in out
+
+    def test_includes_assistant_turns_unlike_the_diary_job(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ))
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "assistant", "研究表明如此", now - timedelta(hours=1))
+        lib.main_analysis_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert "[assistant] 研究表明如此" in capsys.readouterr().out
+
+    def test_prints_the_documented_marker_when_nothing_matches(self, state_db, capsys):
+        """The prompt keys off this exact line to emit the source's fixed
+        "no analysis" sentence — silence would deliver nothing at all."""
+        now = datetime.now(ZoneInfo(TZ))
+        assert lib.main_analysis_material(
+            user_id="x", channels=["telegram"], timezone=TZ, now=now
+        ) == 0
+        out = capsys.readouterr().out
+        assert lib.NO_ANALYSIS_MARKER in out
+        assert "命中记录" not in out
+
+    def test_the_marker_is_the_string_the_prompt_expects(self):
+        from plugins.corlinman_jobs import prompts
+
+        assert "没有命中材料" in prompts.ANALYSIS_USER
+        assert lib.NO_ANALYSIS_MARKER.startswith("（过去 24 小时没有命中")
+
+    def test_the_window_is_24_hours_not_since_midnight(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ))
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "user", "昨夜的研究记录", now - timedelta(hours=20))
+        _add_message(state_db, "s1", "user", "更早的研究记录", now - timedelta(hours=30))
+        lib.main_analysis_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        out = capsys.readouterr().out
+        assert "昨夜的研究记录" in out
+        assert "更早的研究记录" not in out
+
+    def test_matches_english_keywords_case_insensitively(self, state_db, capsys):
+        now = datetime.now(ZoneInfo(TZ))
+        _add_session(state_db, "s1")
+        _add_message(state_db, "s1", "user", "RESEARCH notes", now - timedelta(hours=1))
+        lib.main_analysis_material(
+            user_id="1114483029", channels=["telegram"], timezone=TZ, now=now
+        )
+        assert "RESEARCH notes" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# hermes.youtube_daily — the watermark
+# ---------------------------------------------------------------------------
+
+
+class TestExtractVideoIds:
+    def test_reads_the_per_item_id_lines_the_prompt_asks_for(self):
+        text = "标题 A\n视频ID：dQw4w9WgXcQ\n\n标题 B\n视频ID: abcdefghijk\n"
+        assert lib.extract_video_ids(text) == ["dQw4w9WgXcQ", "abcdefghijk"]
+
+    def test_still_accepts_the_sources_legacy_trailer(self):
+        text = 'stuff\nYOUTUBE_STATE:{"new_video_ids": ["aaaaaaaaaaa"]}\n'
+        assert lib.extract_video_ids(text) == ["aaaaaaaaaaa"]
+
+    def test_deduplicates_while_preserving_order(self):
+        text = "视频ID：aaaaaaaaaaa\n视频ID：bbbbbbbbbbb\n视频ID：aaaaaaaaaaa\n"
+        assert lib.extract_video_ids(text) == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+
+    def test_ignores_ids_of_the_wrong_length(self):
+        assert lib.extract_video_ids("视频ID：short\n") == []
+
+    def test_a_line_with_extra_text_is_not_an_id_line(self):
+        assert lib.extract_video_ids("视频ID：dQw4w9WgXcQ https://x\n") == []
+
+    def test_no_ids_in_empty_output(self):
+        assert lib.extract_video_ids("") == []
+        assert lib.extract_video_ids("今天没有新视频。") == []
+
+
+class TestYoutubeWatermark:
+    JOB = "hermes.youtube_daily"
+    STATE = "scheduler_state/youtube_daily.json"
+
+    def _write_job(self, *, job_id="abc123", status="ok", delivery_error=None):
+        path = lib.hermes_home() / "cron" / "jobs.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "id": job_id,
+                            "name": self.JOB,
+                            "last_status": status,
+                            "last_delivery_error": delivery_error,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _write_output(self, job_id, filename, text):
+        directory = lib.hermes_home() / "cron" / "output" / job_id
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / filename).write_text(text, encoding="utf-8")
+
+    def _watermark(self):
+        return json.loads(
+            (lib.job_state_dir() / self.STATE).read_text(encoding="utf-8")
+        )
+
+    def test_first_run_emits_an_empty_watermark_block(self, capsys):
+        assert lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        ) == 0
+        out = capsys.readouterr().out
+        assert "频道：https://x" in out
+        assert "已处理 video_id：无" in out
+
+    def test_harvests_the_previous_delivered_run(self, capsys):
+        self._write_job()
+        self._write_output("abc123", "2026-08-18.md", "视频ID：aaaaaaaaaaa\n")
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        assert self._watermark()["seen_video_ids"] == ["aaaaaaaaaaa"]
+        assert "aaaaaaaaaaa" in capsys.readouterr().out
+
+    def test_does_not_advance_when_delivery_failed(self, capsys):
+        """The source persisted only on `delivery.ok and not shadow`; a run
+        whose content was fine but whose send failed must be re-reported."""
+        self._write_job(status="ok", delivery_error="chat not found")
+        self._write_output("abc123", "2026-08-18.md", "视频ID：aaaaaaaaaaa\n")
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        assert not (lib.job_state_dir() / self.STATE).exists()
+        captured = capsys.readouterr()
+        assert "watermark not advanced" in captured.err
+        assert "已处理 video_id：无" in captured.out
+
+    def test_does_not_advance_when_the_run_errored(self, capsys):
+        self._write_job(status="error")
+        self._write_output("abc123", "2026-08-18.md", "视频ID：aaaaaaaaaaa\n")
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        assert not (lib.job_state_dir() / self.STATE).exists()
+
+    def test_the_same_output_is_never_harvested_twice(self, capsys):
+        self._write_job()
+        self._write_output("abc123", "2026-08-18.md", "视频ID：aaaaaaaaaaa\n")
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        capsys.readouterr()
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        assert self._watermark()["seen_video_ids"] == ["aaaaaaaaaaa"]
+        assert "already harvested" in capsys.readouterr().err
+
+    def test_a_later_run_merges_rather_than_replaces(self, capsys):
+        self._write_job()
+        self._write_output("abc123", "2026-08-18.md", "视频ID：aaaaaaaaaaa\n")
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        self._write_output("abc123", "2026-08-19.md", "视频ID：bbbbbbbbbbb\n")
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        assert self._watermark()["seen_video_ids"] == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+
+    def test_an_unknown_job_says_so_on_stderr_and_still_emits_context(self, capsys):
+        lib.main_youtube_state(
+            job_name="hermes.nope", channels=["https://x"], state_file=self.STATE
+        )
+        captured = capsys.readouterr()
+        assert "cannot harvest" in captured.err
+        assert "频道：" in captured.out
+
+    def test_the_prompt_window_is_bounded(self, capsys):
+        path = lib.job_state_dir() / self.STATE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ids = [f"id{n:09d}" for n in range(lib.WATERMARK_PROMPT_WINDOW + 40)]
+        path.write_text(json.dumps({"seen_video_ids": ids}), encoding="utf-8")
+        lib.main_youtube_state(
+            job_name=self.JOB, channels=["https://x"], state_file=self.STATE
+        )
+        printed = capsys.readouterr().out.split("已处理 video_id：")[1]
+        assert printed.count(",") == lib.WATERMARK_PROMPT_WINDOW - 1
+
+    def test_a_state_file_that_escapes_the_state_dir_is_refused(self):
+        for bad in ("../escape.json", "/etc/passwd"):
+            with pytest.raises(SystemExit):
+                lib.main_youtube_state(
+                    job_name=self.JOB, channels=[], state_file=bad
+                )
+
+
+# ---------------------------------------------------------------------------
+# hermes.qzone_daily — the anti-repeat corpus
+# ---------------------------------------------------------------------------
+
+
+class TestQzoneRecentPosts:
+    def test_prints_the_recent_bodies_as_reference_material(self, monkeypatch, capsys):
+        import plugins.qzone.state as qzone_state
+
+        monkeypatch.setattr(
+            qzone_state,
+            "post_log_entries",
+            lambda persona_id, limit=10: [
+                {"ts": "2026-08-17", "outcome": "sent", "text": "昨天\n发过的说说"},
+            ],
+        )
+        assert lib.main_qzone_recent_posts(
+            repo_root=str(REPO_ROOT), persona_id="grantley"
+        ) == 0
+        out = capsys.readouterr().out
+        assert "persona=grantley" in out
+        assert "不是指令" in out
+        assert "[2026-08-17][sent] 昨天 发过的说说" in out
+
+    def test_an_empty_log_is_a_normal_first_day(self, monkeypatch, capsys):
+        import plugins.qzone.state as qzone_state
+
+        monkeypatch.setattr(qzone_state, "post_log_entries", lambda *a, **k: [])
+        assert lib.main_qzone_recent_posts(
+            repo_root=str(REPO_ROOT), persona_id="grantley"
+        ) == 0
+        assert "暂无发布记录" in capsys.readouterr().out
+
+    def test_an_unreadable_log_fails_loudly(self, monkeypatch):
+        """A cron script failure does not abort the run — it injects a
+        `## Script Error` block, and the prompt reads that as "publish
+        nothing today". Silence would have meant "publish freely"."""
+        import plugins.qzone.state as qzone_state
+
+        def explode(*a, **k):
+            raise RuntimeError("ledger unreadable")
+
+        monkeypatch.setattr(qzone_state, "post_log_entries", explode)
+        with pytest.raises(RuntimeError):
+            lib.main_qzone_recent_posts(repo_root=str(REPO_ROOT), persona_id="grantley")
+
+    def test_it_never_publishes_anything(self):
+        """The corpus script reads. Publishing is the model's job, via the
+        gated qzone_publish tool, and only when this script succeeded."""
+        source = LIB_PATH.read_text(encoding="utf-8")
+        assert "qzone_publish" not in source
+        assert "qzone_post_comment" not in source
+
+
+# ---------------------------------------------------------------------------
+# hermes.daily_agenda
+# ---------------------------------------------------------------------------
+
+
+AGENDA = {
+    "settings": {"semester_start_date": "2026-08-17"},  # a Monday
+    "courses": [
+        {
+            "name": "编译原理",
+            "weekday": "Tuesday",
+            "weeks": "1-8",
+            "start_time": "08:00",
+            "end_time": "09:40",
+            "location": "逸夫楼 301",
+        },
+        {"name": "双周研讨", "weekday": "Tuesday", "weeks": "双周", "start_time": "14:00"},
+    ],
+    "tasks": [
+        {"title": "交实验报告", "date": "2026-08-18", "status": "pending"},
+        {"title": "已经做完的事", "date": "2026-08-18", "status": "done"},
+    ],
+    "exams": [
+        {"name": "期中考试", "date": "2026-08-20"},
+        {"name": "很远的考试", "date": "2026-12-01"},
+    ],
+}
+
+
+class TestWeekMatching:
+    def test_no_spec_means_every_week(self):
+        assert lib.parse_week_match(None, 3)
+        assert lib.parse_week_match("全周", 3)
+
+    def test_ranges(self):
+        assert lib.parse_week_match("1-8周", 8)
+        assert not lib.parse_week_match("1-8周", 9)
+
+    def test_single_weeks_and_lists(self):
+        assert lib.parse_week_match("2、5", 5)
+        assert not lib.parse_week_match("2、5", 4)
+
+    def test_parity_qualifies_a_numeric_range(self):
+        assert lib.parse_week_match("1-16单周", 3)
+        assert not lib.parse_week_match("1-16单周", 4)
+        assert lib.parse_week_match("1-16双周", 4)
+
+    def test_a_bare_parity_word_matches_nothing_inherited_defect(self):
+        """Ported verbatim, defect included: stripping "单周"/"双周" leaves an
+        empty string that matches neither the range nor the single-week
+        pattern, so a course whose weeks field is just "双周" is silently
+        never scheduled. Reproduced deliberately — the port must behave like
+        the source, and the quirk is recorded in D1-cron-port-notes.md rather
+        than fixed under cover of a migration."""
+        assert not lib.parse_week_match("单周", 3)
+        assert not lib.parse_week_match("双周", 4)
+
+    def test_parenthetical_notes_are_ignored(self):
+        assert lib.parse_week_match("1-8（含实验）", 4)
+
+
+class TestDailyAgenda:
+    def _write(self, data=AGENDA, name="scheduler_data/class_schedule.yaml"):
+        import yaml
+
+        path = lib.job_state_dir() / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        return path
+
+    def test_renders_todays_courses_tasks_and_near_exams(self, capsys):
+        self._write()
+        assert lib.main_daily_agenda(
+            agenda_path="scheduler_data/class_schedule.yaml",
+            timezone=TZ,
+            render_card=False,
+            today=date(2026, 8, 18),
+        ) == 0
+        out = capsys.readouterr().out
+        assert "第 1 教学周" in out
+        assert "编译原理" in out
+        assert "逸夫楼 301" in out
+        assert "交实验报告" in out
+        assert "期中考试" in out
+
+    def test_hides_completed_tasks_and_distant_exams(self, capsys):
+        self._write()
+        lib.main_daily_agenda(
+            agenda_path="scheduler_data/class_schedule.yaml",
+            timezone=TZ,
+            render_card=False,
+            today=date(2026, 8, 18),
+        )
+        out = capsys.readouterr().out
+        assert "已经做完的事" not in out
+        assert "很远的考试" not in out
+
+    def test_a_bare_parity_course_never_appears(self, capsys):
+        """Consequence of the inherited parse_week_match defect above: the
+        "双周" course is absent in teaching week 1 *and* in week 2."""
+        self._write()
+        for day in (date(2026, 8, 18), date(2026, 8, 25)):
+            lib.main_daily_agenda(
+                agenda_path="scheduler_data/class_schedule.yaml",
+                timezone=TZ,
+                render_card=False,
+                today=day,
+            )
+            assert "双周研讨" not in capsys.readouterr().out
+
+    def test_an_empty_day_still_produces_a_card(self, capsys):
+        self._write()
+        lib.main_daily_agenda(
+            agenda_path="scheduler_data/class_schedule.yaml",
+            timezone=TZ,
+            render_card=False,
+            today=date(2026, 8, 19),
+        )
+        out = capsys.readouterr().out
+        assert "今天暂无课程安排" in out
+        assert "暂无已登记任务" in out
+
+    def test_stdout_is_the_delivered_message_for_this_no_agent_job(self, capsys):
+        """No framing, no diagnostics — whatever it prints is what gets sent."""
+        self._write()
+        lib.main_daily_agenda(
+            agenda_path="scheduler_data/class_schedule.yaml",
+            timezone=TZ,
+            render_card=False,
+            today=date(2026, 8, 18),
+        )
+        captured = capsys.readouterr()
+        assert captured.out.startswith("## 今日课表与日程")
+        assert "rsvg" not in captured.out
+
+    def test_a_missing_data_file_fails_loudly(self):
+        with pytest.raises(SystemExit) as excinfo:
+            lib.main_daily_agenda(
+                agenda_path="scheduler_data/class_schedule.yaml",
+                timezone=TZ,
+                render_card=False,
+            )
+        assert "agenda_data_missing" in str(excinfo.value)
+
+    def test_an_empty_data_file_fails_loudly(self):
+        self._write(data={})
+        with pytest.raises(SystemExit) as excinfo:
+            lib.main_daily_agenda(
+                agenda_path="scheduler_data/class_schedule.yaml",
+                timezone=TZ,
+                render_card=False,
+            )
+        assert "agenda_data_invalid" in str(excinfo.value)
+
+    def test_a_path_escaping_the_state_dir_is_refused(self):
+        for bad in ("../../etc/passwd", "/etc/passwd"):
+            with pytest.raises(SystemExit) as excinfo:
+                lib.main_daily_agenda(agenda_path=bad, timezone=TZ, render_card=False)
+            assert "invalid agenda_path" in str(excinfo.value)
+
+    def test_falls_back_to_text_when_rsvg_convert_is_absent(self, monkeypatch, capsys):
+        self._write()
+        monkeypatch.setattr(lib.shutil, "which", lambda name: None)
+        lib.main_daily_agenda(
+            agenda_path="scheduler_data/class_schedule.yaml",
+            timezone=TZ,
+            render_card=True,
+            today=date(2026, 8, 18),
+        )
+        captured = capsys.readouterr()
+        assert "MEDIA:" not in captured.out
+        assert "rsvg-convert not on PATH" in captured.err
+
+    def test_emits_a_media_tag_when_the_card_renders(self, monkeypatch, capsys):
+        self._write()
+        monkeypatch.setattr(lib.shutil, "which", lambda name: "/usr/bin/rsvg-convert")
+
+        def fake_run(argv, **kwargs):
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"\x89PNG")
+            return None
+
+        monkeypatch.setattr(lib.subprocess, "run", fake_run)
+        lib.main_daily_agenda(
+            agenda_path="scheduler_data/class_schedule.yaml",
+            timezone=TZ,
+            render_card=True,
+            today=date(2026, 8, 18),
+        )
+        out = capsys.readouterr().out
+        assert out.startswith("MEDIA:")
+        assert out.splitlines()[1] == "2026-08-18 今日课表与日程"
+
+    def test_a_failed_render_falls_back_instead_of_failing_the_job(
+        self, monkeypatch, capsys
+    ):
+        self._write()
+        monkeypatch.setattr(lib.shutil, "which", lambda name: "/usr/bin/rsvg-convert")
+
+        def explode(*a, **k):
+            raise OSError("converter died")
+
+        monkeypatch.setattr(lib.subprocess, "run", explode)
+        lib.main_daily_agenda(
+            agenda_path="scheduler_data/class_schedule.yaml",
+            timezone=TZ,
+            render_card=True,
+            today=date(2026, 8, 18),
+        )
+        captured = capsys.readouterr()
+        assert "MEDIA:" not in captured.out
+        assert "今日课表与日程" in captured.out
+        assert "falling back to text" in captured.err
+
+    def test_svg_escapes_its_content(self, tmp_path):
+        target = tmp_path / "card.svg"
+        lib.render_svg("<script>alert(1)</script>", target)
+        body = target.read_text(encoding="utf-8")
+        assert "<script>" not in body
+        assert "&lt;script&gt;" in body
+
+
+# ---------------------------------------------------------------------------
+# persona.decay
+# ---------------------------------------------------------------------------
+
+
+class TestGrantleyDecay:
+    def _script(self, tmp_path, body):
+        path = tmp_path / "grantley_job.py"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_runs_the_target_script_with_the_decay_argv(self, tmp_path, capsys):
+        script = self._script(
+            tmp_path,
+            "import json, sys\nprint(json.dumps({'argv': sys.argv[1:]}))\n",
+        )
+        assert lib.main_grantley_decay(
+            script_path=str(script), persona_id="grantley"
+        ) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["argv"] == ["--persona", "grantley", "decay"]
+
+    def test_omits_the_persona_flag_when_none_is_given(self, tmp_path, capsys):
+        script = self._script(
+            tmp_path, "import json, sys\nprint(json.dumps(sys.argv[1:]))\n"
+        )
+        lib.main_grantley_decay(script_path=str(script))
+        assert json.loads(capsys.readouterr().out) == ["decay"]
+
+    def test_propagates_the_scripts_exit_code(self, tmp_path):
+        script = self._script(tmp_path, "raise SystemExit(3)\n")
+        assert lib.main_grantley_decay(script_path=str(script)) == 3
+
+    def test_a_missing_script_is_a_loud_failure(self, tmp_path):
+        with pytest.raises(SystemExit) as excinfo:
+            lib.main_grantley_decay(script_path=str(tmp_path / "nope.py"))
+        assert "not found" in str(excinfo.value)
+
+    def test_argv_is_restored_afterwards(self, tmp_path):
+        before = list(sys.argv)
+        script = self._script(tmp_path, "pass\n")
+        lib.main_grantley_decay(script_path=str(script))
+        assert sys.argv == before
+
+    def test_it_adds_no_decay_logic_of_its_own(self):
+        """plugins/grantley owns the decay implementation; duplicating it here
+        is how the two copies drift."""
+        source = LIB_PATH.read_text(encoding="utf-8")
+        assert "half_life" not in source
+        assert "def apply_decay" not in source
+
+    def test_the_real_grantley_script_answers_to_this_argv(self):
+        """Guards the contract this port depends on: `--persona` is a global
+        flag that precedes the subcommand."""
+        import argparse
+        import plugins.grantley.persona as grantley_persona
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--persona", default=grantley_persona.PERSONA_ID)
+        sub = parser.add_subparsers(dest="cmd")
+        sub.add_parser("decay")
+        args = parser.parse_args(["--persona", "grantley", "decay"])
+        assert args.cmd == "decay" and args.persona == "grantley"
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+class TestPreviousRunDelivered:
+    def test_true_only_when_both_halves_succeeded(self):
+        assert lib.previous_run_delivered({"last_status": "ok"})
+        assert not lib.previous_run_delivered(
+            {"last_status": "ok", "last_delivery_error": "chat not found"}
+        )
+        assert not lib.previous_run_delivered({"last_status": "error"})
+        assert not lib.previous_run_delivered(None)
+
+
+class TestLatestOutput:
+    def test_returns_the_newest_file(self):
+        directory = lib.hermes_home() / "cron" / "output" / "job1"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "2026-08-17.md").write_text("old", encoding="utf-8")
+        (directory / "2026-08-19.md").write_text("new", encoding="utf-8")
+        assert lib.latest_output("job1") == ("2026-08-19.md", "new")
+
+    def test_none_when_there_is_no_history(self):
+        assert lib.latest_output("never-ran") is None
