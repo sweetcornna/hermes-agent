@@ -457,3 +457,47 @@ _qq_monitor_query(instance='default', group=183287894) -> 39 行
 原 4.1/4.2 写作"启用四个任务 → `hermes cron trigger`"，两处都错：
 安装建出来的是 **paused**，且 CLI **没有 `trigger` 子命令**。
 正确顺序是 **install → resume → run**，命令是 `hermes cron run`。
+
+## 阶段 4 四个任务逐个实测（2026-08-19 16:1x–16:29 JST）
+
+方式：`resume → cron run → 记录 → pause`，**逐个验完再统一放开**，
+避免"已启用但从未验过"的任务在夜里无人值守时触发
+（`youtube_daily` 23:06、`diary_summary` 23:41 CST 今晚就到点）。
+
+| 任务 | topic | 结果 | 实际投出的内容 |
+|---|---|---|---|
+| `hermes.analysis_digest` | 680 | ✅ | `过去 24 小时没有发现新的分析、研究或策略记录。` |
+| `hermes.diary_summary` | 11 | ✅ | `今天没有收到足够的日记内容，先不生成朋友圈总结。` |
+| `hermes.competition_daily` | 13 | ✅ | 完整竞赛情报简报（CCPC / ICPC 等，**带 web 检索的实质内容**，并自带「具体日期需核实」的标注） |
+| `hermes.youtube_daily` | 680 | ❌ | `Model returned no content after all retries` |
+
+前两个任务的输出都是各自 prompt 里写死的"无内容"话术，与其物料脚本的空结果分支一致
+——**不是模型敷衍，是链路正确地走到了该走的分支**。
+`competition_daily` 则证明了同一套 `enabled_toolsets: ['web']` 能跑出真实检索内容。
+
+### `youtube_daily` 单独失败
+
+`Agent completed but produced empty response (model error, timeout, or misconfiguration)`。
+prompt 与物料脚本输出都正常（频道清单 + `已处理 video_id：无`）。
+由于 provider、web 工具集、投递路径、Telegram 适配器都被另外三个任务证明可用，
+问题被收敛到这一个任务自身。已派任务诊断。
+
+**诊断约束**：不得再用 `hermes cron run` 触发它 —— cron 失败路径会把告警投进用户真实群。
+
+### 本阶段累计投进用户群 topic 680/11/13 的消息
+
+| 时刻 (JST) | topic | 内容 |
+|---|---|---|
+| 16:06 | 680 | ⚠️ 失败告警（UTF-8 解码，E2） |
+| 16:08 | 680 | ⚠️ 失败告警（同上） |
+| 16:17 | 680 | `过去 24 小时没有发现新的分析、研究或策略记录。` |
+| 16:27 | 11 | `今天没有收到足够的日记内容，先不生成朋友圈总结。` |
+| 16:27 | 680 | ⚠️ 失败告警（youtube_daily 空响应） |
+| 16:28 | 13 | 竞赛情报简报 |
+
+**6 条，其中 3 条是失败告警。**如实记录：这是在真人会读到的群里做的实测，
+不是沙箱。手册原先没有预告"失败也会投递告警"这件事。
+
+### 当前状态
+
+四个任务**全部 paused**。三个已验证可用，等 `youtube_daily` 结论后统一放开。
