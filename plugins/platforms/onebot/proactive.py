@@ -92,6 +92,7 @@ from .adapter import (
     recent_group_messages,
     speech_key,
 )
+from .adapter import group_speech_muted as _adapter_group_speech_muted
 
 logger = logging.getLogger(__name__)
 
@@ -394,15 +395,14 @@ def group_speech_muted(adapter: Any) -> bool:
     config value (so flipping the mute hot-applies) and the router flag the
     *reactive* path actually obeys (so the two lanes can never end up in a
     state where replies are muted but the bot is still talking).
+
+    The rule itself moved to :func:`plugins.platforms.onebot.adapter.
+    group_speech_muted` when D44 put the same gate on the outbound path.  It
+    is re-exported here unchanged, because three lanes deciding "am I muted"
+    from two implementations is the disagreement this function exists to
+    prevent.
     """
-    router_flag = bool(getattr(getattr(adapter, "router", None), "group_replies_enabled", False))
-    extra = live_extra(adapter)
-    live_flag = (
-        _as_bool(extra.get("group_replies_enabled"), router_flag)
-        if "group_replies_enabled" in extra
-        else router_flag
-    )
-    return not (router_flag and live_flag)
+    return _adapter_group_speech_muted(adapter)
 
 
 def speech_window(adapter: Any) -> Tuple[float, int]:

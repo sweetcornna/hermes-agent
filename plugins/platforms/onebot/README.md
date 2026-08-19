@@ -69,6 +69,30 @@ ONEBOT_GROUP_REPLIES_ENABLED   default: false
 check, before the keyword check, before rate limiting. Direct messages are
 unaffected.
 
+It is a **two-way** gate (D44). Inbound, nothing is answered. Outbound, nothing
+is *sent* to a group either: `send()`, every media send, and the out-of-process
+`standalone_sender_fn` all refuse a group target while the switch is off, so a
+cron job delivering to `onebot:g<id>` or a model calling `send_message` cannot
+post into a group the operator believes is muted. Before D44 only the inbound
+half existed, which is how the source system's "emergency mute" quietly became
+a switch that stopped replies while scheduled output kept going.
+
+A refused send comes back as `SendResult(success=False, …)` carrying
+`raw_response["onebot_group_muted"] = True` — never a silent pretend-success and
+never an exception. Its `error_kind` is deliberately **not** `forbidden` or
+`not_found`: those two are what `gateway.dead_targets` treats as permanent, and
+a mute is a switch someone will flip back. Use
+`plugins.platforms.onebot.adapter.is_muted_send_result(result)` to tell "muted"
+from "the send failed" — it accepts both the `SendResult` and the dict the
+standalone sender returns.
+
+**What the switch does not cover:** direct messages, by design. Two of the
+migrated QQ digests (`sanhu`, `jlu`) deliver to `onebot:2104743984`, which is a
+*DM*, so this flag is not a kill switch for them. `qunjlu` is suppressed
+structurally instead (`deliver=local` + no send tools, D45) — that suppression
+stays, on top of this one, because it does not depend on any runtime config
+being read correctly.
+
 The full group pipeline (whitelist → mention/keyword → cooldown → token buckets
 → hard speech cap) is implemented and tested; this switch is the only thing
 standing between it and production traffic. The default is `false` because the

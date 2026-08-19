@@ -217,6 +217,103 @@ def _gh_live_extra(adapter: Any) -> Dict[str, Any]:
     return fallback if isinstance(fallback, dict) else {}
 
 
+# ---------------------------------------------------------------------------
+# The emergency mute (D44)
+# ---------------------------------------------------------------------------
+#
+# ``group_replies_enabled`` reads, to documentation and to operator intuition,
+# as the master switch for group speech — in the source system it silenced ALL
+# group output, monitor digests included, which is precisely why corlinman's
+# ``qunjlu`` digest never reached a group in seven days of production.  In this
+# port it was only ever consumed on the INBOUND side (the router's reply gate)
+# and by the proactive loop, so anything that reached ``send()`` from the other
+# direction — a cron job delivering to ``onebot:g<id>``, a model calling
+# ``send_message``, a media upload — went out while the operator believed the
+# bot was muted.  That is the failure that matters: the switch is pressed in an
+# incident, and the incident keeps talking.  See 00-PLAN.md §19.
+#
+# The gate below closes it on the outbound side.  It is deliberately NOT a
+# replacement for D2's structural suppression of the QQ monitors (``deliver=
+# "local"`` + an empty toolset): structural suppression does not depend on any
+# runtime config being read correctly, which makes it the stronger guarantee.
+# The two stack (D45).
+
+#: Marker key set on ``SendResult.raw_response`` (and on the standalone-send
+#: result dict) when a send was refused by the mute.  A caller that needs to
+#: tell "muted" from "the send failed" branches on this, not on the message.
+MUTED_MARKER = "onebot_group_muted"
+
+#: Stable machine-readable reason string carried alongside the marker.
+MUTED_REASON = "group_replies_enabled=false"
+
+
+def group_speech_muted(adapter: Any) -> bool:
+    """``True`` when the emergency mute is silencing group speech.
+
+    Two sources have to agree and either one being off means muted: the live
+    config value (so flipping the mute hot-applies without a restart) and the
+    router flag the *reactive* path actually obeys (so the two lanes can never
+    end up in a state where replies are muted but the bot still talks).  This
+    is B4's deliberately stricter form, kept as-is and now shared with the
+    outbound path so all three lanes read one function.
+    """
+    router_flag = bool(
+        getattr(getattr(adapter, "router", None), "group_replies_enabled", False)
+    )
+    extra = _gh_live_extra(adapter)
+    live_flag = (
+        _as_bool(extra.get("group_replies_enabled"), router_flag)
+        if "group_replies_enabled" in extra
+        else router_flag
+    )
+    return not (router_flag and live_flag)
+
+
+def muted_send_result(target: Any) -> SendResult:
+    """The ``SendResult`` a muted group send returns.  Logs once, here.
+
+    Why ``error_kind`` is neither ``forbidden`` nor ``not_found``, which are
+    the two that *describe* this best: both are in
+    ``gateway.dead_targets._DEAD_ERROR_KINDS``, so returning either would let
+    the delivery layer record the group as permanently unreachable.  A mute is
+    an operator toggle; marking the target dead would outlive un-muting and
+    turn a reversible switch into a sticky one.  ``unknown`` is the honest
+    remaining value — this is a local policy refusal, not a platform error,
+    and the shared vocabulary has no word for that.  ``retryable`` is False
+    and the message text is deliberately free of every substring
+    ``classify_send_error`` matches on, so no retry ladder and no dead-target
+    classifier can reinterpret it.
+    """
+    logger.warning(
+        "OneBot: group speech is muted (%s) — refusing to post to group %s",
+        MUTED_REASON,
+        target,
+    )
+    return SendResult(
+        success=False,
+        error=(
+            "OneBot: group speech is muted "
+            f"({MUTED_REASON}); nothing was sent to group {target}"
+        ),
+        error_kind="unknown",
+        retryable=False,
+        raw_response={MUTED_MARKER: True, "reason": MUTED_REASON, "group_id": target},
+    )
+
+
+def is_muted_send_result(result: Any) -> bool:
+    """Whether *result* is a refusal by the mute rather than a send failure.
+
+    Accepts both a :class:`SendResult` and the plain dict shape
+    :func:`_standalone_send` returns, so out-of-process callers can ask the
+    same question.
+    """
+    if isinstance(result, dict):
+        return bool(result.get(MUTED_MARKER))
+    raw = getattr(result, "raw_response", None)
+    return bool(isinstance(raw, dict) and raw.get(MUTED_MARKER))
+
+
 def _reset_module_state() -> None:
     """Test hook — clear every process-wide buffer, this module's and the
     proactive loop's daily budget, so state cannot leak between tests."""
@@ -1307,6 +1404,12 @@ class OneBotAdapter(BasePlatformAdapter):
         delivered message as failed would make the gateway retry and
         double-post, and would poison dead-target detection.
         """
+        if is_group and group_speech_muted(self):
+            # Defence in depth.  Every caller above already checks, but this is
+            # the single choke point every text/inline-media send passes
+            # through, so a path added later cannot quietly route around the
+            # mute.
+            return False, None, muted_send_result(target)
         action: protocol.Action = (
             protocol.SendGroupMsg(group_id=target, message=segments)
             if is_group
@@ -1396,6 +1499,12 @@ class OneBotAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False, error=str(exc), error_kind="not_found"
             )
+        # The emergency mute, checked BEFORE the connection state: "muted" is
+        # a decision, "not connected" is a transient the caller would retry,
+        # and a muted send must not be retried into existence.  DMs are never
+        # affected — the mute is about speaking in rooms full of people.
+        if is_group and group_speech_muted(self):
+            return muted_send_result(target)
         if self._client is None:
             return SendResult(
                 success=False,
@@ -1534,6 +1643,11 @@ class OneBotAdapter(BasePlatformAdapter):
             is_group, target = parse_chat_id(chat_id)
         except ValueError as exc:
             return SendResult(success=False, error=str(exc), error_kind="not_found")
+        # A picture posted into a muted group is still the bot talking in that
+        # group.  Gated here rather than only in ``send()`` because the file
+        # and inline-media paths do not go through it.
+        if is_group and group_speech_muted(self):
+            return muted_send_result(target)
         safe_path = validate_media_delivery_path(file_path)
         if not safe_path:
             return SendResult(
@@ -1636,6 +1750,8 @@ class OneBotAdapter(BasePlatformAdapter):
             is_group, target = parse_chat_id(chat_id)
         except ValueError as exc:
             return SendResult(success=False, error=str(exc), error_kind="not_found")
+        if is_group and group_speech_muted(self):
+            return muted_send_result(target)
         segments = self._lead_segments(
             is_group, (metadata or {}).get("onebot_at_user_id"), reply_to
         )
@@ -1994,6 +2110,31 @@ async def _standalone_send(
         is_group, target = parse_chat_id(chat_id)
     except ValueError as exc:
         return {"error": f"OneBot standalone send: {exc}"}
+    # The same mute, on the path a cron job takes when it runs OUTSIDE the
+    # gateway process (``tools/send_message_tool.py`` falls back here when the
+    # in-process adapter weakref is None).  Gating only the live adapter would
+    # leave exactly the hole D44 was raised about, just one process over.
+    # There is no adapter object here, so the flag is read straight off the
+    # platform config with the same default as ``OneBotAdapter.__init__``.
+    if is_group and not _as_bool(
+        extra.get("group_replies_enabled", os.getenv("ONEBOT_GROUP_REPLIES_ENABLED")),
+        False,
+    ):
+        logger.warning(
+            "OneBot: group speech is muted (%s) — standalone delivery to group "
+            "%s refused",
+            MUTED_REASON,
+            target,
+        )
+        return {
+            "error": (
+                "OneBot: group speech is muted "
+                f"({MUTED_REASON}); nothing was sent to group {target}"
+            ),
+            MUTED_MARKER: True,
+            "reason": MUTED_REASON,
+            "group_id": target,
+        }
 
     uri = ws_url
     headers: List[Tuple[str, str]] = []

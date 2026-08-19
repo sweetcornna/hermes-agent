@@ -513,8 +513,10 @@ class TestSend:
     async def test_group_reply_mentions_only_the_first_chunk(self):
         """N pings for one reply is what QQ's anti-spam reacts to."""
         client = FakeClient()
-        # forward folding off so the long body actually chunks
-        ad = make_adapter({"forward_threshold": 0}, client=client)
+        # forward folding off so the long body actually chunks; group replies
+        # on because ``send()`` now obeys the mute (D44).
+        ad = make_adapter({"forward_threshold": 0, "group_replies_enabled": True},
+                          client=client)
         await ad.send("g183287894", "y" * 9000,
                       metadata={"onebot_at_user_id": "555"})
         sends = [a for a in client.actions if isinstance(a, P.SendGroupMsg)]
@@ -537,7 +539,8 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_mention_can_be_disabled(self):
         client = FakeClient()
-        ad = make_adapter({"reply_with_mention": False}, client=client)
+        ad = make_adapter({"reply_with_mention": False,
+                           "group_replies_enabled": True}, client=client)
         await ad.send("g1", "hi", metadata={"onebot_at_user_id": "555"})
         assert not any(isinstance(s, P.AtSegment)
                        for s in client.actions[0].message)
@@ -561,7 +564,7 @@ class TestSend:
     async def test_group_forward_card_is_preceded_by_a_lead_line(self):
         """A card cannot carry an @mention, so the ping goes out first."""
         client = FakeClient()
-        ad = make_adapter(client=client)
+        ad = make_adapter({"group_replies_enabled": True}, client=client)
         await ad.send("g183287894", "z" * 1500,
                       metadata={"onebot_at_user_id": "555"})
         assert isinstance(client.actions[0], P.SendGroupMsg)
@@ -612,7 +615,7 @@ class TestSendFailures:
     async def test_rejected_send_reports_a_classified_error_kind(self):
         client = FakeClient(responses=[
             {"status": "failed", "retcode": 1403, "message": "no permission"}])
-        ad = make_adapter(client=client)
+        ad = make_adapter({"group_replies_enabled": True}, client=client)
         res = await ad.send("g1", "hi")
         assert res.success is False
         assert res.error_kind == "forbidden"
@@ -623,7 +626,7 @@ class TestSendFailures:
     async def test_dead_group_is_reported_as_not_found(self):
         client = FakeClient(responses=[
             {"status": "failed", "retcode": 1200, "message": "群不存在"}])
-        ad = make_adapter(client=client)
+        ad = make_adapter({"group_replies_enabled": True}, client=client)
         res = await ad.send("g404", "hi")
         assert res.success is False and res.error_kind == "not_found"
 
@@ -700,7 +703,7 @@ class TestOutboundMedia:
         p = tmp_path / "report.pdf"
         p.write_bytes(b"%PDF-1.4" + b"0" * 32)
         client = FakeClient()
-        ad = make_adapter(client=client)
+        ad = make_adapter({"group_replies_enabled": True}, client=client)
         await ad.send_document("g42", str(p))
         action = client.actions[-1]
         assert isinstance(action, P.UploadGroupFile)
@@ -862,7 +865,7 @@ class TestInboundDispatch:
     @pytest.mark.asyncio
     async def test_outbound_group_messages_are_recorded_as_self(self):
         client = FakeClient()
-        ad = make_adapter(client=client)
+        ad = make_adapter({"group_replies_enabled": True}, client=client)
         await ad.send("g183287894", "我的回复")
         buf = A.recent_group_messages("default", 183287894)
         assert buf and buf[-1][3] is True and buf[-1][2] == "我的回复"
@@ -1036,7 +1039,8 @@ class TestStandaloneSend:
             port = server.sockets[0].getsockname()[1]
             res = await A._standalone_send(
                 PlatformConfig(enabled=True,
-                               extra={"ws_url": f"ws://127.0.0.1:{port}"}),
+                               extra={"ws_url": f"ws://127.0.0.1:{port}",
+                                      "group_replies_enabled": True}),
                 "g183287894", "y" * 9000)
         finally:
             server.close()
