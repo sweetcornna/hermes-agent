@@ -1,0 +1,132 @@
+# The manifest name MUST stay ``onebot-platform`` and the directory MUST stay
+# ``onebot/``: hermes_cli/plugins.py::_platform_name_from_manifest derives the
+# gateway platform name WITHOUT importing the adapter, by stripping a trailing
+# ``-platform`` from this name and falling back to the directory basename.
+# Both spellings must resolve to ``onebot`` — a mismatch makes lazy loading
+# fail silently, with no error anywhere.
+name: onebot-platform
+label: QQ (OneBot v11 / NapCat)
+kind: platform
+version: 1.0.0
+description: >
+  QQ gateway adapter speaking the OneBot v11 protocol. Dials OUT to a
+  forward WebSocket exposed by a local NapCat / Lagrange / go-cqhttp
+  backend (default ws://127.0.0.1:3001) and relays messages between QQ
+  groups / direct messages and the Hermes agent. Binds no port, and never
+  writes the backend's own configuration — another service may own it.
+
+  NOT the same platform as the built-in ``qqbot`` adapter, which speaks
+  Tencent's official QQ Bot API v2 (api.sgroup.qq.com, appid + secret).
+  This one drives an ordinary QQ account through a community bridge.
+
+  Group replies are OFF by default: set ONEBOT_GROUP_REPLIES_ENABLED=true
+  to switch the (fully implemented) group pipeline on. Only ``websockets``
+  is required, and that is already a core Hermes dependency.
+author: Hermes Agent contributors
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: ONEBOT_WS_URL
+    description: "OneBot v11 forward WebSocket URL of the backend (e.g. ws://127.0.0.1:3001)"
+    prompt: "OneBot forward WebSocket URL"
+    password: false
+optional_env:
+  - name: ONEBOT_ACCESS_TOKEN
+    description: "OneBot access token. NOT the NapCat WebUI token — they are two different secrets."
+    prompt: "OneBot access token (blank if none)"
+    password: true
+  - name: ONEBOT_SELF_IDS
+    description: "Comma-separated bot QQ numbers, used as @mention targets only until a live self_id is observed"
+    prompt: "Bot QQ number(s) (comma-separated, optional)"
+    password: false
+  - name: ONEBOT_ALLOWED_USERS
+    description: "Comma-separated QQ user ids allowed to talk to the bot (allowlist)"
+    prompt: "Allowed QQ user ids (comma-separated)"
+    password: false
+  - name: ONEBOT_ALLOW_ALL_USERS
+    description: "Allow any QQ user to talk to the bot (dev only — disables the allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ONEBOT_HOME_CHANNEL
+    description: "Default target for cron / notification delivery: 'g<group_id>' for a group, or a bare QQ number for a DM"
+    prompt: "Home channel (g<group_id> or <qq>)"
+    password: false
+  - name: ONEBOT_HOME_CHANNEL_NAME
+    description: "Human label for the home channel (defaults to the id)"
+    prompt: "Home channel display name (or empty)"
+    password: false
+  - name: ONEBOT_GROUP_REPLIES_ENABLED
+    description: >-
+      Master switch for ALL group activity (default: false). While false every
+      group message is dropped before the mention/keyword checks and only direct
+      messages are answered. Set to true to enable the group pipeline.
+    prompt: "Enable group replies? (true/false, default false)"
+    password: false
+  - name: ONEBOT_GROUP_WHITELIST
+    description: >-
+      Comma-separated group ids the bot may answer in. UNSET means no whitelist
+      (any group passes); set-but-empty means no group is ever answered. An
+      @mention does not bypass it.
+    prompt: "Allowed group ids (comma-separated)"
+    password: false
+  - name: ONEBOT_GROUP_KEYWORDS
+    description: 'Per-group keyword triggers as JSON: {"<group_id>": ["keyword", ...]}. Case-insensitive substring match.'
+    prompt: "Group keyword map (JSON)"
+    password: false
+  - name: ONEBOT_GROUP_REPLY_POLICY
+    description: "mention_or_keyword (default: no keyword list means mention-only) or all (legacy: no keyword list means reply to everything)"
+    prompt: "Group reply policy"
+    password: false
+  - name: ONEBOT_GROUP_REPLY_COOLDOWN_SECS
+    description: "Minimum seconds between NON-mention replies in one group (0 disables). An @mention always answers and resets the clock."
+    prompt: "Per-group reply cooldown (seconds)"
+    password: false
+  - name: ONEBOT_GROUP_RATE_LIMIT_WINDOW_MINUTES
+    description: "Hard speech cap window, in minutes (paired with ONEBOT_GROUP_RATE_LIMIT_MAX_MESSAGES). @mentions do NOT bypass this cap."
+    prompt: "Group speech cap window (minutes)"
+    password: false
+  - name: ONEBOT_GROUP_RATE_LIMIT_MAX_MESSAGES
+    description: "Maximum messages the bot may send into one group per cap window (0 disables the cap)"
+    prompt: "Group speech cap (messages per window)"
+    password: false
+  - name: ONEBOT_RATE_LIMIT_GROUP_PER_MIN
+    description: "Optional per-group inbound token bucket, messages per minute (0/unset disables)"
+    prompt: "Per-group inbound rate limit (per minute)"
+    password: false
+  - name: ONEBOT_RATE_LIMIT_SENDER_PER_MIN
+    description: "Optional per-sender inbound token bucket, messages per minute (0/unset disables)"
+    prompt: "Per-sender inbound rate limit (per minute)"
+    password: false
+  - name: ONEBOT_REPLY_WITH_MENTION
+    description: "Prefix group replies with @sender (default: true). Only the first chunk is ever prefixed."
+    prompt: "@mention the sender in group replies? (true/false)"
+    password: false
+  - name: ONEBOT_FORWARD_THRESHOLD
+    description: "Fold a reply bubble longer than this many characters into a merged-forward card (default 1000; 0 disables)"
+    prompt: "Merged-forward fold threshold (chars)"
+    password: false
+  - name: ONEBOT_WAIT_FOR_SEND_ACK
+    description: "Wait for the backend's echo-correlated send response so failures are classified and message ids are reported (default: true)"
+    prompt: "Wait for send acknowledgement? (true/false)"
+    password: false
+  - name: ONEBOT_TOKEN_IN_QUERY
+    description: "Also pass the access token as ?access_token= alongside the Authorization header (default: true). Set false for a backend that rejects a token in both places."
+    prompt: "Send the token in the query string too? (true/false)"
+    password: false
+  - name: ONEBOT_MAX_CONCURRENCY
+    description: "Maximum concurrent agent turns for this platform (default 2 — tuned for a 2 vCPU / 2 GB host)"
+    prompt: "Max concurrent turns"
+    password: false
+  - name: ONEBOT_TYPING_INDICATOR
+    description: "Send NapCat's '对方正在输入…' indicator in direct messages (default: true). QQ groups never render one."
+    prompt: "Enable typing indicator? (true/false)"
+    password: false
+  - name: ONEBOT_HEALTH_PROBE_S
+    description: "Seconds between health checks (default 30)"
+    prompt: "Health probe interval (seconds)"
+    password: false
+  - name: ONEBOT_HEALTH_LOST_S
+    description: "Seconds without any frame before the link is reported silent (default 120)"
+    prompt: "Link-lost threshold (seconds)"
+    password: false
