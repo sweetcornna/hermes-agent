@@ -197,10 +197,16 @@ platforms:
         "149881991":  ["格兰"]
         "667528618":  ["格兰"]
 
-      # 5 messages per group per 3 minutes, shared by replies and by any
-      # future proactive speaking. @mentions do NOT bypass it.
+      # 5 messages per group per 3 minutes, shared by replies AND by
+      # proactive speaking. @mentions do NOT bypass it.
       group_rate_limit_window_minutes: 3
       group_rate_limit_max_messages: 5
+
+      # ---- proactive speaking -------------------------------------------
+      # Off. Production ran with this true and never sent a message (the
+      # master switch above silenced it), so turning it on here would be new
+      # behaviour, not a restoration. See the section below.
+      proactive_enabled: false
 
       # ---- outbound -----------------------------------------------------
       reply_with_mention: true
@@ -264,15 +270,85 @@ The order is the contract; the tests pin it.
 * **Inbound overflow** drops the *oldest* queued event, never the newest — the
   message a user just sent is the one that matters.
 
+---
+
+## Proactive speaking (`proactive.py`) — OFF by default
+
+> **Enabling this is a new outward behaviour, not the restoration of an old
+> one.** The implementation it was ported from ran in production with
+> `proactive_enabled = true` and never sent a single message, because
+> `group_replies_enabled = false` silences all group speech including
+> proactive posts. Setting `proactive_enabled: true` here makes the bot start
+> speaking, unprompted, in whichever groups it is pointed at — for the first
+> time. Full context, ported test map and known gaps:
+> `docs/migration-corlinman/B4-proactive-speech-notes.md`.
+
+A resident loop (started on connect, stopped on disconnect) that sleeps a
+random gap, then posts one persona message into one eligible group — or, at
+the model's own choosing, says nothing at all.
+
+Gate ladder, in order; the tests pin it:
+
+1. `proactive_enabled`, re-read from the live config **every beat**;
+2. active hours, in an **explicit** timezone;
+3. health — link up **and** the QQ account not known-offline;
+4. the bot's own uin is known;
+5. **the emergency mute** — `group_replies_enabled` silences proactive too;
+6. `proactive_probability` — a person doesn't post every time they glance;
+7. per group: daily budget, minimum gap, the **shared** speech cap, and
+   whether anyone has spoken since our last post.
+
+```yaml
+platforms:
+  onebot:
+    extra:
+      group_replies_enabled: false     # proactive ALSO requires this true
+      proactive_enabled: false         # ← the switch
+      proactive_groups: []             # empty ⇒ falls back to group_whitelist
+      proactive_min_gap_minutes: 45
+      proactive_max_gap_minutes: 0     # < min ⇒ min × 4 (a window, not a beat)
+      proactive_daily_max: 4           # per group per day
+      proactive_active_start_hour: 9   # [start, end); start > end wraps overnight
+      proactive_active_end_hour: 23
+      proactive_timezone: Asia/Shanghai
+      proactive_probability: 1.0       # 0.0–1.0, clamped
+      proactive_context_messages: 30   # 0 disables the transcript
+      proactive_prompt: ""             # blank ⇒ the ported default
+```
+
+Worth knowing:
+
+* **One speech budget, not two.** A proactive post spends from the same
+  `group_speech_allowed()` window as a reply, so "5 per 3 minutes" stays a
+  promise about the bot's total volume in the room.
+* **`proactive_groups` cannot reach outside `group_whitelist`.** Entries
+  outside it are dropped with a warning; the whitelist is the last barrier
+  between a config typo and a message in a stranger's group.
+* **The model may decline.** Answering `SKIP` (or hermes' `[SILENT]` /
+  `NO_REPLY`) posts nothing. This is deliberate: a bot that always has
+  something to say is the most obvious kind of bot.
+* **The bot will not talk to itself.** If the newest message in the group is
+  its own, the group is skipped until a human speaks.
+* **Hot-apply.** The loop is resident even while disabled, re-checking every
+  60 s, so enabling / disabling / retuning takes effect on the next beat with
+  no channel restart.
+* **No `ONEBOT_PROACTIVE_*` environment form**, on purpose: the switch that
+  decides whether the bot talks to real people lives in one place, and an env
+  var read once at startup could not hot-apply anyway.
+* **Timezone is explicit.** Unset means `Asia/Shanghai`, never the process
+  zone (the production host runs `Asia/Tokyo`, one hour off the intended
+  window). A bad zone name falls back loudly; no usable tz database at all
+  skips the beat rather than guessing.
+
 ## Not implemented here (deliberately)
 
-* **Proactive speaking** (the bot starting a conversation on a timer) and
-  **group digests** are out of scope for this adapter. The pieces they need are
-  in place: the speech budget is process-wide and shared
-  (`group_speech_allowed()`), and the last 30 messages per group are buffered
-  (`recent_group_messages()`), so a scheduled job can use both without
-  double-spending the group's budget. No `proactive_*` config key is accepted
-  yet — an accepted key that does nothing is worse than an absent one.
+* **Group digests** (scheduled plain-language summaries of a group's chatter)
+  are out of scope for this adapter.
+* **Document-corpus retrieval for proactive posts.** The source folded
+  `kb.sqlite` snippets into the prompt; hermes has no such corpus and this
+  port does not invent one. The snippet-folding logic and its "query on other
+  people's words, never our own" rule are ported behind
+  `proactive.set_context_provider()`, which is unset by default.
 * **QR login / NapCat lifecycle management.** Out of scope by design; see the
   "never write the backend's configuration" constraint above.
 * **Message editing / reactions.** QQ has no edit API.
