@@ -792,6 +792,209 @@ def main_daily_agenda(
 
 
 # ---------------------------------------------------------------------------
+# QQ group monitor digests (sanhu / jlu / qunjlu)
+#
+# Ported from corlinman-channels/src/corlinman_channels/service.py's
+# ``_qq_monitor_run_once`` (the fetch step) and ``_qq_monitor_compose_prompt``
+# (the header + chat-log rendering — the single-turn path). Read directly
+# off the production checkout over a read-only SSH session during this task;
+# not from an exported file, since these are private module functions never
+# handed to this migration in any document.
+# ---------------------------------------------------------------------------
+
+#: Per-line text cap inside the digest. Verbatim from
+#: service.py:_QQ_MONITOR_LINE_CAP.
+QQ_MONITOR_LINE_CAP = 300
+
+#: Per-monitor DB fetch ceiling — newest rows win when a window holds more.
+#: Verbatim from service.py:_QQ_MONITOR_FETCH_CAP.
+QQ_MONITOR_FETCH_CAP = 10_000
+
+#: Safety cap on how many formatted lines go into ONE agent turn.
+#:
+#: The source split anything over 1,000 messages (service.py:
+#: _QQ_MONITOR_CHUNK_MESSAGES) into 1,000-message chunks, summarised those
+#: chunks with PARALLEL chat turns (asyncio.gather over its own chat
+#: service), then ran one more turn to merge the partial summaries
+#: (_qq_monitor_summarize). A hermes cron job gets exactly one model call —
+#: there is no seam here for a script to launch several concurrent LLM
+#: turns of its own outside that call, and doing so would mean this job
+#: quietly starts making its own paid model calls from Python instead of
+#: through the one the scheduler already accounts for. That is a bigger
+#: architectural step than "port a job onto the established pattern", so it
+#: is not done.
+#:
+#: Consequence: on a day where a monitor's window holds more than this many
+#: messages — expected most days for "sanhu" (group 980927602 alone
+#: produced 45,578 of the 52,649-row export, roughly 15k/day) — this port
+#: keeps only the NEWEST QQ_MONITOR_PROMPT_MESSAGE_CAP messages and marks
+#: the digest as covering "仅展示最新一部分" rather than the whole day. This
+#: is a real, documented fidelity gap versus the source (which covered
+#: every message via map-reduce); see
+#: docs/migration-corlinman/D2-qq-monitor-port-notes.md §3.
+QQ_MONITOR_PROMPT_MESSAGE_CAP = 1000
+
+
+def _qq_monitor_window_desc(window_minutes: int) -> str:
+    """Ported verbatim from service.py:_qq_monitor_window_desc."""
+    if window_minutes % 1440 == 0:
+        days = window_minutes // 1440
+        return f"最近 {days} 天"
+    if window_minutes % 60 == 0:
+        return f"最近 {window_minutes // 60} 小时"
+    return f"最近 {window_minutes} 分钟"
+
+
+def _qq_monitor_collection_ids(
+    watch_user_ids: Sequence[str], focus_user_ids: Sequence[str]
+) -> tuple[str, ...]:
+    """Ported verbatim from service.py:_QqMonitorSource.collection_ids.
+
+    Empty return means "no sender filter — everyone", not "filter to
+    nobody": the source only narrows by sender when watch_user_ids is
+    non-empty. focus_user_ids alone never narrows the query — a focus
+    member is always collected, even when watch_user_ids narrows the scope
+    to someone else entirely; here it only controls the ★ markers below.
+    """
+    if not watch_user_ids:
+        return ()
+    return tuple(dict.fromkeys((*watch_user_ids, *focus_user_ids)))
+
+
+def _qq_monitor_query(
+    db_path: str,
+    *,
+    instance_id: str,
+    group_id: str,
+    since_ms: int,
+    until_ms: int,
+    sender_ids: Sequence[str],
+    limit: int,
+) -> list[tuple[int, str, str, int, str]]:
+    """Newest *limit* rows in ``[since_ms, until_ms)``, returned oldest-first.
+
+    Mirrors ``QqGroupHistory.list_window``'s SQL and its "when capped, keep
+    the newest rows" contract exactly
+    (corlinman_server/qq_group_history.py). Opened ``mode=ro``: this
+    database is corlinman's own capture store (or a migrated copy of it)
+    and is never written from here — this port has no equivalent of the
+    dispatch loop that populates ``group_messages`` in the first place, see
+    the D2 port notes.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        raise SystemExit(f"qq_group_history_unavailable: {path}")
+    sql = (
+        "SELECT received_at_ms, sender_user_id, sender_name, event_time_ms, text "
+        "FROM group_messages "
+        "WHERE instance_id = ? AND group_id = ? "
+        "AND received_at_ms >= ? AND received_at_ms < ?"
+    )
+    params: list[Any] = [instance_id, group_id, int(since_ms), int(until_ms)]
+    senders = [str(s) for s in sender_ids if str(s).strip()]
+    if senders:
+        sql += f" AND sender_user_id IN ({','.join('?' * len(senders))})"
+        params.extend(senders)
+    sql += " ORDER BY received_at_ms DESC, id DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    uri = f"file:{path}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as exc:
+        raise SystemExit(f"qq_group_history_query_failed: {exc}") from exc
+    finally:
+        conn.close()
+    return list(reversed(rows))
+
+
+def _qq_monitor_format_lines(
+    rows: Sequence[tuple[int, str, str, int, str]],
+    focus_user_ids: Sequence[str],
+    tz: ZoneInfo,
+) -> list[str]:
+    """Render store rows as ``[MM-DD HH:MM] name(id): text`` prompt lines.
+
+    Ported from service.py:_qq_monitor_format_lines. ★-prefixes the focus
+    members' lines, identically to the source.
+    """
+    focus = set(focus_user_ids)
+    lines: list[str] = []
+    for received_at_ms, sender_id, sender_name, _event_time_ms, text in rows:
+        stamp = datetime.fromtimestamp(received_at_ms / 1000.0, tz).strftime("%m-%d %H:%M")
+        name = str(sender_name or "")
+        sid = str(sender_id or "")
+        who = f"{name}({sid})" if name and sid else (name or sid)
+        marker = "★" if sid in focus else ""
+        lines.append(f"{marker}[{stamp}] {who}: {str(text)[:QQ_MONITOR_LINE_CAP]}")
+    return lines
+
+
+def main_qq_monitor_digest(
+    *,
+    db_path: str,
+    instance_id: str,
+    group_id: str,
+    watch_user_ids: Sequence[str],
+    focus_user_ids: Sequence[str],
+    window_minutes: int,
+    timezone: str,
+    monitor_id: str,
+    now: Optional[datetime] = None,
+) -> int:
+    """Emit one monitor's chat window as digest material.
+
+    Ports the fetch half of ``_qq_monitor_run_once`` plus the header/chat-log
+    half of ``_qq_monitor_compose_prompt`` (the single-turn path — see
+    QQ_MONITOR_PROMPT_MESSAGE_CAP for why the map-reduce path is not
+    reproduced). The style instructions themselves live in
+    ``prompts.qq_monitor_digest`` — this function only ever prints material,
+    matching every other job in this library.
+
+    Prints nothing when the window is empty. All three migrated monitors
+    have ``send_when_empty=false`` verbatim (A1 §4), and an empty stdout is
+    hermes's own way of skipping the model call and the delivery entirely
+    (cron/scheduler.py: "Script produced no output — nothing to report") —
+    the same optimisation the source made by returning before calling
+    ``_qq_monitor_summarize`` at all when ``count == 0``.
+    """
+    tz = ZoneInfo(timezone)
+    moment = now.astimezone(tz) if now is not None else datetime.now(tz)
+    until_ms = int(moment.timestamp() * 1000)
+    since_ms = until_ms - int(window_minutes) * 60_000
+    sender_ids = _qq_monitor_collection_ids(watch_user_ids, focus_user_ids)
+
+    rows = _qq_monitor_query(
+        db_path,
+        instance_id=instance_id,
+        group_id=group_id,
+        since_ms=since_ms,
+        until_ms=until_ms,
+        sender_ids=sender_ids,
+        limit=QQ_MONITOR_FETCH_CAP,
+    )
+    if not rows:
+        log(f"{monitor_id}: no messages in the window — nothing to report")
+        return 0
+
+    truncated = False
+    if len(rows) > QQ_MONITOR_PROMPT_MESSAGE_CAP:
+        rows = rows[-QQ_MONITOR_PROMPT_MESSAGE_CAP:]
+        truncated = True
+
+    window_desc = _qq_monitor_window_desc(int(window_minutes))
+    tail = "，仅展示最新一部分，更早的消息未纳入本次汇总" if truncated else ""
+    print(f"群 {group_id} {window_desc}的消息汇总（共 {len(rows)} 条{tail}）。")
+    if focus_user_ids:
+        print("重点关注：" + "、".join(focus_user_ids))
+    print()
+    print("聊天记录（越靠下越新）：")
+    print("\n".join(_qq_monitor_format_lines(rows, focus_user_ids, tz)))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # grantley decay (persona.decay)
 # ---------------------------------------------------------------------------
 
@@ -832,6 +1035,9 @@ __all__ = [
     "NOISE_PREFIXES",
     "NO_ANALYSIS_MARKER",
     "NO_DIARY_MATERIAL",
+    "QQ_MONITOR_FETCH_CAP",
+    "QQ_MONITOR_LINE_CAP",
+    "QQ_MONITOR_PROMPT_MESSAGE_CAP",
     "SECRET_PATTERNS",
     "WATERMARK_CAP",
     "WATERMARK_PROMPT_WINDOW",
@@ -848,6 +1054,7 @@ __all__ = [
     "main_daily_agenda",
     "main_diary_material",
     "main_grantley_decay",
+    "main_qq_monitor_digest",
     "main_qzone_recent_posts",
     "main_youtube_state",
     "parse_week_match",
