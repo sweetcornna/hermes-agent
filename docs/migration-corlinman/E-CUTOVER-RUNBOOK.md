@@ -505,3 +505,203 @@ prompt 与物料脚本输出都正常（频道清单 + `已处理 video_id：无
 ### 当前状态
 
 四个任务**全部 paused**。三个已验证可用，等 `youtube_daily` 结论后统一放开。
+
+---
+
+# 阶段 5 执行记录 —— 5.1 / 5.2 已完成（2026-08-19 17:2x JST）
+
+**只做了 5.1 与 5.2。** 5.3（停 corlinman 的 QQ 侧）与 5.4（分级放开 hermes 的
+QQ 侧）**未执行**：本次授权仅覆盖"加法且可回滚"的那一半。corlinman 全程只被
+`mode=ro` 打开，`corlinman.service` 未重启，`hermes.service` 也未重启
+（PID 2581308 / 3230901 全程不变，`NRestarts=0`）。
+
+## 5.1 qzone 状态迁移 —— ✅
+
+三个账本在 `/opt/corlinman/execution-state/` 下（**不在** `/opt/corlinman/data/`，
+07-27 存储拆分后那边没有 qzone 目录），逐个 `cp -p` 进
+`$HERMES_HOME/plugin-data/qzone/`，原件未动：
+
+| 账本 | 大小 | 原件 mtime（拷贝前后一致） | sha256（原件 == 副本） |
+|---|---|---|---|
+| `qzone_post_log/grantley.json` | 9832 | 2026-08-17 23:00:19 | `cacf1583…` |
+| `qzone_seen_comments/grantley.json` | 189 | 2026-08-17 10:00:31 | `f753ef86…` |
+| `qzone_friend_comments/grantley.json` | 1620 | 2026-08-18 14:30:40 | `7f0037ce…` |
+
+`.env` 追加两行（stdin 追加，0600 hermes:hermes，备份
+`/opt/hermes/data/.env.bak.stage5.20260819T082144Z`）：
+
+```
+QZONE_PERSONA_ID=grantley
+QZONE_STATE_DIR=/opt/hermes/data/plugin-data/qzone
+```
+
+### 证据：不是只看 preflight 变绿
+
+用 `plugins.qzone.state` **自己**把账本读回来（环境经
+`hermes_cli.env_loader.load_hermes_dotenv()` 解析，与 CLI/网关同一条路径）：
+
+```
+persona='grantley' instance='default' root=/opt/hermes/data/plugin-data/qzone
+post_log entries         : 19      corlinman 原件 = 19   ✓
+seen_comments tids       : 2       corlinman 原件 = 2    ✓
+seen_comments identities : 3       corlinman 原件 = 3    ✓
+friend_comments entries  : 37      corlinman 原件 = 37   ✓
+dedup replay own-post replies : 3 recognised / 0 MISSED
+dedup replay friend comments  : 37 recognised / 0 MISSED
+```
+
+`dedup replay` 是把账本里**每一条**记录回灌给 `is_recorded_comment()`，逐条确认
+它答"这条已经回过了"。40/40 全中。
+
+`post_log`：19 条全部来自 `hermes.qzone_daily`，全部带 `tid`，
+`outcome` 字段缺失（= `sent`，与 state.py 的兼容约定一致），
+时间跨度 2026-07-28T23:00:26+09:00 → 2026-08-17T23:00:19+09:00。
+
+### 若 persona 仍是 `default` 会发生什么（量化）
+
+同一批 `is_recorded_comment()` 调用在 `default` 下**全部答"没回过"**：
+
+> **首次运行会公开重复回复 3 条自己说说下的评论，并在 37 篇好友说说下重复留言。
+> 合计 40 次对外可见、不可撤回的重复动作。**
+
+`default.json` 三个文件根本不存在（`exists=False`），所以不是"少读了一部分"，
+是整本账本读空。
+
+### preflight
+
+```
+[FAIL] qzone_state: qzone persona resolves to 'default', not 'grantley'
+   ↓
+[ok  ] qzone_state: qzone ledgers present: persona=grantley,
+       root=/opt/hermes/data/plugin-data/qzone,
+       post_log=19, seen_comment_tids=2, friend_comments=37
+```
+
+### ⚠ 遗留：网关进程尚未继承新环境变量
+
+`.env` 是**进程启动时**由 `load_hermes_dotenv()` 读入的。当前网关 PID 3230901
+起于 17:15:18，早于本次追加，因此**它的 `os.environ` 里还没有
+`QZONE_PERSONA_ID`**。CLI 每次调用都重新读 `.env`，所以 preflight 已经是对的。
+
+**这不影响现在**（`qzone` 插件不在 `plugins.enabled` 里，qzone 三个任务也
+`NOT INSTALLED`），但 **5.4 放开 QQ 侧之前必须重启 `hermes.service`**，
+否则跑在网关进程内的 qzone 工具仍会解析成 `default` —— 也就是上面那 40 次重复。
+本次没有重启，是因为重启不属于 5.1 的交付物，且能少动一次线上服务。
+
+## 5.2 群历史回填 —— ✅（D49 顺序：先回填，未动 `QQ_GROUP_HISTORY_DB`）
+
+### 前置发现：hermes 用户读不到 corlinman 的库
+
+`/opt/corlinman/execution-state` 是 `drwxrws--- corlinman:corlinman-execution`，
+`hermes`(uid 991) 不在该组，**连目录都进不去**。因此 D2 §8 写的
+"共存期把 `QQ_GROUP_HISTORY_DB` 指向 corlinman 的活文件"**在当前权限下做不到**，
+除非改生产的组成员或 ACL。没有改。
+
+改为：以 root 用 SQLite **backup API** 从 `mode=ro` 连接做事务一致快照
+（跨活跃 WAL 一致，且绝不写源文件），落到 `/opt/hermes/migration-tmp/`，
+`chown hermes`，再**全程以 hermes 身份**跑回填。这样目标库不会出现 root 属主的
+journal 文件。
+
+### 三次运行
+
+| # | 源 | scanned | inserted | duplicates |
+|---|---|---|---|---|
+| dry-run | snap1（58,482 行） | 58,482 | 58,130 | 352 |
+| 正式 | snap1 | 58,482 | **58,130** | 352 |
+| 重跑（同源） | snap1 | 58,482 | **0** | 58,482 |
+| 追平（snap2，58,529 行） | snap2 | 58,529 | **45** | 58,484 |
+
+`dest` 未显式指定，解析结果 =
+`$HERMES_HOME/plugin-data/corlinman_jobs/qq_group_history.sqlite`
+—— 与写入方 `ONEBOT_GROUP_HISTORY_DB` 的默认值、读取方 `QQ_GROUP_HISTORY_DB`
+的默认值是同一个文件，**三方本来就一致，无需改指向**（D49 第②步因此为空操作）。
+
+追平那次的 `duplicates=58,484` 比 snap1 的 58,482 多 2：这 2 条是 hermes 自己的
+实时归档器**独立**抓到、corlinman 也抓到的同一条消息，靠 `message_id` 归一
+——正是 `dedup_key` 文档里写的跨写入方去重，实测生效。
+
+### 行数与重复审计（用回填器**自己**的 `dedup_key` 做重复定义）
+
+| | 行数 | 不同 identity | 重复 |
+|---|---|---|---|
+| 回填前 | 620 | 620 | 0 |
+| snap1 回填后 | 58,756 | 58,756 | 0 |
+| snap2 追平后 | 58,813 | 58,812 | **1** |
+| 清理后（最终） | 58,822 | 58,822 | 0 |
+
+### 🔴 回填器的一个真实缺陷：与实时写入方存在竞态
+
+追平那次**引入了 1 行重复**。定位到具体两行：
+
+```
+rowid=58808 group=183287894 message_id=124224069 received=…992290  ← hermes 实时写入方
+rowid=58811 group=183287894 message_id=124224069 received=…992289  ← 回填导入的同一条
+```
+
+同一条消息（`message_id` 相同、`event_time_ms` 相同），`received_at_ms` 差 1 ms。
+
+**成因**：`backfill()` 在开头一次性把目标库的 identity 读进 `seen` 集合
+（`_existing_keys`），之后不再刷新；目标库**没有唯一索引**（故意的——与
+corlinman 的 schema 保持一致是这个文件存在的前提），所以插入时也没人拦。
+如果实时写入方在"快照 key 集合"之后、"插入"之前提交了一条**同样出现在源快照里**
+的消息，就会插进第二份。竞态窗口 ≈ 单次运行时长（实测 1.4 s），且只可能发生在
+**两侧都覆盖的群**上（只有 `183287894`：`980927602` 不在 hermes 的
+`group_whitelist` 里，其余四个群不在 corlinman 的库里）。
+
+**已做的处置**：按 rowid 精确删掉回填的那一份（保留实时写入方的原生行），
+只动 hermes 自己的库，重新审计 → 0 重复。
+
+**5.3 的操作要求**：最后一次追平回填要么在 hermes 的 OneBot 写入方静默时跑，
+要么跑完立刻用 `/opt/hermes/migration-tmp/audit_store.py` 复查并删掉竞态行。
+代码层的修法（导入后做一次 dedup sweep）留作独立改动，本次未改代码。
+
+### `_qq_monitor_query` 回填后仍可读
+
+三个 monitor 的读路径全部以 `instance_id='default'` 命中（见下），
+`preflight.check_qq_group_history` 报 `reachable, 58813 row(s)`。
+
+### 实时归档器未受影响
+
+回填期间与之后 `hermes.service` 无重启（`NRestarts=0`）、journal 无 `err`、
+无 `database is locked` / `OperationalError`。行数在回填前后持续增长：
+620 → 58,756（含回填期间新增 6 行）→ 58,813 → 58,822。
+
+## 三个 monitor 的只读实跑（无模型调用、无投递）
+
+直接调 `corlinman_jobs_lib.main_qq_monitor_digest()`（只 `SELECT`＋纯 Python 预归约，
+stdout 捕获后只统计不外发）。窗口取"此刻起前 24 小时"，`Asia/Shanghai`，1440 分钟：
+
+| monitor | 群 | 过滤 | 窗口内行数 | 发言人数 | 预归约 | 时段桶 | 焦点用户 |
+|---|---|---|---|---|---|---|---|
+| `qunjlu` | 183287894 | 只看 `1076712858` | 343 | 1 | 343 → 243 | 10 | —（watch 命中 343 行） |
+| `sanhu` | 980927602 | 全员 | **19,944** | 484 | 19,944 → 1,500 | **23** | — |
+| `jlu` | 183287894 | 全员，★ `1076712858` | 1,542 | 44 | 1,542 → 1,203 | 20 | **命中，343 行全保留并 ★ 标记** |
+
+- 三个都**非空**，即 `send_when_empty=false` 不会把它们静默掉。
+- `sanhu` 覆盖 23 个小时桶而不是"最新 1000 条"——D47 的确定性预归约在真实数据上
+  按设计工作（丢弃明细：media 3501 / symbol 324 / filler 208 / echo 1644 /
+  quota 12767）。
+- `jlu` 的焦点成员 343 条**不参与抽样、全部保留**，与 D2 §2 的约定一致。
+- 全部走 `deliver` **未使用**的路径：本次没有触发任何 cron、没有模型调用、
+  没有一条消息离开主机。
+
+### ⚠ 阶段 7 的一个硬约束（本次实测发现）
+
+`sanhu` 的源群 `980927602` **不在** hermes 的 `platforms.onebot.extra.group_whitelist`
+里，而 `group_history.resolve_config` 的抓取范围就是这个白名单。也就是说
+**hermes 自己的归档器从来没有、也不会写 `980927602` 的任何一行**——它今天能出
+19,944 行，完全靠这次回填。corlinman 一退役，`sanhu` 会在该库
+7 天保留期（`DEFAULT_RETENTION_DAYS`）内衰减到空，然后**静默**
+（`send_when_empty=false`）。要保住 `sanhu`，退役前必须把 `980927602` 加进
+`group_whitelist`（进而进入归档范围），这是 D2 §4 那条"没有写入方"缺陷在
+**具体群号上的落点**。
+
+## 未做（属 5.3/5.4，需另行授权）
+
+- 未停 corlinman 的 qzone 三个任务与 QQ monitor
+- 未 `install` 任何 QQ 任务（`qunjlu`/`sanhu`/`jlu`/`hermes.qzone_*` 仍 `NOT INSTALLED`）
+- 未改 `group_replies_enabled`（`false`）、`direct_replies_enabled`（`false`）
+- 未 resume/pause 任何任务：四个 Telegram 任务状态与阶段 4 结束时一致
+  （`analysis_digest`/`diary_summary` = ENABLED，`competition_daily`/`youtube_daily` = paused），
+  投递目标全部是 `telegram:…`，主机上**不存在**任何 QQ 投递目标的任务
+- 未重启 `hermes.service`（但 5.4 前必须重启，见 5.1 遗留项）
