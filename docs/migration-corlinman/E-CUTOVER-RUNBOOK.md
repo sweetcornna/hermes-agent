@@ -216,6 +216,10 @@ hermes config set platforms.onebot.extra.group_replies_enabled true   # 唯一�
 - [ ] 阶段 3 的归档写入方已在生产稳定运行 ≥1 天，且 monitor 能从 hermes 自己的库读出数据
 - [ ] 三个 monitor 已用 hermes 的库真实跑通至少一轮
 - [ ] `personas.sqlite` 的取舍已定（活库只剩 `grantley`，`lycaon`/`vivian` 只在旧目录，两份均已导出）
+- [ ] **搜索能力已交接**（D59）：corlinman 的 `free-search-mcp`（无密钥 MCP + headless Chrome）
+      必须在其退役的同一步交给 hermes，否则 `competition_daily` / `youtube_daily`
+      永远无法启用。共存期做不了——只剩 379 MB 可用内存，装不下第二份 Chrome。
+      **这是退役步骤里唯一一个"必须同时发生"的动作，不能先停后搬。**
 
 ---
 
