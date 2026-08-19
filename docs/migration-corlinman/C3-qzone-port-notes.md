@@ -2,8 +2,10 @@
 
 **状态**: 实施完成，未经实机验证。
 **分支**: `feat/corlinman-migration`
-**落地位置**: `plugins/qzone/`（5 个工具）、`tests/plugins/qzone/`（219 个测试）
+**落地位置**: `plugins/qzone/`（5 个工具 + 内容策略层）、`tests/plugins/qzone/`（267 个测试）
 **规格来源**: `A5-onebot-qzone-port-spec.md` §3.12 / §5.5 / §5.6，`A3-hermes-extension-points.md` §5，`A2-grantley-system-inventory.md` §3（生产状态文件实测形状）
+
+**追加（本次修订）**: §4.1 原记录"内容策略层未移植"，已经过时——腾讯内容策略层已补齐移植，见 **§9**。§4.1 原文保留作为历史记录（它解释了当初为什么不移植、移植后果分析仍然准确），但其"未移植"结论已被 §9 取代。
 
 > ⚠️ **本文档里每一条关于线上行为的断言都来自阅读两份源实现与 A2 的生产快照，没有任何一条经过实机 QQ 会话验证。** 凡涉及"腾讯会怎么响应"的结论，请当作**推断**而不是**观测**。
 
@@ -16,14 +18,17 @@
 | `plugins/qzone/plugin.yaml` | 58 | manifest，`kind: backend` |
 | `plugins/qzone/__init__.py` | 100 | `register(ctx)` → 5 次 `ctx.register_tool` |
 | `plugins/qzone/client.py` | 431 | 鉴权、可注入 HTTP 传输、JSONP / JS 转义解析 |
-| `plugins/qzone/publish.py` | 592 | `qzone_publish` |
-| `plugins/qzone/feed.py` | 744 | `qzone_list_feed` / `_get_post` / `_post_comment` / `_list_friends` |
+| `plugins/qzone/policy.py` | 418 | 腾讯内容策略层（本次追加，§9） |
+| `plugins/qzone/publish.py` | 637 | `qzone_publish`（含策略校验，§9） |
+| `plugins/qzone/feed.py` | 848 | `qzone_list_feed` / `_get_post` / `_post_comment` / `_list_friends`（含策略校验/脱敏，§9） |
 | `plugins/qzone/state.py` | 565 | 三个落盘 sidecar + 写操作终态语义 |
 | `tests/plugins/qzone/test_qzone_client.py` | 37 例 | g_tk / cookie / 解析 / 传输 / 鉴权 |
 | `tests/plugins/qzone/test_qzone_state.py` | 48 例 | 三份 sidecar 的真实形状、上限、LRU、路径安全 |
 | `tests/plugins/qzone/test_qzone_publish.py` | 61 例 | 线格式纯函数 + handler + S17 |
 | `tests/plugins/qzone/test_qzone_feed.py` | 57 例 | feeds3 解析 + 四个 handler + S17 |
 | `tests/plugins/qzone/test_qzone_plugin.py` | 16 例 | 注册、门控、足迹 |
+| `tests/plugins/qzone/test_qzone_policy.py` | 21 例 | 策略规则本体，逐字照搬源测试（本次追加，§9） |
+| `tests/plugins/qzone/test_qzone_policy_wiring.py` | 27 例 | 四个接线点 + fail-closed + 拒绝不进重试账本（本次追加，§9） |
 
 线名逐字保留：`qzone_publish`、`qzone_list_feed`、`qzone_get_post`、`qzone_post_comment`、`qzone_list_friends`。
 
@@ -83,6 +88,7 @@ corlinman 返回结构化信封 `{"ok":false,"error":"<code>","message":...}`；
 | 码 | 含义 | cron 该怎么办 |
 |---|---|---|
 | `invalid_args` | 参数校验失败 | 模型自愈；不重试 |
+| **`content_policy_blocked`** | 内容策略拒绝了正文 / 生图提示词 / 评论（§9，本次追加） | 改内容后可重试——**从未发出网络请求**，不计入 S17 的 `unknown` 状态，不占重试账本 |
 | `too_many_images` | > 9 张图 | 同上 |
 | `image_not_found` | 本地图路径坏 / 类型不支持 / 空 / 超限 | 同上 |
 | `image_generate_failed` | 生图后端未配置或失败 | 可重试（还没碰 QZone） |
@@ -181,11 +187,13 @@ post log 每条新增 `"outcome": "sent" | "unknown"`（生产那 19 条没有�
 
 ## 4. 没有移植的东西 —— 请认真读这一节
 
-### 4.1 ⚠️ 腾讯内容策略层（`corlinman-content-policy`）—— 未移植
+### 4.1 ⚠️ 腾讯内容策略层（`corlinman-content-policy`）—— 历史记录，已于 §9 移植
+
+> **本节已过时，按原样保留作历史记录。** 下面"本次没有移植"的结论已被 **§9** 取代——内容策略层已经移植并接进四个调用点。保留本节是因为它对"为什么当初不移植"“移植后果是什么”的分析仍然准确，§9 会引用这里的后果一/二作为移植动机。**读当前状态请跳到 §9。**
 
 corlinman 在**发布之前**对说说正文与生图提示词跑 `moderate_text`，对附件跑 `moderate_media`（未分类媒体 deny-by-default），分类器自身异常时 **fail closed**；媒体被拦而文本非空时降级为纯文本发布而不是整体失败。入站侧 `_redact_feeds` 会在 feed 进入模型提示词**之前**把被拦的作者名 / 正文 / 评论改写成 `"[内容已按 QQ 风控策略隐藏]"`。
 
-**本次没有移植。** 依据是 A5 §5.5 的明确指示（"不移植：`corlinman-content-policy`（hermes 无对应物）"）。
+**（原判断，现已推翻）本次没有移植。** 依据是 A5 §5.5 的明确指示（"不移植：`corlinman-content-policy`（hermes 无对应物）"）——这是范围决策，本次任务的直接指示是把这条决策翻过来。
 
 **但要把话说清楚，因为这改变了什么能到达公开动态**：
 
@@ -205,7 +213,7 @@ corlinman 在**发布之前**对说说正文与生图提示词跑 `moderate_text
 | shadow / 干跑模式 | hermes 的 cron 没有等价概念。若 D1/D2 需要，`execution_mode` 的挂点很好加。 |
 | `qq_instance_mismatch` 实例安全检查 | 单实例部署；`QZONE_QQ_INSTANCE_ID` 保留了路径命名空间，但没有跨实例断言。 |
 | 工作区相对路径解析 | corlinman 把相对图片路径解析到 agent workspace。这里沿用老 hermes 的语义（绝对路径 / `~` 展开），因为 hermes 的工具没有那个 workspace 概念。 |
-| `policy_redactions` 计数字段 | 随内容策略层一起去掉了。 |
+| ~~`policy_redactions` 计数字段~~ | **已在 §9 恢复**——内容策略层回来了，这个字段跟着回来了。此行保留仅为存档。 |
 
 ---
 
@@ -235,7 +243,7 @@ corlinman 在**发布之前**对说说正文与生图提示词跑 `moderate_text
 ```
 .venv/bin/python -m pytest tests/plugins/qzone/ -q
 ```
-**219 passed。** 零网络：HTTP 传输与 OneBot 调用两个接缝都注入假实现；状态目录由 `QZONE_STATE_DIR` 指向 `tmp_path`。
+**267 passed**（219 原有 + 21 `test_qzone_policy.py` + 27 `test_qzone_policy_wiring.py`，见 §9）。零网络：HTTP 传输与 OneBot 调用两个接缝都注入假实现；状态目录由 `QZONE_STATE_DIR` 指向 `tmp_path`。
 
 从 A5 §5.6 的清单里照搬的用例：
 
@@ -250,9 +258,10 @@ corlinman 在**发布之前**对说说正文与生图提示词跑 `moderate_text
 | corlinman post_comment 4 条（含 `_reply_prepends_mention` 锁 `@{uin:…,nick:…,who:1}` 格式） | 照搬 |
 | corlinman 幂等 5 条（effect receipt / identity mismatch / 去重） | **改写**到本移植的落盘等价物上，扩成 20 条（`TestPublishIdempotency` + `TestCommentIdempotency`） |
 | corlinman friends 2 条 | 照搬，另加 4 条 |
-| corlinman `test_qzone_policy.py` | **不移植**（依赖 `corlinman-content-policy`，见 §4.1） |
+| corlinman `corlinman-content-policy/tests/test_tencent.py`（21 条） | **本次追加，逐字节照搬**到 `test_qzone_policy.py`——用脚本做字符串替换换 import 路径，而不是手工转录，以免抄错规则里的零宽字符（真的抄错过一次，见 §9）。见 §9 |
+| 新增：四个接线点 + fail-closed + 拒绝不进重试账本（27 条） | 本移植原创，`test_qzone_policy_wiring.py`，见 §9 |
 
-回归检查：`tests/gateway/test_onebot_*.py` + `tests/tools/test_onebot_client.py` → **268 passed**（未触碰 `plugins/platforms/onebot/`）。
+回归检查：`tests/gateway/test_onebot_*.py` + `tests/tools/test_onebot_client.py` → **304 passed**（未触碰 `plugins/platforms/onebot/`；比 C3 首次落地时记录的 268 多，是仓库其他并行工作在这两个目录新增了测试，与本次改动无关——`git status` 确认本次只碰了 `plugins/qzone/` 与 `tests/plugins/qzone/`）。
 
 ---
 
@@ -282,3 +291,67 @@ corlinman 在**发布之前**对说说正文与生图提示词跑 `moderate_text
 5. `QZONE_QQ_INSTANCE_ID` 保持不设（= `default`），这样路径不带实例层，与现有文件一致。
 6. 搬完自检：`post_log` 应有 19 条（`version: 1`）、`seen_comments` 应有 2 个 tid（`version: 2`）、`friend_comments` 应有 37 条（`version: 1`）。
 7. `ONEBOT_WS_URL` / `ONEBOT_ACCESS_TOKEN` 与 OneBot 平台插件共用；**不要**再起第二个 NapCat，**不要**调用任何 NapCat 配置写接口（A5 约束 D3 / 风险 R11）。
+
+---
+
+## 9. 内容策略层落地（本次追加）
+
+**触发**："在打开任何无人值守的发布/评论 job 之前"（§4.1 给决策者的建议）——本任务就是那个决定：把 `corlinman-content-policy` 移植过来并接进四个调用点，作为解锁无人值守发布任务的前置条件。
+
+### 9.1 移植了什么
+
+`plugins/qzone/policy.py`（418 行）。验证过源包 `dependencies = []`（纯 stdlib：仅用 `hashlib` / `re` / `unicodedata` / `dataclasses` / `enum` / `typing`），`tencent.py` 恰好 318 行——与任务描述一致。
+
+移植方式：不是手工转录，而是用 `sed`/`python` 脚本从源文件按字节范围抽取正文（`from __future__ import annotations` 到文件尾），拼进 hermes 的文件头/尾。**这不是随意选择的工程习惯**：第一次尝试手工敲一条含零宽空格（`​`）的测试用例时，多敲了一个零宽字符而没有任何视觉差异（`Ｑ​​Ｑ` vs 源文件的 `Ｑ​Ｑ`），靠脚本比对才发现。之后源文件与测试文件都改用程序化抽取/替换，并写了逐字节 diff 断言验证（结果：规则表、正则、阈值、`RULESET_VERSION`、`QQ_SAFE_REFUSAL_TEXT`、`moderate_text`/`moderate_media`/`classify_text`/`normalize_text` 全部逐字节一致，唯一差异是新增的 `__all__` 块和一处 PEP8 空行）。
+
+`plugins/qzone/policy.py` 内部用一条注释线（`# --- hermes wiring ---`）分隔两部分：线以上是源内容的逐字节port；线以下是两个新增小函数 `resolve_config()` / `policy_error_payload()`（见 §9.3 判断 J1）。
+
+测试：
+- `tests/plugins/qzone/test_qzone_policy.py`（21 例）——corlinman `corlinman-content-policy/tests/test_tencent.py` 的逐字节 port（同样用脚本做 import 路径替换，而不是手工转录，原因同上）。
+- `tests/plugins/qzone/test_qzone_policy_wiring.py`（27 例）——本移植原创，验证下面 §9.2 的四个调用点真的接上了，以及 fail-closed 契约与 S17 互不污染。
+
+### 9.2 四个调用点
+
+| # | 位置 | 方向 | 校验对象 | 拒绝时机 |
+|---|---|---|---|---|
+| 1 | `plugins/qzone/publish.py:439-448`（`handle_qzone_publish`） | 出站 | 说说正文 `text` | 参数校验之后、S17 `unknown_publish_guard` 之前、任何网络/文件 I/O 之前 |
+| 2 | `plugins/qzone/publish.py:444-461`（同一函数） | 出站 | 生图提示词 `generate` + 媒体请求 | 与 1 同一批检查；媒体被拒且有正文时**降级为纯文本发布**（不整体失败），无正文时拒绝 |
+| 3 | `plugins/qzone/feed.py:497-507`（`handle_qzone_post_comment`） | 出站 | 评论正文 `final_content`（**含 @mention 前缀**，因为 mention 在 QZone 上就是正文的一部分） | mention 拼接之后、OneBot 鉴权之前、去重检查之前、任何网络调用之前 |
+| 4 | `plugins/qzone/feed.py:336`（`handle_qzone_list_feed`）与 `feed.py:396`（`handle_qzone_get_post`），实现在 `feed.py:249-289`（`_redact_feeds`） | 入站 | 好友动态里别人的说说正文/作者名/评论正文/评论作者名 | 拉到 feed 之后、拼 JSON 信封**之前**——即进入模型上下文之前 |
+
+外加一个源代码里有、但不在任务列出的"四个调用点"字面清单里的第五处，为保持"默认照搬源行为"而一并接上：
+
+| # | 位置 | 方向 | 校验对象 |
+|---|---|---|---|
+| 5（额外） | `plugins/qzone/feed.py:660-667`（`handle_qzone_list_friends`） | 入站 | 好友昵称 `nickname` / 备注 `remark` |
+
+`qzone_publish` 与 `qzone_post_comment` 的拒绝都会命中新的 `_policy_error()` 辅助函数（`publish.py:247` / `feed.py:234`），统一走 `tool_error(..., code="content_policy_blocked", category_codes=…, rule_ids=…, ruleset_version=…)`——`category_codes`/`rule_ids` 是不含原文的安全字段（见 `PolicyDecision.audit_fields` 的设计意图），可以放心记日志。
+
+### 9.3 (a)/(b) 判断记录
+
+**J1 — `_policy_config`/`_policy_error` 从"两处各自定义"改成"共享一份"，落在 `policy.py`。判定：(b) 适配。**
+源码里 `publish.py:535-552` 与 `comment.py:148-165` 是两段逐字相同的代码，各自本地定义，互不 import。本移植把等价逻辑合并成 `policy.py` 里的 `resolve_config()` / `policy_error_payload()`，`publish.py` 与 `feed.py` 各自保留一个薄的 `_policy_error()` 包装（因为两边的 `tool_error` 消息文案不同）。理由：hermes 这个 port 已经确立了"共享的东西放 `client.py` 一次，`publish.py`/`feed.py` 不许各写一份"的先例（`client.py` 模块 docstring 原话："They live here once so publish and feed cannot drift apart"）。跟随现有约定，而不是复制源码的重复结构。**行为完全不变**——解析出的 `TencentPolicyConfig` 与拒绝时附带的字段和源码逐一对应。
+
+**J2 — 落点选 `plugins/qzone/` 内部，不建独立插件。判定：(b) 适配（源码是独立 leaf package，这里不是）。**
+corlinman 的 `corlinman-content-policy` 是 uv workspace 里的独立可发布包，因为 corlinman 有多个消费者（不止 QZone）可能复用它。hermes 目前只有 `plugins/qzone/` 一个 Tencent 相关的传输面，`plugins/` 里的约定是扁平模块（`client.py`/`publish.py`/`feed.py`/`state.py` 都是插件内部文件，不是独立发布单元），新建一个独立插件意味着多一份 `plugin.yaml`、多一次 `ctx.register_tool` 之外的注册面、以及一个当前唯一消费者仍要显式 import 的模块——纯增加间接层，没有对应收益。放在 `plugins/qzone/policy.py`，作为该插件的第四个内部模块（`client`/`publish`/`feed`/`state` 之后），与 A3 §4.5 "持久状态用 plugin_data_dir，其余走普通模块" 的插件内部组织约定一致。如果未来有第二个 Tencent 传输面出现，`policy.py` 到那时候再抽到独立位置也不迟——现在抽是过早优化。
+
+**J3 — 媒体默认拒绝（`unclassified_media` 全程 `"deny"`），不加旁路。判定：(a) 照搬，且发现这在源码生产路径里事实上*也*是死路。**
+`moderate_media()` 只有两种放行方式：`classified_safe=True`（需要一个媒体分类器，源码与本移植都没有接一个）或 `TencentPolicyConfig(unclassified_media="allow")`（源码的 `_policy_config()`/本移植的 `resolve_config()` 都只暴露 `enabled` 开关，从不设置这个字段）。逐行读了 `publish.py:708-729` 与 `comment.py` 之后可以确认：**这不是本移植引入的限制，源码自己的 QZone 分发器在默认配置下同样从不放行未分类媒体**——`images`/`generate` 只要一起飞，要么因为正文非空被静默降级为纯文本，要么在正文为空时被直接拒绝。本移植原样保留这个行为（`publish.py:449-461`），并在 §9.4 里作为"生产环境下 QZone 图片发布实质上已被 disabled"的推断记录下来，而不是当作一个待修的 bug。若未来要恢复图片发布能力，需要新增一个媒体分类器并让 `resolve_config()` 能够设置 `unclassified_media="allow"`——这是范围外的新功能，不是本次判断的一部分。
+
+**J4 — `policy_resolver` 保留为纯内部测试缝，不暴露成模型可控参数、不加环境变量开关。判定：(a) 照搬。**
+源码的 `policy_resolver` 只在两处出现：agent servicer 内部装配代码，以及测试。**没有一条路径能让模型自己关掉策略**——`policy_resolver` 从不出现在任何工具 schema 里。本移植保持这个边界：`policy_resolver` 只作为 `**_kw` 里的可选关键字（不进 `QZONE_PUBLISH_SCHEMA`/`QZONE_POST_COMMENT_SCHEMA` 等），生产调用永远不传，测试用 `policy_resolver=lambda: False` 关闭（`tests/plugins/qzone/test_qzone_policy_wiring.py` 多处使用，与 corlinman 自己的 `test_qzone_publish.py:611` 等处手法相同）。没有加 env var 开关（比如 `QZONE_CONTENT_POLICY_ENABLED`）——运维层面的应急关闭开关是一个真实的运维便利，但也是"一次误设置 = 风控保护整体失效"的单点故障，源码没有提供这个开关，任务默认"照搬优先，宁可更保守"，所以本移植也不新增。
+
+**J5 — `qzone_list_friends` 昵称/备注脱敏一并接上（§9.2 第 5 点），不局限于任务字面列出的四个点。判定：(a) 照搬，扩大到源码实际覆盖的全部入站面。**
+任务原文把"入站 feed 文本"点名为"其他人的说说和评论"，字面没提好友列表。但源码 `comment.py:872-881` 确实对 `dispatch_qzone_list_friends` 的 `nickname`/`remark` 做了同样的脱敏——这两个字段同样是"别人写的文本"（好友自己设置的昵称/备注），符合"入站文本进入模型上下文前脱敏"这条总原则。任务的判断准则是"默认 (a)，照搬源行为，更宽松是失败模式"，所以补上这第五点，而不是以"任务没点名"为由省略。
+
+### 9.4 与既有测试的交互（现有测试因此改了什么）
+
+打开策略层后，`tests/plugins/qzone/test_qzone_publish.py` 里 5 条测试从"通过"变成"失败"——不是回归，是策略生效的直接后果：这些测试原本验证"发 10 张图 / 发一张真实存在的图"这类**结构性**行为（`too_many_images`、`image_upload_failed` 等），但这些请求现在会先被 §9.3-J3 描述的默认拒绝媒体规则拦下（正文非空则静默丢图，改文本发布；这几条测试恰好都带正文，于是图片被丢弃而不是走到原本要测的分支）。修法是给这 5 条各加 `policy_resolver=lambda: False`，把策略缝关掉，只测原本要测的结构性行为——这正是 corlinman 自己测试套件里处理同一冲突的手法（`test_qzone_publish.py:611` 起共 16 处用同一模式）。所有其余 219 条原有测试未改一行即通过。
+
+### 9.5 没有实机会话就无法验证的部分（本次追加项，续 §7）
+
+11. **这份 318 行的规则表是否仍然是 corlinman 生产环境当前实际在用的版本。** `RULESET_VERSION = "tencent-freeze-risk-2026-07-21.1"` 是移植时点读到的字符串；如果源仓库后续升级过规则版本，本移植不会自动同步，需要人工比对。
+12. **`unclassified_media` 在源码生产路径里是否真的从未被设为 `"allow"`。** §9.3-J3 的推断只基于 `publish.py`/`comment.py` 两个文件能看到的调用路径；如果 agent servicer 装配层（本任务范围之外的文件）在别处构造过一个放行未分类媒体的 `TencentPolicyConfig` 并注入进来，那么"生产环境图片发布已被 disabled"这个推断就是错的。没有查过 servicer 装配代码，因为它在 `corlinman-agent` 之外，任务只要求读 `qzone/publish.py` 与 `qzone/comment.py`。
+13. **策略拒绝在真实模型对话里的观感**——`content_policy_blocked` 的错误消息目前是英文+机器码；没有验证过模型看到这个信封后是否会像人格设计期望的那样"换个话题"而不是反复重试或者对用户说奇怪的话。
+
+---

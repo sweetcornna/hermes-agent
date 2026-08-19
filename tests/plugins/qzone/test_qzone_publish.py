@@ -292,7 +292,14 @@ class TestHandlerValidation:
         assert _run({"text": "hi", "generate": {"prompt": "x"}})["code"] == "invalid_args"
 
     def test_too_many_images_rejected(self):
-        out = _run({"text": "hi", "images": [f"{i}.png" for i in range(10)]})
+        # Content policy denies unclassified media by default (see
+        # TestContentPolicyPublish), so this structural check needs the
+        # policy seam disabled to reach the too_many_images branch —
+        # mirrors corlinman's own test_qzone_publish.py pattern.
+        out = _run(
+            {"text": "hi", "images": [f"{i}.png" for i in range(10)]},
+            policy_resolver=lambda: False,
+        )
         assert out["code"] == "too_many_images"
 
     def test_bad_image_path_fails_before_any_network(self, tmp_path):
@@ -302,6 +309,7 @@ class TestHandlerValidation:
                 {"text": "hi", "images": [str(tmp_path / "nope.png")]},
                 onebot_call=_onebot(),
                 transport=transport,
+                policy_resolver=lambda: False,
             )
         )
         assert out["code"] == "image_not_found"
@@ -360,7 +368,11 @@ class TestHandlerPublish:
         path = tmp_path / "a.png"
         path.write_bytes(_PNG)
         transport = _transport()
-        out = _run({"text": "配图", "images": [str(path)]}, transport=transport)
+        out = _run(
+            {"text": "配图", "images": [str(path)]},
+            transport=transport,
+            policy_resolver=lambda: False,
+        )
         assert out["success"] is True
         assert out["images"] == 1
         assert "cgi_upload_image" in transport.calls[0]["url"]
@@ -372,7 +384,12 @@ class TestHandlerPublish:
     def test_single_image_path_as_string(self, tmp_path):
         path = tmp_path / "a.png"
         path.write_bytes(_PNG)
-        assert _run({"text": "x", "images": str(path)})["images"] == 1
+        assert (
+            _run(
+                {"text": "x", "images": str(path)}, policy_resolver=lambda: False
+            )["images"]
+            == 1
+        )
 
     def test_upload_failure_is_surfaced_and_nothing_is_logged(self, tmp_path):
         path = tmp_path / "a.png"
@@ -380,6 +397,7 @@ class TestHandlerPublish:
         out = _run(
             {"text": "x", "images": [str(path)]},
             transport=_transport(upload=b'{"ret":-1}'),
+            policy_resolver=lambda: False,
         )
         assert out["code"] == "image_upload_failed"
         assert state.post_log_entries() == []

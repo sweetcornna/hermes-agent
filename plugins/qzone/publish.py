@@ -12,16 +12,13 @@ dispatcher.
 Deliberate divergences from the sources are marked ``PORT NOTE`` inline and
 collected in ``docs/migration-corlinman/C3-qzone-port-notes.md``.
 
-.. warning::
-
-   **The Tencent content-policy check is NOT ported.** In corlinman every
-   说说 body and every generation prompt passed through
-   ``corlinman_content_policy.moderate_text`` before publishing, and
-   attachments through ``moderate_media`` (deny-by-default on unclassified
-   media), fail-closed. Nothing in hermes replaces it, so text handed to
-   this tool reaches a real public feed exactly as written. On a QQ account
-   that is a freeze risk, not just a taste question. See the "Not ported"
-   section of the C3 notes before enabling any unattended publishing job.
+Every 说说 body and every ``generate`` image prompt passes through
+``plugins.qzone.policy.moderate_text`` before anything is built or sent —
+see ``handle_qzone_publish`` below — and any request touching images passes
+through ``moderate_media`` (deny-by-default on unclassified media,
+fail-closed). This mirrors corlinman's own ``publish.py:708-729`` ordering:
+policy runs immediately after arg validation, before the S17 idempotency
+guard and before any network or file I/O.
 """
 
 from __future__ import annotations
@@ -35,7 +32,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import state
+from . import policy, state
 from .client import (
     DESKTOP_UA,
     QZONE_TIMEOUT,
@@ -247,6 +244,24 @@ def _qzone_url(uin: str, tid: Optional[str]) -> Optional[str]:
     return f"https://user.qzone.qq.com/{uin}/mood/{tid}" if tid else None
 
 
+def _policy_error(decision: "policy.PolicyDecision") -> str:
+    """Render a content-policy refusal in the same envelope shape as any
+    other ``qzone_publish`` failure, distinguishable by ``code``.
+
+    Deliberately does NOT touch ``state`` — the request was never sent, so
+    there is nothing ambiguous to record. See
+    ``TestPolicyRefusalDoesNotPoisonRetryLedger`` in
+    ``tests/plugins/qzone/test_qzone_policy_wiring.py``.
+    """
+    from tools.registry import tool_error
+
+    return tool_error(
+        "Tencent content policy blocked this QZone publish.",
+        code="content_policy_blocked",
+        **policy.policy_error_payload(decision),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Local files and image generation
 # ---------------------------------------------------------------------------
@@ -416,6 +431,36 @@ def handle_qzone_publish(args: Dict[str, Any], **_kw: Any) -> str:
         return tool_error(
             "qzone_publish requires 'text', 'images', or 'generate'.", code="invalid_args"
         )
+
+    # Content policy — ported from corlinman publish.py:708-729. Runs first,
+    # before the S17 idempotency guard and before any file/network I/O, so a
+    # refusal here never touches state.py (see plugins/qzone/policy.py and
+    # the "content_policy_blocked" test group).
+    policy_cfg = policy.resolve_config(_kw.get("policy_resolver"))
+    try:
+        text_decision = policy.moderate_text(text, policy_cfg).decision
+        if not text_decision.allowed:
+            return _policy_error(text_decision)
+        prompt_decision = policy.moderate_text(generate, policy_cfg).decision
+        if not prompt_decision.allowed:
+            return _policy_error(prompt_decision)
+        media_requested = bool(images or generate)
+        if media_requested:
+            media_decision = policy.moderate_media(config=policy_cfg)
+            if not media_decision.allowed:
+                if text:
+                    # Identical to corlinman publish.py:721-725: degrade to a
+                    # text-only post rather than failing the whole call over
+                    # unclassified media (this repo has no media classifier,
+                    # so this branch — or the refusal below — is what every
+                    # 'images'/'generate' request hits today; see the C3
+                    # notes judgement-call log).
+                    images = []
+                    generate = ""
+                else:
+                    return _policy_error(media_decision)
+    except Exception:
+        return _policy_error(policy.classifier_failure_decision(text))
 
     total_images = len(images) + (1 if generate else 0)
     if total_images > _MAX_IMAGES:
