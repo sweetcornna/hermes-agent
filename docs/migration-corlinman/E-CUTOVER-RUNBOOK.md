@@ -208,3 +208,69 @@ hermes config set platforms.onebot.extra.group_replies_enabled true   # 唯一�
 | 四个 Telegram 任务的 prompt 中 `qzone_reply` 属 RECONSTRUCTED | 从未对真实 QQ 会话跑过 |
 | 读回的 QQ 空间文本未做提示词注入过滤 | 源系统亦无此防护 |
 | `evolution.darwin_curate` / `system.update_check` / `grantley.qzone_reply` 未迁移 | 弃迁理由见 `specs.py::DROPPED_JOBS` |
+
+---
+
+# 执行记录
+
+## 阶段 1 —— ✅ 已完成（2026-08-19 15:13 JST）
+
+- 备份：`/opt/hermes/data/SOUL.md.bak.cutover.20260819T061306Z`（B3 那份 `.bak.b3.*` 未动）
+- `SOUL.md` 由默认身份（513 B）替换为格兰特利身份（404 B，0600 hermes:hermes）
+- 禁用字符串核查：`Hermes Agent` **0** 处、`Nous Research` **0** 处
+- **验证通过**：`hermes -z "Reply with exactly this and nothing else: PONG-CUTOVER"` → **`PONG-CUTOVER`**
+  （同一条命令在替换前返回 `503 No available accounts`）
+
+⇒ **D42 / D43 阻塞解除。**
+
+保留的操作性指引以符合人格的措辞重写（"说话短、直接" / "不知道的就说不知道" / "手边有工具就用工具查"），
+未照搬原英文段落——原段落含被上游拒绝的身份句。
+
+## 阶段 2 —— ✅ 已完成（2026-08-19 15:14 JST）
+
+部署到 `/opt/hermes/repo/`：
+
+| 目录 | 文件数 | 体积 |
+|---|---:|---:|
+| `plugins/platforms/onebot` | 24 | 364K |
+| `plugins/grantley` | 31 | 252K |
+| `plugins/qzone` | 14 | 156K |
+| `tools/onebot_client.py` | 1 | — |
+
+- 验证：`hermes plugins list` → 三者均为 **`not enabled` / `bundled`**
+- 线上零扰动：corlinman `/health` **200**、容器 **9**、监听 **21**、`hermes.service` **inactive**、
+  `corlinman-napcat` 容器 **Up 4 weeks**、磁盘仍 **7.6 G**
+
+> **`plugins/corlinman_jobs/` 本轮刻意未部署** —— D47 正在修改其 `corlinman_jobs_lib.py`，
+> 现在部署等于铺一个即将变更的版本。阶段 3 不需要它。D47 落地后随阶段 4 一并部署。
+
+## 阶段 3 —— ⛔ 暂停：手册本身有缺陷，已补任务修复
+
+**执行阶段 3 时发现本手册漏算了一件事。**
+
+阶段 3 要求「开启归档、只归档不发言」。但归档写入方挂在适配器的入站路径上
+⇒ 必须先 `platforms.onebot.enabled: true` 让适配器真的连上 NapCat 收消息。
+而 Orchestrator 实测 `router.py::ChannelRouter.dispatch()`：
+
+```python
+if event.message_type == MessageType.PRIVATE:
+    binding = Binding.private(event.self_id, event.user_id)   # ← 无任何门控
+elif event.message_type == MessageType.GROUP:
+    if not self.group_replies_enabled:
+        return None                                           # ← 群有总闸
+```
+
+`router.py:158` 的 docstring 亦明写 `(private chat is unaffected)`。
+
+⇒ **群有总闸，私聊没有。** 启用 onebot 平台 = hermes 开始回 QQ **私聊**，
+而 corlinman 此刻仍在回同一账号的私聊（`on_direct_message = true`）
+⇒ **对真人的双回复，对外可见。**
+
+这是 D17 双发风险的**私聊变体**，本手册 §0-① 只写了群与 QQ 空间，**漏了私聊**。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D50 | 补一个与 `group_replies_enabled` 对称的**私聊回复门控**，**默认 `true`**（保持与生产一致），为 `false` 时 `dispatch()` 对私聊返回 `None` | 没有它就没有"只收不回"的观察模式，阶段 3 无法在不双回复真人的前提下执行。默认 true 保证不设该键时行为逐字节不变 |
+| D51 | 本手册 §0 补一条：**`group_replies_enabled` 不管私聊** | 与 E0 缺陷 #2（`sanhu`/`jlu` 投私聊、不受该开关管）是同一类认知盲区，必须写明 |
+
+**阶段 3 待 E1 落地并验收后继续。**
