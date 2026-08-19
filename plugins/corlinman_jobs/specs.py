@@ -401,6 +401,203 @@ JOB_SPECS: tuple[JobSpec, ...] = (
 )
 
 
+#: Names of the three migrated QQ group-digest monitors (D2), as a frozenset
+#: other modules can test membership against without importing MONITOR_SPECS.
+MONITOR_NAMES: frozenset[str] = frozenset({"qunjlu", "sanhu", "jlu"})
+
+
+# ---------------------------------------------------------------------------
+# The three QQ monitors (D2) — daily group-chat digests, a different
+# corlinman subsystem from the twelve scheduler jobs above (config lives in
+# ``[[channels.qq.instances.default.monitors]]``, not
+# ``scheduler_runtime_jobs.json``; A1 §4). Kept in a separate tuple rather
+# than folded into JOB_SPECS: the "12 source jobs = 9 installed + 3 dropped"
+# accounting above is a real, tested count of a real, separate corlinman
+# list, and merging a different list into it would make that count lie.
+# ``ALL_SPECS`` below is what the installer actually iterates.
+#
+# All three share four properties, verbatim from A1 §4 / the exported
+# config.toml (L59-L110): schedule_type="daily", window_minutes=1440,
+# send_when_empty=false, timezone="" (unset — see the timezone note below).
+# ---------------------------------------------------------------------------
+
+MONITOR_SPECS: tuple[JobSpec, ...] = (
+    JobSpec(
+        name="qunjlu",
+        source_job_id=None,
+        source_action_type="qq.monitor_digest",
+        source_cron='schedule_type="daily", daily_time="09:00"',
+        source_timezone="",
+        source_enabled=True,
+        schedule="5 8 * * *",
+        stagger_reason=(
+            "Nominal 09:00, but no monitor declares its own timezone and "
+            "none is set on the instance either, so all three evaluated "
+            "against the process-local zone — Asia/Tokyo in production "
+            "(A1 §4). 09:00 JST = 08:00 China time is what actually fired "
+            "(D25). 08:00 → 08:05: nothing else runs in the 08:00 hour, so "
+            "the only thing to clear is persona.decay's hourly :17 tick and "
+            "the :00 mark itself."
+        ),
+        prompt=None,  # filled in below
+        script="corlinman_qq_monitor_qunjlu.py",
+        deliver="local",
+        enabled_toolsets=(),
+        params={
+            "qq_instance_id": "default",
+            "group_id": "183287894",
+            "watch_user_ids": ("1076712858",),
+            "focus_user_ids": (),
+            "target_type": "group",
+            "target_id": "183287894",
+            "window_minutes": 1440,
+            "style_extra": "",
+            "send_when_empty": False,
+            "daily_time": "09:00",
+        },
+        writes_public_feed=False,
+        notes=(
+            "D26: production's [channels.qq.instances.default] carries "
+            "group_replies_enabled=false, an emergency mute that "
+            "_qq_monitor_run_once checks BEFORE fetching any history or "
+            "generating any text for a group-type target — qunjlu's digest "
+            "has never once reached the group. The migrated job must stay "
+            "equally unable to post there, and not by re-checking that same "
+            "config flag: this port's OneBot adapter only reads "
+            "group_replies_enabled inside router.py (passive replies) and "
+            "proactive.py (proactive speech) — adapter.send() itself, which "
+            "is what a cron deliver=onebot:g... target actually calls, does "
+            "not consult it at all. Copying the flag's name into this job "
+            "would therefore recreate exactly the failure class this "
+            "migration has already hit five times ('config says off, "
+            "behaviour says on') in the opposite direction. Suppression "
+            "here is structural instead: deliver='local' means "
+            "cron._resolve_delivery_targets returns no target no matter "
+            "what the model writes, and enabled_toolsets=() means the "
+            "model has no tool capable of sending anything on its own — two "
+            "checks that do not depend on any runtime config value. The "
+            "script still runs and still produces a real digest (visible "
+            "in `hermes cron logs qunjlu`), so an operator can see what "
+            "would have been sent before deciding to send it. Lifting the "
+            "suppression means editing this spec's deliver to "
+            "'onebot:g183287894' and reinstalling (D1's installer never "
+            "updates an existing job, so that means `hermes cron rm "
+            "qunjlu` first) — a reviewed code change, not a config flip."
+        ),
+    ),
+    JobSpec(
+        name="sanhu",
+        source_job_id=None,
+        source_action_type="qq.monitor_digest",
+        source_cron='schedule_type="daily", daily_time="10:00"',
+        source_timezone="",
+        source_enabled=True,
+        schedule="5 9 * * *",
+        stagger_reason=(
+            "Nominal 10:00 JST = 09:00 China time (D25, same reasoning as "
+            "qunjlu). 09:00 → 09:05: the 09:00 hour also carries "
+            "hermes.competition_daily (:09) and hermes.qzone_reply (:24); "
+            "05 sits ahead of both with >=4 minutes of clearance and is "
+            "clear of the :17 decay tick."
+        ),
+        prompt=None,
+        script="corlinman_qq_monitor_sanhu.py",
+        deliver="onebot:2104743984",
+        enabled_toolsets=(),
+        params={
+            "qq_instance_id": "default",
+            "group_id": "980927602",
+            "watch_user_ids": (),
+            "focus_user_ids": (),
+            "target_type": "user",
+            "target_id": "2104743984",
+            "window_minutes": 1440,
+            "style_extra": "",
+            "send_when_empty": False,
+            "daily_time": "10:00",
+        },
+        writes_public_feed=False,
+        notes=(
+            "Everyone in group 980927602, no focus filter. Delivery target "
+            "2104743984 is a private chat, unaffected by "
+            "group_replies_enabled either in the source or in this port. "
+            "980927602 was the busiest tracked group (45,578 of the "
+            "52,649-row export) — most days this monitor's window exceeds "
+            "the single-turn message cap; see "
+            "corlinman_jobs_lib.QQ_MONITOR_PROMPT_MESSAGE_CAP for why the "
+            "source's parallel map-reduce summarisation is not reproduced "
+            "and what happens instead."
+        ),
+    ),
+    JobSpec(
+        name="jlu",
+        source_job_id=None,
+        source_action_type="qq.monitor_digest",
+        source_cron='schedule_type="daily", daily_time="11:00"',
+        source_timezone="",
+        source_enabled=True,
+        schedule="5 10 * * *",
+        stagger_reason=(
+            "Nominal 11:00 JST = 10:00 China time (D25, same reasoning as "
+            "qunjlu). 10:00 → 10:05: nothing else runs in the 10:00 hour, "
+            "so the only thing to clear is the :17 decay tick and :00 "
+            "itself."
+        ),
+        prompt=None,
+        script="corlinman_qq_monitor_jlu.py",
+        deliver="onebot:2104743984",
+        enabled_toolsets=(),
+        params={
+            "qq_instance_id": "default",
+            "group_id": "183287894",
+            "watch_user_ids": (),
+            "focus_user_ids": ("1076712858",),
+            "target_type": "user",
+            "target_id": "2104743984",
+            "window_minutes": 1440,
+            "style_extra": "",
+            "send_when_empty": False,
+            "daily_time": "11:00",
+        },
+        writes_public_feed=False,
+        notes=(
+            "Everyone in group 183287894 (same group qunjlu reads, "
+            "different filter: jlu has no watch_user_ids, so it collects "
+            "everyone — 1076712858 is only *focus*-marked, not filtered "
+            "to), delivered privately to 2104743984. focus_user_ids never "
+            "narrows the collected rows (source "
+            "_QqMonitorSource.collection_ids: watch_user_ids empty means "
+            "'everyone', independent of focus); it only ★-marks that "
+            "sender's lines and earns them a dedicated closing paragraph "
+            "in the prompt. Unaffected by group_replies_enabled — the "
+            "target is a private chat, not group 183287894 itself."
+        ),
+    ),
+)
+
+
+def _with_monitor_prompts(specs: tuple[JobSpec, ...]) -> tuple[JobSpec, ...]:
+    from dataclasses import replace
+
+    from . import prompts
+
+    out = []
+    for spec in specs:
+        out.append(
+            replace(
+                spec,
+                prompt=prompts.qq_monitor_digest(
+                    focus_user_ids=tuple(spec.params["focus_user_ids"]),
+                    style_extra=str(spec.params["style_extra"]),
+                ),
+            )
+        )
+    return tuple(out)
+
+
+MONITOR_SPECS = _with_monitor_prompts(MONITOR_SPECS)
+
+
 @dataclass(frozen=True)
 class DroppedJob:
     """A source job deliberately not migrated."""
@@ -504,8 +701,15 @@ def _with_prompts(specs: tuple[JobSpec, ...]) -> tuple[JobSpec, ...]:
 
 JOB_SPECS = _with_prompts(JOB_SPECS)
 
-#: Name → spec.
-SPECS_BY_NAME: dict[str, JobSpec] = {spec.name: spec for spec in JOB_SPECS}
+#: Everything this plugin can plan/install/status: the nine scheduler jobs
+#: (schedule order) followed by the three monitors. The single iterable the
+#: installer and preflight actually default to. Built here, after both
+#: ``_with_prompts`` rebindings above, so it holds the prompt-wired specs —
+#: not the ``prompt=None`` placeholders those tuples started as.
+ALL_SPECS: tuple[JobSpec, ...] = JOB_SPECS + MONITOR_SPECS
+
+#: Name → spec, across both the nine scheduler jobs and the three monitors.
+SPECS_BY_NAME: dict[str, JobSpec] = {spec.name: spec for spec in ALL_SPECS}
 
 
 def spec_by_name(name: str) -> JobSpec:
@@ -519,8 +723,11 @@ def spec_by_name(name: str) -> JobSpec:
 
 
 __all__ = [
+    "ALL_SPECS",
     "DROPPED_JOBS",
     "JOB_SPECS",
+    "MONITOR_NAMES",
+    "MONITOR_SPECS",
     "PERSONA_ID",
     "QQ_ACCOUNT",
     "SPECS_BY_NAME",

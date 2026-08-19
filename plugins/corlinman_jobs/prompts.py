@@ -23,6 +23,8 @@ That is the only structural change; the wording is untouched.
 
 from __future__ import annotations
 
+from typing import Sequence
+
 # ---------------------------------------------------------------------------
 # briefing.competition_daily  (VERBATIM — corlinman_private_jobs/briefing.py)
 # ---------------------------------------------------------------------------
@@ -205,6 +207,80 @@ def qzone_reply_comments(max_replies: int, lookback_posts: int) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# qq.monitor_digest  (sanhu / jlu / qunjlu)
+#
+# VERBATIM — but sourced differently from everything above. These three
+# constants are private module globals inside corlinman-channels'
+# service.py; they were never exported to this repository or to any
+# migration document (A1 §4 records the monitors' *config*, not this
+# prompt). The text below was read directly off the production checkout,
+# character for character, over a read-only SSH session against
+# corlinman-prod during this task:
+#   _QQ_MONITOR_STYLE_PROMPT   service.py:1339-1349
+#   _QQ_MONITOR_FOCUS_PROMPT   service.py:1351-1355
+# (corlinman-channels/src/corlinman_channels/service.py). Two omissions from
+# the source, both because this port has no multi-source monitor task: the
+# "multiple groups, keep them in separate sections" sentence
+# (_qq_monitor_compose_prompt) and _QQ_MONITOR_REDUCE_FOCUS_PROMPT (only
+# used by the map-reduce path — see corlinman_jobs_lib.QQ_MONITOR_PROMPT_
+# MESSAGE_CAP for why map-reduce itself is not reproduced). All three
+# migrated monitors have exactly one source group each (A1 §4), so neither
+# omission changes any monitor's actual behaviour.
+#
+# Structural note, same shape as the system_prompt-folding note above:
+# corlinman ran this as a *neutral, persona-free* chat turn
+# (_qq_monitor_generate passes persona_id=None — deliberately not
+# grantley). hermes cron has no per-job persona override, so the migrated
+# job still inherits whatever system prompt the profile configures
+# underneath this instruction block. Not fixable without a cron feature
+# this migration does not have; a structural limitation shared with every
+# other job in this plugin, not something specific to the monitors.
+# ---------------------------------------------------------------------------
+
+QQ_MONITOR_STYLE_PROMPT = (
+    "你是群聊记录的转述助手。下面是一个 QQ 群在指定时间段内的聊天记录，"
+    "请写一份给没爬楼的人看的汇总。要求：\n"
+    "- 说人话：用平实的大白话，语气冷静克制、就事论事，"
+    "不用专业术语、网络黑话或修辞渲染。\n"
+    "- 只依据给出的消息，不推测、不评价、不给建议、不虚构任何内容。\n"
+    "- 按话题归并，讲清楚谁说了什么、事情有没有结论；寒暄和刷屏可以忽略。\n"
+    "- 尽量精简，能一句话说清就不写第二句。\n"
+    "- 直接输出纯文本，不要 markdown 标记，不要开场白或收尾客套。"
+)
+
+QQ_MONITOR_FOCUS_PROMPT = (
+    "聊天记录里以 ★ 开头的行来自重点关注对象。除整体汇总外，"
+    "请在最后为每位重点关注对象单独写一小段，具体说明该成员这段时间"
+    "说了什么、在关心什么；如果某位重点关注对象没有发言，也要明确写一句"
+    "「该成员未发言」。"
+)
+
+#: What the source told the model about its own header line
+#: (``_QQ_MONITOR_STYLE_PROMPT``'s ``"第一行按这个格式写：{header}"``). There
+#: the header was spliced into the prompt at compose time, because the
+#: whole thing was one Python f-string built fresh per run. Here the header
+#: is dynamic (message count, truncation) and the prompt text is static
+#: (D1's own established split: prompts.py holds instructions, the script's
+#: stdout holds the material), so the header moves into the script's first
+#: printed line instead and this sentence points at it there.
+QQ_MONITOR_HEADER_POINTER = (
+    "上方 ## Script Output 的第一行是这次消息汇总的表头（群号、时间范围、"
+    "消息条数，或者说明这段时间没有消息）；之后是按时间先后排列的聊天记录，"
+    "越靠下越新。请依据这些消息生成汇总，并把表头信息也写进你输出的第一行。"
+)
+
+
+def qq_monitor_digest(*, focus_user_ids: Sequence[str] = (), style_extra: str = "") -> str:
+    """Instruction block for one QQ group-digest monitor (sanhu / jlu / qunjlu)."""
+    parts = [QQ_MONITOR_STYLE_PROMPT, QQ_MONITOR_HEADER_POINTER]
+    if focus_user_ids:
+        parts.append(QQ_MONITOR_FOCUS_PROMPT)
+    if style_extra:
+        parts.append("额外要求：" + style_extra)
+    return "\n\n".join(parts)
+
+
 __all__ = [
     "ANALYSIS_DIGEST",
     "ANALYSIS_SYSTEM",
@@ -217,11 +293,15 @@ __all__ = [
     "DIARY_USER",
     "NO_ANALYSIS",
     "NO_DIARY",
+    "QQ_MONITOR_FOCUS_PROMPT",
+    "QQ_MONITOR_HEADER_POINTER",
+    "QQ_MONITOR_STYLE_PROMPT",
     "QZONE_DAILY_TEMPLATE",
     "YOUTUBE_DAILY",
     "YOUTUBE_ID_FORMAT",
     "YOUTUBE_SYSTEM",
     "YOUTUBE_USER",
+    "qq_monitor_digest",
     "qzone_comment_friends",
     "qzone_daily_publish",
     "qzone_reply_comments",
