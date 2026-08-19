@@ -139,11 +139,15 @@ _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".3gp"}
 
 _GROUP_SPEECH = SlidingWindowCounter()
 
-#: Recent group chatter, including the bot's own posts, for any future
-#: proactive/context feature.  Fed BEFORE the reply gate: a persona should
-#: see the whole room, not only the messages it happened to answer.
+#: Recent group chatter, including the bot's own posts, read by
+#: :mod:`.proactive`.  Fed BEFORE the reply gate: a persona should see the
+#: whole room, not only the messages it happened to answer.
 _GROUP_RECENT: Dict[str, Deque[Tuple[float, str, str, bool]]] = {}
 _GROUP_RECENT_MAX = 30
+
+#: Per-message char cap in that buffer.  It is prompt input, so a single
+#: pasted wall of text must not be able to dominate a proactive turn.
+_GROUP_RECENT_TEXT_CHARS = 200
 
 
 def speech_key(instance_id: str, group_id: Any) -> str:
@@ -172,7 +176,17 @@ def group_speech_allowed(
 def record_group_message(
     instance_id: str, group_id: Any, sender: str, text: str, is_self: bool
 ) -> None:
-    """Append to the bounded per-group context buffer."""
+    """Append to the bounded per-group context buffer.
+
+    Blank entries (stickers, recalls, media-only posts) are dropped rather
+    than stored: they are noise in a rendered transcript, and a blank *inbound*
+    entry would read as "a human just spoke" to the proactive loop's
+    anti-spam check.  Text is capped because this buffer is prompt input.
+    """
+    text = (text or "").strip()
+    if not text:
+        return
+    text = text[:_GROUP_RECENT_TEXT_CHARS]
     key = speech_key(instance_id, group_id)
     buf = _GROUP_RECENT.get(key)
     if buf is None:
@@ -189,9 +203,13 @@ def recent_group_messages(
 
 
 def _reset_module_state() -> None:
-    """Test hook — clear the process-wide buffers."""
+    """Test hook — clear every process-wide buffer, this module's and the
+    proactive loop's daily budget, so state cannot leak between tests."""
     _GROUP_SPEECH._events.clear()  # noqa: SLF001 — test-only reach-in
     _GROUP_RECENT.clear()
+    from . import proactive as _proactive  # local: .proactive imports this module
+
+    _proactive.reset_state()
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +653,8 @@ class OneBotAdapter(BasePlatformAdapter):
         self._client: Optional[OneBotClient] = None
         self._dispatch_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
+        self._proactive_task: Optional[asyncio.Task] = None
+        self._proactive_cancel: Optional[asyncio.Event] = None
         self._turn_tasks: set = set()
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._dedup = MessageDeduplicator()
@@ -750,6 +770,7 @@ class OneBotAdapter(BasePlatformAdapter):
         self._health_task = asyncio.create_task(
             self._health_loop(), name="onebot-health"
         )
+        self._start_proactive_loop()
         # Publish for the synchronous tool layer (tools/onebot_client.py) so
         # QQ-borrowing tools reuse this connection instead of opening a
         # second one against the same backend.
@@ -796,11 +817,47 @@ class OneBotAdapter(BasePlatformAdapter):
             )
             return False
 
+    def _start_proactive_loop(self) -> None:
+        """Spawn the resident proactive-speech loop.
+
+        Always started, even when ``proactive_enabled`` is false: the loop
+        idles on a 60-second re-check of the live config, which is what lets an
+        operator turn the feature on (or off) without restarting the channel.
+        An idle beat is one dict read, so a permanently disabled deployment
+        pays essentially nothing for it.
+
+        Imported lazily because :mod:`.proactive` imports this module for the
+        shared speech budget and context buffer.
+        """
+        if self._proactive_task is not None and not self._proactive_task.done():
+            # ``connect()`` also runs on reconnect.  A second loop would be a
+            # second speaker: both would draw their own gaps and the group
+            # would get roughly twice the messages it was promised.
+            return
+        self._proactive_cancel = asyncio.Event()
+        try:
+            from . import proactive as _proactive
+        except Exception:  # noqa: BLE001 — a broken optional loop must not kill the channel
+            logger.exception("OneBot: proactive speech unavailable — continuing without it")
+            return
+        self._proactive_task = asyncio.create_task(
+            _proactive.proactive_loop(
+                self,
+                self._proactive_cancel,
+                _proactive.live_config(self),
+            ),
+            name="onebot-proactive",
+        )
+
     async def disconnect(self) -> None:
         """Stop the loops and close the socket."""
         self._running = False
         set_live_client(None, None)
-        for task in (self._dispatch_task, self._health_task):
+        if self._proactive_cancel is not None:
+            # Ask first, cancel second: a beat that is mid-send should finish
+            # writing rather than leave half a message in the group.
+            self._proactive_cancel.set()
+        for task in (self._dispatch_task, self._health_task, self._proactive_task):
             if task is not None and not task.done():
                 task.cancel()
                 try:
@@ -809,6 +866,8 @@ class OneBotAdapter(BasePlatformAdapter):
                     pass
         self._dispatch_task = None
         self._health_task = None
+        self._proactive_task = None
+        self._proactive_cancel = None
         for task in list(self._turn_tasks):
             if not task.done():
                 task.cancel()
@@ -1266,8 +1325,15 @@ class OneBotAdapter(BasePlatformAdapter):
                 await asyncio.sleep(BUBBLE_GAP_SECS)
 
         if is_group:
+            # Store the flattened bubbles, not the raw body: a literal
+            # ``[MSG_BREAK]`` in the buffer would be fed straight back into the
+            # next proactive prompt as if the bot had typed it.
             record_group_message(
-                self.instance_id, target, self._bot_nickname or "bot", content, True
+                self.instance_id,
+                target,
+                self._bot_nickname or "bot",
+                " ".join(bubbles) if bubbles else content,
+                True,
             )
         return SendResult(
             success=True,
@@ -1739,6 +1805,18 @@ _PRIVATE_YAML_KEYS = (
     "max_concurrency",
     "health_probe_secs",
     "health_lost_secs",
+    # Proactive speech (see .proactive).  Off unless proactive_enabled is set.
+    "proactive_enabled",
+    "proactive_groups",
+    "proactive_min_gap_minutes",
+    "proactive_max_gap_minutes",
+    "proactive_daily_max",
+    "proactive_active_start_hour",
+    "proactive_active_end_hour",
+    "proactive_timezone",
+    "proactive_probability",
+    "proactive_context_messages",
+    "proactive_prompt",
 )
 
 
