@@ -1275,3 +1275,65 @@ docstring 由 `must not drift. Ever.` 改为 `must not drift from the pinned bas
 两者与进行中的 D3 **同在 `plugins/platforms/onebot/adapter.py`**
 （D3 挂载入站消息路径、D44 改出站 `send()`、绑定接线改入站事件构造）。
 并行会撞车，故待 D3 落地后再派。
+
+### D3 验收（2026-08-19）—— ✅ 通过
+
+Orchestrator 独立复核，关键项**亲自跨模块实跑**而非读测试：
+
+| 验收项 | 结果 |
+|---|---|
+| `pytest tests/gateway/test_onebot_group_history.py -q` | **81 passed** |
+| 广回归（corlinman_jobs + qzone + grantley + cron） | **1452 passed, 1 skipped** —— 与 D2 基线**逐字一致，零回归** |
+| 零上游改动 | 全分支 `--diff-filter=MDRT` 仅 `.gitignore` +4（C4 遗留） |
+| 默认关闭 | ✅ `group_history_enabled` 默认 `False` |
+| corlinman 文件只读 | ✅ `sqlite3.connect(f"file:{source}?mode=ro", uri=True)` |
+| 队列有界 | ✅ 且 `batch_rows` 被钳到 `queue_max` —— 堵住了"未提交列表只受 batch_rows 约束"这个反向的无界内存洞 |
+
+**Schema 兼容性（D46-① 的核心目标）—— 我用真实导出快照对拍**：
+
+```
+D3 建库对象     : group_messages / monitor_state / idx_group_messages_window / sqlite_autoindex_monitor_state_1
+corlinman 导出   : 完全相同
+列序             : id, instance_id, group_id, sender_user_id, sender_name, message_id, event_time_ms, received_at_ms, text（两侧一致）
+DDL IDENTICAL   : True
+```
+
+**决定性验证 —— D3 写、D2 未改一行的读取逻辑读**（按路径加载 `corlinman_jobs_lib.py`，与 cron 脚本同一条路）：
+
+```
+sanhu/jlu 式（sender_ids=()）        → 3 行 ✅
+qunjlu 式（sender_ids=("1076712858",)）→ 2 行 ✅   ← qunjlu 的整个机制
+_qq_monitor_format_lines(..., Asia/Shanghai):
+   ★[08-19 13:29] u1076712858(1076712858): 明天几点集合     ← ★ 重点标记生效
+    [08-19 13:29] u999(999): 随便水一句
+   ★[08-19 13:29] u1076712858(1076712858): 带上装备
+```
+
+⇒ **D46-① 的设计目标达成：读路径零改动，切换只是换文件。**
+
+### D3 的取舍与自报缺陷（均接受）
+
+- **批量阈值 N=200 行 / T=30 s**：依据 D2 实测流量（两群合计约 16.5k 行/日 ≈ 0.2 行/秒），
+  T=30s 每批约 10 行、提交降到 ≤2880 次/日（fsync 少一个数量级）；T=5s 每窗口仅 1.7 行、无收益。
+  代价是**非正常终止**时最多丢 30 秒（`disconnect()` 会 flush）。
+- **队列 2000 行**（最忙群约 100 分钟），溢出丢**最新**一条并计数、每 1000 条记一次日志（journald 稀缺）。
+  丢最新可保持积压连续。实测最坏 9.50 MB / 典型 0.70 MB。
+- **不阻塞事件循环**：`record()` = frozenset 判定 + `put_nowait`；连接由守护线程内部创建并独占。
+  实测 500 个入站事件、提交端故意卡 0.5 s：**总耗时 8.6 ms，单事件最大 0.051 ms，事件循环最大延迟 0.43 ms**。
+- **回填幂等键 `(instance_id, group_id, message_id)`**，**刻意不含 `received_at_ms`**
+  ——共存期同一条消息会带两个不同的接收时戳，含它就会重复插入。
+  对真实 52649 行快照实跑：第 1 次 `inserted 52649`，第 2/3 次 `inserted 0 / duplicates 52649`，源文件 sha256 未变。
+
+| 缺陷 | 处置 |
+|---|---|
+| SIGKILL/OOM 最多丢 30 秒（`OOMScoreAdjust=500` 使 OOM 非假设） | 接受：聊天归档非事务性数据，30 秒窗口换取 fsync 降一个数量级 |
+| WAL 守卫是启发式非证明 | 接受并登记 |
+| `synchronous=FULL` 在 DELETE 模式下"持久但非无懈可击" | 接受 |
+| 无陈旧度检查（D2 §7.2 的缺口未变） | **转入后续**：归属 `corlinman_jobs/preflight.py`，D3 未越界去改，判断正确 |
+| 无 `hermes` CLI 子命令（会动 `hermes_cli/`） | 接受：维持零上游改动 |
+| **全部验证在 macOS / SQLite 3.53.1 上完成，从未在目标机跑过** | ⚠️ **列为切换步骤**：目标机是 3.40.1 且被迫 DELETE 模式，fsync 与锁行为是推导而非实测 |
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D48 | 切换窗口**必须在生产机上做一次归档写入冒烟测试**，不得直接依赖本地验证结论 | D3 自陈全部测试在 SQLite 3.53.1（WAL 可用）上完成，而生产是 3.40.1 强制 DELETE 模式——**两者的提交与锁行为正是本设计最吃紧的地方**。诚实自陈值得嘉许，但不能替代实测 |
+| D49 | 切换顺序**先回填、再改 `QQ_GROUP_HISTORY_DB` 指向**，不得颠倒 | 顺序反了会让 monitor 读到未回填的空库，而 `send_when_empty=false` 使这种失败**静默无声** |
