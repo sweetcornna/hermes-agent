@@ -63,6 +63,17 @@ optional_env:
       known gap — see the port notes); point this at a migrated copy, or at
       corlinman's own live file during the coexistence window so the
       monitors see fresh data instead of an aging ~3-day snapshot.
+  - name: QQ_MONITOR_DIGEST_BUDGET
+    description: >
+      Optional. How many chat lines one monitor digest may carry into its
+      single model call (default 1500, clamped to 50..20000). The digest
+      pre-reduces a whole window down to this many lines deterministically —
+      dropping image/sticker-only messages, pure symbols, single-character
+      filler and repeated copypasta, then sampling the rest across hourly
+      buckets with a per-sender cap — so one model call covers the whole day
+      instead of only its newest slice (D47). Raise it to trade prompt size
+      for fidelity; lower it if the upstream account pool is under pressure.
+      Messages from a monitor's focus_user_ids are never subject to it.
   - name: QZONE_PERSONA_ID
     description: >
       Must resolve to "grantley". The qzone dedup ledgers are keyed by

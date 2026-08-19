@@ -23,11 +23,11 @@ No new files, no new dependencies (stdlib + `yaml`, unchanged).
 
 | Path | Change | Lines |
 |---|---|---|
-| `plugins/corlinman_jobs/scripts/corlinman_jobs_lib.py` | the pre-reduction and its constants; `main_qq_monitor_digest` rewritten around it | 1067 → 1440 |
+| `plugins/corlinman_jobs/scripts/corlinman_jobs_lib.py` | the pre-reduction and its constants; `main_qq_monitor_digest` rewritten around it | 1067 → 1641 |
 | `plugins/corlinman_jobs/prompts.py` | `QQ_MONITOR_SAMPLING_PROMPT` — tells the model the log may be a sample | 308 → 327 |
-| `plugins/corlinman_jobs/plugin.yaml` | `QQ_MONITOR_DIGEST_BUDGET` documented under `optional_env` | 148 → 159 |
-| `tests/plugins/corlinman_jobs/test_jobs_lib.py` | 1 obsolete test replaced, 17 added | 1160 → 1470 |
-| `tests/plugins/corlinman_jobs/test_plugin_registration.py` | manifest/env cross-check now also reads the job-side library | 267 → 274 |
+| `plugins/corlinman_jobs/plugin.yaml` | `QQ_MONITOR_DIGEST_BUDGET` documented under `optional_env` | 90 → 101 |
+| `tests/plugins/corlinman_jobs/test_jobs_lib.py` | 1 obsolete test replaced, 17 added | 1160 → 1452 |
+| `tests/plugins/corlinman_jobs/test_plugin_registration.py` | manifest/env cross-check now also reads the job-side library | 215 → 223 |
 
 `installer.py` is **untouched**: the budget is resolved at run time, so an
 operator retunes it without reinstalling twelve jobs, and the installed entry
@@ -283,7 +283,19 @@ six survive, the image one as `[图片]` rather than a CDN URL.
 group 980927602): **peak 16.0 MB**, output 96,562 chars. Against
 `MemoryHigh=384M`.
 
-### 5.7 Test suite
+### 5.7 The installed copy actually runs
+
+The library is *copied* into `$HERMES_HOME/scripts/` and imported there with
+no package context, so a stdlib-only claim has to be proved, not asserted.
+Into an isolated `$HERMES_HOME`: the library plus the three rendered entry
+scripts were written out and `corlinman_qq_monitor_sanhu.py` was executed as
+a bare subprocess against the real snapshot — 1,506 lines of digest on
+stdout, the reduction summary on stderr, exit 0. Nothing was enabled and
+nothing was delivered: `ALL_SPECS` is still 12 jobs with `install_enabled`
+False on every one, and `qunjlu` still carries D45's structural suppression
+(`deliver="local"`, `enabled_toolsets=()`) unchanged.
+
+### 5.8 Test suite
 
 ```
 .venv/bin/python -m pytest tests/plugins/corlinman_jobs -q

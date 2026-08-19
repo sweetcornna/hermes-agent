@@ -180,6 +180,14 @@ class TestManifestMatchesReality:
             inspect.getsource(preflight)
             + inspect.getsource(installer)
             + inspect.getsource(qzone_state)
+            # The job-side library is plugin code too — it is what actually
+            # runs under cron — but it is copied into $HERMES_HOME/scripts/
+            # and has no package context, so it is read as a file rather
+            # than imported. QQ_MONITOR_DIGEST_BUDGET is read only there.
+            + (
+                installer.repo_root()
+                / "plugins" / "corlinman_jobs" / "scripts" / "corlinman_jobs_lib.py"
+            ).read_text(encoding="utf-8")
         )
         names = [entry["name"] for entry in data["optional_env"]]
         assert names, "optional_env vanished from the manifest"

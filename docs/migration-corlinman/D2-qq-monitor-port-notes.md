@@ -191,6 +191,13 @@ source specifically avoided the persona.
 
 ## 3. The map-reduce path is not reproduced — documented, not silent
 
+> **Superseded by D47** (`D47-digest-prereduction-notes.md`). The
+> newest-1000 truncation described below no longer exists: the digest now
+> pre-reduces the whole window in pure Python and covers all 24 hours with
+> the same single model call. `QQ_MONITOR_PROMPT_MESSAGE_CAP` was replaced
+> by `QQ_MONITOR_DIGEST_BUDGET` (1500, configurable). This section is kept
+> as the record of what D2 shipped and why.
+
 The source split any window over 1,000 messages
 (`_QQ_MONITOR_CHUNK_MESSAGES`) into 1,000-message chunks, summarised each
 chunk with a **parallel chat turn** (`asyncio.gather` over its own chat
@@ -350,7 +357,9 @@ All of the following ran against the real, exported production snapshot
   than left to be discovered after cutover.
 - **The map-reduce summarisation path is not reproduced** — see §3.
   `sanhu` in particular will lose the older two-thirds of a normal day's
-  messages to the newest-1000 cap, most days.
+  messages to the newest-1000 cap, most days. **Closed by D47** — not by
+  porting map-reduce, but by a deterministic pre-reduction that keeps the
+  model-call count at one; see `D47-digest-prereduction-notes.md`.
 
 ### 7.2 Introduced by this port
 

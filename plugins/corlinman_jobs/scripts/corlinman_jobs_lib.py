@@ -37,9 +37,10 @@ import sqlite3
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, NamedTuple, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
@@ -807,32 +808,122 @@ def main_daily_agenda(
 QQ_MONITOR_LINE_CAP = 300
 
 #: Per-monitor DB fetch ceiling — newest rows win when a window holds more.
-#: Verbatim from service.py:_QQ_MONITOR_FETCH_CAP.
-QQ_MONITOR_FETCH_CAP = 10_000
+#:
+#: The source set this to 10_000 (service.py:_QQ_MONITOR_FETCH_CAP). That
+#: number is **below a real day** for the busiest migrated monitor: group
+#: 980927602 carries 15k-20k messages per 24h window, so a literal 10_000
+#: silently clipped the oldest ~45% of the day *before* any summarisation
+#: strategy got a say. Since D47's whole purpose is whole-day coverage,
+#: keeping the source's value would have capped the achievable coverage at
+#: ~55% no matter how good the reduction below is.
+#:
+#: 40_000 is ~2.2x the busiest 24h window observed in the real export
+#: (20,780 rows on 2026-08-18) and is still a pure safety valve. Measured
+#: cost of the raise on the real snapshot: a 18,136-row window materialises
+#: at 9.0 MB and a full 40_000-row fetch extrapolates to ~20 MB — against
+#: this host's MemoryHigh=384M, and the rows are dropped again as soon as
+#: the reduction below has classified them.
+QQ_MONITOR_FETCH_CAP = 40_000
 
-#: Safety cap on how many formatted lines go into ONE agent turn.
+#: How many chat lines the ONE agent turn is allowed to carry.
 #:
-#: The source split anything over 1,000 messages (service.py:
-#: _QQ_MONITOR_CHUNK_MESSAGES) into 1,000-message chunks, summarised those
-#: chunks with PARALLEL chat turns (asyncio.gather over its own chat
-#: service), then ran one more turn to merge the partial summaries
-#: (_qq_monitor_summarize). A hermes cron job gets exactly one model call —
-#: there is no seam here for a script to launch several concurrent LLM
-#: turns of its own outside that call, and doing so would mean this job
-#: quietly starts making its own paid model calls from Python instead of
-#: through the one the scheduler already accounts for. That is a bigger
-#: architectural step than "port a job onto the established pattern", so it
-#: is not done.
+#: The source split anything over 1,000 messages into 1,000-message chunks,
+#: summarised each chunk with a PARALLEL chat turn and merged the partial
+#: summaries with one more turn (service.py:_qq_monitor_summarize). D47
+#: rules that path out for this host: it multiplies the model calls per run
+#: by N, and 00-PLAN.md §18 proved every upstream request that fails burns
+#: the (very tight) account pool. So this port keeps **exactly one** model
+#: call and instead spends pure CPU up front — see
+#: :func:`_qq_monitor_prereduce` — to make a whole day fit inside it.
 #:
-#: Consequence: on a day where a monitor's window holds more than this many
-#: messages — expected most days for "sanhu" (group 980927602 alone
-#: produced 45,578 of the 52,649-row export, roughly 15k/day) — this port
-#: keeps only the NEWEST QQ_MONITOR_PROMPT_MESSAGE_CAP messages and marks
-#: the digest as covering "仅展示最新一部分" rather than the whole day. This
-#: is a real, documented fidelity gap versus the source (which covered
-#: every message via map-reduce); see
-#: docs/migration-corlinman/D2-qq-monitor-port-notes.md §3.
-QQ_MONITOR_PROMPT_MESSAGE_CAP = 1000
+#: 1500 rather than the old newest-1000 truncation, because:
+#:
+#: * **It is cheaper than what it replaces.** Dropping image/sticker CQ
+#:   blobs (each rendered up to QQ_MONITOR_LINE_CAP chars of URL) more than
+#:   pays for the extra 500 lines. Measured on three real ``sanhu`` windows,
+#:   the rendered chat log shrinks 84,479 / 89,113 / 84,495 chars against
+#:   the old newest-1000 log's 94,935 / 105,522 / 93,699 — 10-16% *fewer*
+#:   prompt characters while covering 24 hours instead of 5-8.
+#: * It is ~1 line per minute of a 1440-minute window, i.e. >=60 lines per
+#:   hourly bucket — enough for the model to write a per-topic paragraph
+#:   for every part of the day.
+#: * It sits above a whole post-noise day for the two smaller monitors
+#:   (``jlu``'s group runs ~1.4k/day), so those two stay effectively
+#:   lossless and only ``sanhu`` actually samples.
+#:
+#: Overridable per run — see :func:`_qq_monitor_budget`.
+QQ_MONITOR_DIGEST_BUDGET = 1500
+
+#: Env var an operator can set to retune the budget without a code change.
+QQ_MONITOR_BUDGET_ENV = "QQ_MONITOR_DIGEST_BUDGET"
+
+#: Clamp applied to any budget from any source. The floor keeps a digest
+#: from degenerating into a handful of lines; the ceiling keeps a mis-set
+#: env var from posting a multi-megabyte prompt at the tight account pool.
+QQ_MONITOR_BUDGET_MIN = 50
+QQ_MONITOR_BUDGET_MAX = 20_000
+
+#: Time-bucket width for the coverage guarantee. One hour over the 1440-min
+#: window all three monitors use gives 24 buckets — coarse enough that a
+#: bucket still holds a conversation, fine enough that "the whole day is
+#: represented" is a real guarantee rather than a hope.
+QQ_MONITOR_BUCKET_MINUTES = 60
+
+#: No single sender may take more than this share of one bucket's quota
+#: (floor of 1 message). Real measurement of why: in the export's busiest
+#: hour one account sent 272 of 1,119 messages (24%).
+QQ_MONITOR_SENDER_BUCKET_SHARE = 0.2
+
+#: Share of a bucket's quota reserved for the "depth" pass — the
+#: highest-scoring messages regardless of how many senders are still
+#: unrepresented. 0.3 measured against the real export; see
+#: :func:`_qq_monitor_pick_bucket` for the numbers.
+QQ_MONITOR_BUCKET_DEPTH_SHARE = 0.3
+
+#: Messages whose *content* (letters/digits/CJK, after stripping CQ codes,
+#: punctuation and emoji) is this short or shorter are filler ("哦", "好").
+QQ_MONITOR_FILLER_MAX_CHARS = 1
+
+#: A normalised text repeated at least this many times in one window is a
+#: copypasta/复读 meme. Its FIRST occurrence is scored up as a topic anchor;
+#: the later ones are dropped as ``echo``.
+QQ_MONITOR_ANCHOR_REPEATS = 3
+
+#: How many "who talked most" entries the annotation carries. Per-sender
+#: capping deliberately flattens the loudest voices in the sampled log, so
+#: the raw ranking is restated in the header or the digest would lose the
+#: fact that one account dominated the room.
+QQ_MONITOR_TOP_TALKERS = 5
+
+#: CQ segment -> short human label. A digest reader gains nothing from 300
+#: chars of CDN URL, but "someone posted an image" is real information, so
+#: the segment collapses to a marker instead of vanishing.
+QQ_MONITOR_CQ_LABELS = {
+    "image": "[图片]",
+    "face": "[表情]",
+    "mface": "[表情]",
+    "bface": "[表情]",
+    "sface": "[表情]",
+    "record": "[语音]",
+    "video": "[视频]",
+    "file": "[文件]",
+    "forward": "[转发]",
+    "json": "[卡片]",
+    "xml": "[卡片]",
+    "share": "[分享]",
+    "music": "[音乐]",
+    "reply": "[回复]",
+    "poke": "[戳一戳]",
+    "dice": "[骰子]",
+    "rps": "[猜拳]",
+    "redbag": "[红包]",
+    "contact": "[名片]",
+    "location": "[位置]",
+}
+
+_QQ_CQ_RE = re.compile(r"\[CQ:([A-Za-z]+)((?:,[^\]]*)?)\]")
+_QQ_AT_QQ_RE = re.compile(r"(?:^|,)qq=([^,\]]+)")
+_QQ_WS_RE = re.compile(r"\s+")
 
 
 def _qq_monitor_window_desc(window_minutes: int) -> str:
@@ -931,6 +1022,457 @@ def _qq_monitor_format_lines(
     return lines
 
 
+# --- deterministic pre-reduction (D47) -------------------------------------
+#
+# Why this exists: `sanhu`'s source group carries ~15k-20k messages a day and
+# one agent turn cannot hold them. The source solved that with a parallel
+# map-reduce (N model calls); D47 rules that out for this host — the upstream
+# account pool is tight and every failed request burns it (00-PLAN.md §18),
+# and the box is 2 vCPU / 1.9 GB with MemoryHigh=384M. So the whole reduction
+# happens in **pure Python, zero model calls**, and the run still makes
+# exactly one.
+#
+# Everything below is deterministic: same rows in, same rows out. No RNG, no
+# hashing, no set iteration order, no wall clock. Every ordering is total —
+# ties break on the message's position in the (already deterministic) query
+# result. That is what makes the digest reproducible and the behaviour
+# testable.
+
+
+def _qq_monitor_plain_text(text: Any) -> str:
+    """Message text with every CQ segment removed and whitespace collapsed.
+
+    This is the *classification* view: what a human would call the words in
+    the message. An image-only message plains to ``""``.
+    """
+    return _QQ_WS_RE.sub(" ", _QQ_CQ_RE.sub(" ", str(text or ""))).strip()
+
+
+def _qq_monitor_display_text(text: Any) -> str:
+    """Message text as it should appear in the digest.
+
+    CQ segments collapse to a short label (``[图片]``) instead of the 100-300
+    chars of CDN URL they actually carry, and newlines collapse so that one
+    message stays one line — the chat-log rendering below is line-oriented
+    and a multi-line message used to silently break that contract.
+    """
+
+    def _label(match: "re.Match[str]") -> str:
+        kind = match.group(1).lower()
+        if kind == "at":
+            who = _QQ_AT_QQ_RE.search(match.group(2) or "")
+            target = html.unescape(who.group(1)).strip() if who else ""
+            return f" @{target} " if target else " [@] "
+        return " " + QQ_MONITOR_CQ_LABELS.get(kind, f"[{kind}]") + " "
+
+    return _QQ_WS_RE.sub(" ", _QQ_CQ_RE.sub(_label, str(text or ""))).strip()
+
+
+def _qq_monitor_per_mille(share: float) -> int:
+    """``share`` as an integer per-mille, so every quota is integer maths."""
+    return max(0, min(1000, int(round(float(share) * 1000))))
+
+
+def _qq_monitor_content_chars(text: str) -> str:
+    """Just the letters/digits/CJK — punctuation, emoji and spaces removed.
+
+    ``unicodedata.category`` puts emoji in ``So`` and every flavour of
+    punctuation in ``P*``, so this one rule covers "？", "。。。", "😭😭😭"
+    and kaomoji alike without a hand-maintained character list.
+    """
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] not in "PSZC")
+
+
+class _QqMonitorMessage(NamedTuple):
+    """One candidate line, pre-classified."""
+
+    index: int
+    """Position in the query result — the total, deterministic tie-breaker."""
+    received_at_ms: int
+    sender_id: str
+    sender_name: str
+    event_time_ms: int
+    display: str
+    plain: str
+    weight: int
+    """Content-character count: the information proxy used for ranking."""
+    focus: bool
+
+
+class _QqMonitorReduction(NamedTuple):
+    """Result of one pre-reduction pass, plus everything the digest must own up to."""
+
+    rows: list[tuple[int, str, str, int, str]]
+    total: int
+    kept: int
+    focus_kept: int
+    dropped: "dict[str, int]"
+    top_talkers: list[tuple[str, str, int]]
+    buckets: int
+    budget: int
+    fetch_capped: bool
+
+
+#: Drop reasons, in the order the annotation lists them.
+QQ_MONITOR_DROP_LABELS = (
+    ("media", "图片/表情等无文字内容"),
+    ("symbol", "纯符号或颜文字"),
+    ("filler", "单字灌水"),
+    ("echo", "重复刷屏"),
+    ("quota", "时段配额外未抽中"),
+)
+
+
+def _qq_monitor_budget(budget: Optional[int] = None) -> int:
+    """Resolve the line budget: explicit argument > env var > module default.
+
+    Always clamped to [QQ_MONITOR_BUDGET_MIN, QQ_MONITOR_BUDGET_MAX]; a
+    garbage env value is reported on stderr and ignored rather than crashing
+    a scheduled run.
+    """
+    raw: Any = budget
+    if raw is None:
+        env = os.environ.get(QQ_MONITOR_BUDGET_ENV, "").strip()
+        if env:
+            try:
+                raw = int(env)
+            except ValueError:
+                log(f"{QQ_MONITOR_BUDGET_ENV}={env!r} is not an integer — using default")
+                raw = None
+    if raw is None:
+        raw = QQ_MONITOR_DIGEST_BUDGET
+    value = int(raw)
+    return max(QQ_MONITOR_BUDGET_MIN, min(QQ_MONITOR_BUDGET_MAX, value))
+
+
+def _qq_monitor_allocate(sizes: Sequence[int], budget: int) -> list[int]:
+    """Split *budget* across time buckets holding *sizes* candidates each.
+
+    Half egalitarian, half proportional, and nothing else:
+
+    * every non-empty bucket first gets ``min(size, budget // (2 * buckets))``
+      — this is the whole-day coverage guarantee. Without it a proportional
+      split gives a 27-message hour ~2 lines and the digest silently loses
+      the quiet parts of the day;
+    * the rest is handed out in proportion to each bucket's *remaining*
+      capacity, largest-remainder, ties broken by bucket index.
+
+    Never allocates more than a bucket holds; returns exactly ``min(budget,
+    sum(sizes))`` in total.
+    """
+    n = len(sizes)
+    if n == 0:
+        return []
+    if budget <= 0:
+        return [0] * n
+    if budget >= sum(sizes):
+        return [int(s) for s in sizes]
+    floor = max(1, budget // (2 * n))
+    quota = [min(int(sizes[i]), floor) for i in range(n)]
+    left = budget - sum(quota)
+    # Bounded loop rather than `while left`: each pass hands out at least one
+    # line, so n + 2 passes is already unreachable — the bound only exists so
+    # a future edit cannot turn a scheduled job into a spin.
+    for _ in range(n + 2):
+        if left <= 0:
+            break
+        spare = [int(sizes[i]) - quota[i] for i in range(n)]
+        total_spare = sum(spare)
+        if total_spare <= 0:
+            break
+        add = [min(spare[i], left * spare[i] // total_spare) for i in range(n)]
+        rem = left - sum(add)
+        if rem > 0:
+            order = sorted(
+                range(n), key=lambda i: (-((left * spare[i]) % total_spare), i)
+            )
+            for i in order:
+                if rem <= 0:
+                    break
+                if add[i] < spare[i]:
+                    add[i] += 1
+                    rem -= 1
+        given = sum(add)
+        if given <= 0:
+            break
+        for i in range(n):
+            quota[i] += add[i]
+        left -= given
+    return quota
+
+
+def _qq_monitor_pick_bucket(
+    bucket: Sequence[_QqMonitorMessage],
+    quota: int,
+    *,
+    scores: "dict[int, int]",
+    sender_share: float = QQ_MONITOR_SENDER_BUCKET_SHARE,
+    depth_share: float = QQ_MONITOR_BUCKET_DEPTH_SHARE,
+) -> list[_QqMonitorMessage]:
+    """Choose *quota* of one bucket's messages: breadth first, then depth.
+
+    1. **Breadth** takes ``quota * (1 - depth_share)`` lines, one per sender,
+       each sender's single best message. This is the anti-flood guarantee
+       the brief asks for: it is what keeps a 470-sender day from collapsing
+       onto the ten loudest accounts.
+    2. **Depth** spends the reserved remainder on the highest-scoring
+       messages still unpicked — including the best message of any sender
+       breadth never reached — subject to a per-sender ceiling of
+       ``ceil(quota * sender_share)``.
+
+    Why depth needs a *reserved* share rather than just the leftovers:
+    measured on the real export's busiest day (2026-08-18, 20,780 rows), a
+    pure breadth pass never got past round one in any busy bucket, so a
+    member who made three substantive points that hour contributed exactly
+    one and the digest kept only 61% of the day's >=40-char messages. A 30%
+    depth reserve lifts that to 97% (and 88% -> 100% on 2026-08-19) while
+    still keeping 284 of the day's 526 senders — roughly three times what
+    the newest-1000 truncation this replaces managed (98).
+
+    Senders are ordered by their best message's score, so when a bucket has
+    more senders than quota the substantive voices are the ones that make
+    it in. Every comparison ends in ``index``, so the result is a pure
+    function of the input.
+    """
+    if quota >= len(bucket):
+        return list(bucket)
+    if quota <= 0:
+        return []
+    by_sender: "dict[str, list[_QqMonitorMessage]]" = {}
+    for msg in bucket:
+        by_sender.setdefault(msg.sender_id, []).append(msg)
+    for msgs in by_sender.values():
+        msgs.sort(key=lambda m: (-scores[m.index], m.index))
+    senders = sorted(
+        by_sender,
+        key=lambda s: (-scores[by_sender[s][0].index], by_sender[s][0].index),
+    )
+    # ceil()/floor() in integer arithmetic — no float rounding anywhere on
+    # the deterministic path.
+    cap = max(1, -(-quota * _qq_monitor_per_mille(sender_share) // 1000))
+    breadth_limit = quota - (quota * _qq_monitor_per_mille(depth_share) // 1000)
+
+    taken: list[_QqMonitorMessage] = []
+    used: "dict[str, int]" = {}
+    for sender in senders:
+        if len(taken) >= breadth_limit:
+            break
+        taken.append(by_sender[sender][0])
+        used[sender] = 1
+    if len(taken) < quota:
+        rest = [
+            msg
+            for sender in senders
+            for msg in by_sender[sender][1 if sender in used else 0 :]
+        ]
+        rest.sort(key=lambda m: (-scores[m.index], m.index))
+        for msg in rest:
+            if len(taken) >= quota:
+                break
+            if used.get(msg.sender_id, 0) >= cap:
+                continue
+            taken.append(msg)
+            used[msg.sender_id] = used.get(msg.sender_id, 0) + 1
+    return taken
+
+
+def _qq_monitor_prereduce(
+    rows: Sequence[tuple[int, str, str, int, str]],
+    *,
+    focus_user_ids: Sequence[str],
+    since_ms: int,
+    budget: int,
+    bucket_minutes: int = QQ_MONITOR_BUCKET_MINUTES,
+    sender_share: float = QQ_MONITOR_SENDER_BUCKET_SHARE,
+    depth_share: float = QQ_MONITOR_BUCKET_DEPTH_SHARE,
+    filler_max_chars: int = QQ_MONITOR_FILLER_MAX_CHARS,
+    fetch_capped: bool = False,
+) -> _QqMonitorReduction:
+    """Compress a whole window down to *budget* lines, deterministically.
+
+    Order of operations, and the reason for each:
+
+    1. **Focus members are lifted out first and are never subject to
+       anything below.** ``focus_user_ids`` is ``jlu``'s entire mechanism —
+       the ★ lines and the per-member closing section the prompt asks for.
+       A reduction that could drop them would quietly break that monitor, so
+       they bypass the noise filter, the dedup, the buckets and the quota.
+    2. **Zero-content drops** (``media``/``symbol``/``filler``). An
+       image-only message renders as 300 chars of CDN URL and contributes
+       nothing to a text digest; "？" and "😭" the same. Measured on the real
+       export: 3,140 of 18,136 rows in one ``sanhu`` day are media-only.
+    3. **Echo dedup.** Identical normalised text keeps its FIRST occurrence
+       only. In the real export this is copypasta — one joke pasted 27 times
+       — not 27 people making 27 points.
+    4. **Hourly buckets + quota** so every part of the day is represented,
+       then per-bucket selection (see :func:`_qq_monitor_pick_bucket`).
+
+    Returns the surviving rows in the same shape and chronological order the
+    query produced, with the display text substituted, plus the counters the
+    digest header has to own up to.
+    """
+    focus = {str(u) for u in focus_user_ids if str(u).strip()}
+    dropped = {key: 0 for key, _label in QQ_MONITOR_DROP_LABELS}
+    total = len(rows)
+    talkers: "dict[str, list[Any]]" = {}
+    candidates: list[_QqMonitorMessage] = []
+    plain_counts: "dict[str, int]" = {}
+
+    for index, row in enumerate(rows):
+        received_at_ms, sender_id, sender_name, event_time_ms, text = row
+        sid = str(sender_id or "")
+        name = str(sender_name or "")
+        entry = talkers.setdefault(sid, [name, 0, index])
+        entry[1] += 1
+        if name and not entry[0]:
+            entry[0] = name
+        plain = _qq_monitor_plain_text(text)
+        is_focus = sid in focus
+        content = _qq_monitor_content_chars(plain)
+        if not is_focus:
+            if not plain:
+                dropped["media"] += 1
+                continue
+            if not content:
+                dropped["symbol"] += 1
+                continue
+            if len(content) <= filler_max_chars:
+                dropped["filler"] += 1
+                continue
+        plain_counts[plain] = plain_counts.get(plain, 0) + 1
+        candidates.append(
+            _QqMonitorMessage(
+                index=index,
+                received_at_ms=int(received_at_ms),
+                sender_id=sid,
+                sender_name=name,
+                event_time_ms=int(event_time_ms or 0),
+                display=_qq_monitor_display_text(text),
+                plain=plain,
+                weight=len(content),
+                focus=is_focus,
+            )
+        )
+
+    seen: "set[str]" = set()
+    surviving: list[_QqMonitorMessage] = []
+    for msg in candidates:
+        if not msg.focus:
+            if msg.plain in seen:
+                dropped["echo"] += 1
+                continue
+            seen.add(msg.plain)
+        surviving.append(msg)
+
+    anchors = {
+        plain
+        for plain, count in plain_counts.items()
+        if count >= QQ_MONITOR_ANCHOR_REPEATS
+    }
+    scores: "dict[int, int]" = {}
+    for msg in surviving:
+        score = min(msg.weight, 200)
+        if "?" in msg.plain or "？" in msg.plain:
+            # A question is what a digest reader most wants resolved.
+            score += 20
+        if msg.plain in anchors:
+            # The first posting of the copypasta everyone then repeated is a
+            # topic marker, precisely because the copies were dropped above.
+            score += 30
+        scores[msg.index] = score
+
+    kept = [msg for msg in surviving if msg.focus]
+    pool = [msg for msg in surviving if not msg.focus]
+    remaining = max(0, budget - len(kept))
+
+    bucket_ms = max(1, int(bucket_minutes) * 60_000)
+    buckets: "dict[int, list[_QqMonitorMessage]]" = {}
+    for msg in pool:
+        buckets.setdefault((msg.received_at_ms - since_ms) // bucket_ms, []).append(msg)
+    keys = sorted(buckets)
+    quotas = _qq_monitor_allocate([len(buckets[k]) for k in keys], remaining)
+    for key, quota in zip(keys, quotas):
+        bucket = buckets[key]
+        taken = _qq_monitor_pick_bucket(
+            bucket,
+            quota,
+            scores=scores,
+            sender_share=sender_share,
+            depth_share=depth_share,
+        )
+        dropped["quota"] += len(bucket) - len(taken)
+        kept.extend(taken)
+    kept.sort(key=lambda m: m.index)
+
+    # Counted off what actually survived, not off the buckets the quota was
+    # split over: a bucket may hold nothing but focus messages.
+    covered = len({(m.received_at_ms - since_ms) // bucket_ms for m in kept})
+    ordered_ids = sorted(talkers, key=lambda s: (-talkers[s][1], talkers[s][2]))
+    top_talkers = [
+        (talkers[s][0], s, talkers[s][1]) for s in ordered_ids[:QQ_MONITOR_TOP_TALKERS]
+    ]
+
+    return _QqMonitorReduction(
+        rows=[
+            (m.received_at_ms, m.sender_id, m.sender_name, m.event_time_ms, m.display)
+            for m in kept
+        ],
+        total=total,
+        kept=len(kept),
+        focus_kept=sum(1 for m in kept if m.focus),
+        dropped={k: v for k, v in dropped.items() if v},
+        top_talkers=top_talkers,
+        buckets=covered,
+        budget=budget,
+        fetch_capped=bool(fetch_capped),
+    )
+
+
+def _qq_monitor_reduction_notes(
+    reduction: _QqMonitorReduction, focus_user_ids: Sequence[str]
+) -> list[str]:
+    """The lines that tell the digest's reader the log has been compressed.
+
+    Non-negotiable per D47: a summariser handed a sample must not be allowed
+    to believe it saw everything. These lines name the original count, the
+    kept count, and every drop category with its exact number.
+    """
+    if not reduction.dropped and not reduction.fetch_capped:
+        return []
+    notes = [
+        "说明：下面的聊天记录不是全部原文，而是对整个时间窗口做的确定性抽样——"
+        "按小时分桶保证全时段都有代表，并对刷屏、重复内容和单个刷屏者做了限流。"
+        "请据抽到的内容归纳话题，不要推断没有出现的内容，也不要按记录行数重新统计条数。"
+    ]
+    if reduction.dropped:
+        parts = [
+            f"{label} {reduction.dropped[key]} 条"
+            for key, label in QQ_MONITOR_DROP_LABELS
+            if reduction.dropped.get(key)
+        ]
+        notes.append(
+            f"已归约 {sum(reduction.dropped.values())} 条："
+            + "、".join(parts)
+            + f"；保留 {reduction.kept} 条，覆盖 {reduction.buckets} 个时段。"
+        )
+    if reduction.fetch_capped:
+        notes.append(
+            f"注意：该时间窗口的消息量超过取数上限 {QQ_MONITOR_FETCH_CAP} 条，"
+            "更早的消息没有进入本次抽样。"
+        )
+    if focus_user_ids:
+        notes.append(
+            f"重点关注对象（★ 标记）的 {reduction.focus_kept} 条消息未参与抽样，全部保留。"
+        )
+    if reduction.top_talkers:
+        ranked = "、".join(
+            f"{name}({sid}) {count} 条" if name else f"{sid} {count} 条"
+            for name, sid, count in reduction.top_talkers
+        )
+        notes.append("按原始条数发言最多：" + ranked + "（抽样后各人条数已被拉平，热度以此行为准）。")
+    return notes
+
+
 def main_qq_monitor_digest(
     *,
     db_path: str,
@@ -942,15 +1484,21 @@ def main_qq_monitor_digest(
     timezone: str,
     monitor_id: str,
     now: Optional[datetime] = None,
+    budget: Optional[int] = None,
 ) -> int:
     """Emit one monitor's chat window as digest material.
 
     Ports the fetch half of ``_qq_monitor_run_once`` plus the header/chat-log
-    half of ``_qq_monitor_compose_prompt`` (the single-turn path — see
-    QQ_MONITOR_PROMPT_MESSAGE_CAP for why the map-reduce path is not
-    reproduced). The style instructions themselves live in
-    ``prompts.qq_monitor_digest`` — this function only ever prints material,
-    matching every other job in this library.
+    half of ``_qq_monitor_compose_prompt``, with the source's map-reduce
+    replaced by :func:`_qq_monitor_prereduce` — a deterministic, zero-model
+    compression that lets ONE agent turn cover the whole window instead of
+    its newest slice (D47; see QQ_MONITOR_DIGEST_BUDGET). The style
+    instructions themselves live in ``prompts.qq_monitor_digest`` — this
+    function only ever prints material, matching every other job in this
+    library.
+
+    ``budget`` overrides the line budget for this run; ``None`` falls back to
+    the ``QQ_MONITOR_DIGEST_BUDGET`` env var and then the module default.
 
     Prints nothing when the window is empty. All three migrated monitors
     have ``send_when_empty=false`` verbatim (A1 §4), and an empty stdout is
@@ -978,19 +1526,45 @@ def main_qq_monitor_digest(
         log(f"{monitor_id}: no messages in the window — nothing to report")
         return 0
 
-    truncated = False
-    if len(rows) > QQ_MONITOR_PROMPT_MESSAGE_CAP:
-        rows = rows[-QQ_MONITOR_PROMPT_MESSAGE_CAP:]
-        truncated = True
+    reduction = _qq_monitor_prereduce(
+        rows,
+        focus_user_ids=focus_user_ids,
+        since_ms=since_ms,
+        budget=_qq_monitor_budget(budget),
+        fetch_capped=len(rows) >= QQ_MONITOR_FETCH_CAP,
+    )
+    del rows  # a busy sanhu window is ~9 MB; do not hold it while rendering
+    if not reduction.rows:
+        # Only reachable when the whole window was media/symbol/filler and
+        # no focus member spoke. Nothing to summarise; same silent skip as an
+        # empty window (send_when_empty=false).
+        log(
+            f"{monitor_id}: {reduction.total} message(s) in the window but none "
+            "carried any text — nothing to report"
+        )
+        return 0
 
     window_desc = _qq_monitor_window_desc(int(window_minutes))
-    tail = "，仅展示最新一部分，更早的消息未纳入本次汇总" if truncated else ""
-    print(f"群 {group_id} {window_desc}的消息汇总（共 {len(rows)} 条{tail}）。")
+    if reduction.kept == reduction.total:
+        # Nothing was compressed — keep the source's header byte-for-byte.
+        print(f"群 {group_id} {window_desc}的消息汇总（共 {reduction.total} 条）。")
+    else:
+        print(
+            f"群 {group_id} {window_desc}的消息汇总"
+            f"（原始 {reduction.total} 条，抽样保留 {reduction.kept} 条）。"
+        )
     if focus_user_ids:
         print("重点关注：" + "、".join(focus_user_ids))
+    for note in _qq_monitor_reduction_notes(reduction, focus_user_ids):
+        print(note)
+    log(
+        f"{monitor_id}: prereduced {reduction.total} -> {reduction.kept} line(s) "
+        f"across {reduction.buckets} bucket(s), budget={reduction.budget}, "
+        f"dropped={reduction.dropped}"
+    )
     print()
     print("聊天记录（越靠下越新）：")
-    print("\n".join(_qq_monitor_format_lines(rows, focus_user_ids, tz)))
+    print("\n".join(_qq_monitor_format_lines(reduction.rows, focus_user_ids, tz)))
     return 0
 
 

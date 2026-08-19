@@ -271,9 +271,27 @@ QQ_MONITOR_HEADER_POINTER = (
 )
 
 
+#: Tells the model that the chat log it is looking at may be a deterministic
+#: *sample* of the window rather than every message.
+#:
+#: Not cosmetic. D47 replaced the source's map-reduce with a pure-Python
+#: pre-reduction so ONE model call can cover a whole 15k-message day
+#: (corlinman_jobs_lib._qq_monitor_prereduce). A summariser handed a sample
+#: while believing it holds the full transcript will state message counts and
+#: "nobody mentioned X" conclusions that are simply false, so the compression
+#: is declared in the script output AND named here.
+QQ_MONITOR_SAMPLING_PROMPT = (
+    "如果表头之后出现「说明：」「已归约」这样的行，那么下面的聊天记录是脚本对整个"
+    "时间窗口做的确定性抽样，不是全部原文——图片/表情、纯符号、单字灌水和重复刷屏"
+    "已被丢弃，每个时段和每个发言人也都做了限流。这时请注意：汇总仍要覆盖整个时间段，"
+    "不要只讲最近几个小时；消息条数一律以表头给出的原始条数为准，不要按记录行数重新数；"
+    "不要声称看到了全部消息，也不要就没有出现在记录里的内容下结论。"
+)
+
+
 def qq_monitor_digest(*, focus_user_ids: Sequence[str] = (), style_extra: str = "") -> str:
     """Instruction block for one QQ group-digest monitor (sanhu / jlu / qunjlu)."""
-    parts = [QQ_MONITOR_STYLE_PROMPT, QQ_MONITOR_HEADER_POINTER]
+    parts = [QQ_MONITOR_STYLE_PROMPT, QQ_MONITOR_HEADER_POINTER, QQ_MONITOR_SAMPLING_PROMPT]
     if focus_user_ids:
         parts.append(QQ_MONITOR_FOCUS_PROMPT)
     if style_extra:
@@ -295,6 +313,7 @@ __all__ = [
     "NO_DIARY",
     "QQ_MONITOR_FOCUS_PROMPT",
     "QQ_MONITOR_HEADER_POINTER",
+    "QQ_MONITOR_SAMPLING_PROMPT",
     "QQ_MONITOR_STYLE_PROMPT",
     "QZONE_DAILY_TEMPLATE",
     "YOUTUBE_DAILY",

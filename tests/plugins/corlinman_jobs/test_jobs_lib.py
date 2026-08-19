@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sqlite3
 import sys
 from datetime import date, datetime, timedelta
@@ -790,16 +791,24 @@ class TestMainQqMonitorDigest:
         assert "重点关注：1076712858" in out
         assert "★" in out
 
-    def test_over_the_prompt_cap_keeps_only_the_newest_and_flags_truncation(
+    def test_over_the_budget_covers_the_whole_window_not_just_the_newest(
         self, qq_history_db, capsys
     ):
+        """D47's reason for existing.
+
+        The behaviour this replaces kept the newest N messages and threw the
+        rest away, so a busy day's digest only ever saw its last few hours.
+        The pre-reduction must instead sample across the *entire* window: the
+        very first message of the day is as reachable as the very last.
+        """
         now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
-        total = lib.QQ_MONITOR_PROMPT_MESSAGE_CAP + 10
+        total = lib.QQ_MONITOR_DIGEST_BUDGET * 3
         for i in range(total):
             _add_group_message(
                 qq_history_db,
-                received_at=now - timedelta(minutes=total - i),
-                text=f"msg-{i}",
+                sender_id=str(i % 40),
+                received_at=now - timedelta(seconds=(total - i) * 15),
+                text=f"消息编号 {i} 内容占位",
             )
         lib.main_qq_monitor_digest(
             db_path=str(qq_history_db), instance_id="default", group_id="183287894",
@@ -807,10 +816,293 @@ class TestMainQqMonitorDigest:
             timezone=TZ, monitor_id="sanhu", now=now,
         )
         out = capsys.readouterr().out
-        assert f"共 {lib.QQ_MONITOR_PROMPT_MESSAGE_CAP} 条，仅展示最新一部分" in out
-        assert "msg-0 " not in out and "msg-0\n" not in out and not out.endswith("msg-0")
-        # The newest message (msg-<total-1>) must have survived the cap.
-        assert f"msg-{total - 1}" in out
+        body = out.split("聊天记录（越靠下越新）：\n", 1)[1]
+        lines = body.splitlines()
+        assert len(lines) <= lib.QQ_MONITOR_DIGEST_BUDGET
+        assert f"原始 {total} 条，抽样保留 {len(lines)} 条" in out
+        # Both ends of the window are represented — the newest-N truncation
+        # this replaces could only ever satisfy the second of these.
+        seq = [int(re.search(r"消息编号 (\d+) ", line).group(1)) for line in lines]
+        assert seq == sorted(seq)
+        assert seq[0] < total // 10, seq[0]
+        assert seq[-1] > total - total // 10, seq[-1]
+        # ...and the sampling is spread, not clumped at either end.
+        first_third = sum(1 for n in seq if n < total // 3)
+        last_third = sum(1 for n in seq if n >= 2 * total // 3)
+        assert first_third > len(seq) // 4
+        assert last_third > len(seq) // 4
+
+    def test_it_names_every_drop_category_and_its_count(self, qq_history_db, capsys):
+        """The digest reader must be able to see what was compressed away."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        for i in range(3):
+            _add_group_message(
+                qq_history_db, sender_id="7", received_at=now - timedelta(minutes=30 + i),
+                text="[CQ:image,file=abc.jpg,url=https://example.invalid/x]",
+            )
+        _add_group_message(
+            qq_history_db, sender_id="7", received_at=now - timedelta(minutes=20),
+            text="？？？",
+        )
+        _add_group_message(
+            qq_history_db, sender_id="7", received_at=now - timedelta(minutes=19),
+            text="哦",
+        )
+        for i in range(2):
+            _add_group_message(
+                qq_history_db, sender_id=str(i), received_at=now - timedelta(minutes=10 + i),
+                text="一模一样的复读内容",
+            )
+        _add_group_message(
+            qq_history_db, sender_id="9", received_at=now - timedelta(minutes=5),
+            text="这条是真正有内容的消息",
+        )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="sanhu", now=now,
+        )
+        out = capsys.readouterr().out
+        assert "原始 8 条，抽样保留 2 条" in out
+        assert "图片/表情等无文字内容 3 条" in out
+        assert "纯符号或颜文字 1 条" in out
+        assert "单字灌水 1 条" in out
+        assert "重复刷屏 1 条" in out
+        assert "已归约 6 条；" not in out  # the total goes first, not last
+        assert "已归约 6 条：" in out
+        # ...and the surviving copy of the repeated line is still there.
+        assert "一模一样的复读内容" in out
+        assert "这条是真正有内容的消息" in out
+
+    def test_an_unreduced_window_keeps_the_source_header_verbatim(
+        self, qq_history_db, capsys
+    ):
+        """Nothing dropped => the digest reads exactly as it did before D47."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        for i in range(3):
+            _add_group_message(
+                qq_history_db, sender_id=str(i), received_at=now - timedelta(minutes=i + 1),
+                text=f"有内容的第 {i} 条",
+            )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="sanhu", now=now,
+        )
+        out = capsys.readouterr().out
+        assert "群 183287894 最近 1 天的消息汇总（共 3 条）。" in out
+        assert "已归约" not in out
+        assert "说明：" not in out
+
+    def test_focus_messages_are_never_dropped_however_much_noise_there_is(
+        self, qq_history_db, capsys
+    ):
+        """jlu's whole mechanism. focus_user_ids messages bypass the noise
+        filter, the dedup, the buckets and the quota — including messages a
+        non-focus sender would lose as an image, a single char or a repeat."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        focus = "1076712858"
+        for i in range(lib.QQ_MONITOR_DIGEST_BUDGET * 2):
+            _add_group_message(
+                qq_history_db, sender_id=str(i % 50),
+                received_at=now - timedelta(seconds=(5000 - i) * 10),
+                text=f"路人消息 {i}",
+            )
+        focus_texts = [
+            "重点对象说的正经内容",
+            "哦",
+            "？",
+            "[CQ:image,file=zz.jpg,url=https://example.invalid/z]",
+            "重复内容",
+            "重复内容",
+        ]
+        for i, text in enumerate(focus_texts):
+            _add_group_message(
+                qq_history_db, sender_id=focus, sender_name="目前5成仓",
+                received_at=now - timedelta(minutes=200 - i), text=text,
+            )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[focus], window_minutes=1440,
+            timezone=TZ, monitor_id="jlu", now=now,
+        )
+        out = capsys.readouterr().out
+        body = out.split("聊天记录（越靠下越新）：\n", 1)[1]
+        starred = [line for line in body.splitlines() if line.startswith("★")]
+        assert len(starred) == len(focus_texts)
+        assert f"重点关注对象（★ 标记）的 {len(focus_texts)} 条消息未参与抽样，全部保留" in out
+        # The image-only focus message survives as a readable marker, not as
+        # 300 chars of CDN URL.
+        assert any(line.endswith("[图片]") for line in starred)
+        assert "https://example.invalid" not in out
+        # Both copies of the repeated focus line survive: dedup is for the
+        # crowd, never for the member the monitor exists to watch.
+        assert sum(1 for line in starred if line.endswith("重复内容")) == 2
+
+    def test_the_same_window_always_reduces_to_the_same_bytes(
+        self, qq_history_db, capsys
+    ):
+        """Determinism is a hard requirement: no RNG, no set-iteration order,
+        no wall clock anywhere on the reduction path."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        for i in range(1200):
+            _add_group_message(
+                qq_history_db, sender_id=str(i % 37), sender_name=f"人{i % 37}",
+                received_at=now - timedelta(seconds=(4000 - i) * 20),
+                text=f"内容 {i} " + "补" * (i % 30),
+            )
+        runs = []
+        for _ in range(3):
+            lib.main_qq_monitor_digest(
+                db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+                watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+                timezone=TZ, monitor_id="sanhu", now=now, budget=300,
+            )
+            runs.append(capsys.readouterr().out)
+        assert runs[0] == runs[1] == runs[2]
+        assert len(runs[0].split("聊天记录（越靠下越新）：\n", 1)[1].splitlines()) == 300
+
+    def test_one_flooder_cannot_eat_the_whole_digest(self, qq_history_db, capsys):
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        for i in range(2000):
+            _add_group_message(
+                qq_history_db, sender_id="flood", sender_name="刷屏的",
+                received_at=now - timedelta(seconds=(3000 - i) * 20),
+                text=f"刷屏内容第 {i} 条真的很长很长很长很长很长很长很长很长很长很长",
+            )
+        for i in range(60):
+            _add_group_message(
+                qq_history_db, sender_id=f"quiet{i}", sender_name=f"安静的{i}",
+                received_at=now - timedelta(seconds=(3000 - i * 40) * 20),
+                text=f"安静的人说的第 {i} 句",
+            )
+        lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="sanhu", now=now, budget=200,
+        )
+        out = capsys.readouterr().out
+        body = out.split("聊天记录（越靠下越新）：\n", 1)[1]
+        lines = body.splitlines()
+        flooder = sum(1 for line in lines if "(flood):" in line)
+        quiet = sum(1 for line in lines if "(quiet" in line)
+        assert flooder < len(lines) // 2, (flooder, len(lines))
+        # every quiet member got in, even though they are outnumbered 33:1
+        assert quiet == 60
+        assert "刷屏的(flood) 2000 条" in out
+
+    def test_a_window_of_pure_noise_prints_nothing(self, qq_history_db, capsys):
+        """Same contract as an empty window: send_when_empty=false, so stdout
+        must stay empty rather than deliver a header with no chat log."""
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        for i in range(20):
+            _add_group_message(
+                qq_history_db, received_at=now - timedelta(minutes=i + 1),
+                text="[CQ:image,file=a.jpg,url=https://example.invalid/a]",
+            )
+        rc = lib.main_qq_monitor_digest(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="sanhu", now=now,
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "none carried any text" in captured.err
+
+    def test_the_budget_is_configurable_by_argument_and_by_env(
+        self, qq_history_db, capsys, monkeypatch
+    ):
+        now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
+        for i in range(400):
+            _add_group_message(
+                qq_history_db, sender_id=str(i % 20),
+                received_at=now - timedelta(seconds=(2000 - i) * 30),
+                text=f"某人说的第 {i} 句话",
+            )
+        kwargs = dict(
+            db_path=str(qq_history_db), instance_id="default", group_id="183287894",
+            watch_user_ids=[], focus_user_ids=[], window_minutes=1440,
+            timezone=TZ, monitor_id="sanhu", now=now,
+        )
+        lib.main_qq_monitor_digest(budget=120, **kwargs)
+        by_arg = capsys.readouterr().out.split("聊天记录（越靠下越新）：\n", 1)[1]
+        assert len(by_arg.splitlines()) == 120
+
+        monkeypatch.setenv(lib.QQ_MONITOR_BUDGET_ENV, "90")
+        lib.main_qq_monitor_digest(**kwargs)
+        by_env = capsys.readouterr().out.split("聊天记录（越靠下越新）：\n", 1)[1]
+        assert len(by_env.splitlines()) == 90
+
+        # An explicit argument still wins over the env var.
+        lib.main_qq_monitor_digest(budget=70, **kwargs)
+        both = capsys.readouterr().out.split("聊天记录（越靠下越新）：\n", 1)[1]
+        assert len(both.splitlines()) == 70
+
+    def test_a_hostile_env_budget_falls_back_instead_of_failing_the_run(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv(lib.QQ_MONITOR_BUDGET_ENV, "not-a-number")
+        assert lib._qq_monitor_budget() == lib.QQ_MONITOR_DIGEST_BUDGET
+        monkeypatch.setenv(lib.QQ_MONITOR_BUDGET_ENV, "999999999")
+        assert lib._qq_monitor_budget() == lib.QQ_MONITOR_BUDGET_MAX
+        monkeypatch.setenv(lib.QQ_MONITOR_BUDGET_ENV, "-5")
+        assert lib._qq_monitor_budget() == lib.QQ_MONITOR_BUDGET_MIN
+        monkeypatch.delenv(lib.QQ_MONITOR_BUDGET_ENV)
+        assert lib._qq_monitor_budget(250) == 250
+
+
+class TestQqMonitorTextNormalisation:
+    def test_cq_segments_vanish_from_the_classification_view(self):
+        raw = "[CQ:image,file=a.jpg,url=https://x.invalid/a]"
+        assert lib._qq_monitor_plain_text(raw) == ""
+        assert lib._qq_monitor_plain_text("说点什么 " + raw) == "说点什么"
+
+    def test_cq_segments_become_short_labels_in_the_digest_view(self):
+        assert lib._qq_monitor_display_text(
+            "[CQ:image,file=a.jpg,url=https://x.invalid/a]"
+        ) == "[图片]"
+        assert lib._qq_monitor_display_text("[CQ:face,id=1]看这个") == "[表情] 看这个"
+        assert lib._qq_monitor_display_text("[CQ:at,qq=123] 在吗") == "@123 在吗"
+        assert lib._qq_monitor_display_text("[CQ:weirdnewthing,x=1]") == "[weirdnewthing]"
+
+    def test_a_multi_line_message_collapses_to_one_line(self):
+        """The chat log is line-oriented; a message with newlines used to
+        silently render as several unattributed lines."""
+        assert lib._qq_monitor_display_text("第一行\n第二行\n\n第三行") == "第一行 第二行 第三行"
+
+    def test_content_chars_strips_punctuation_and_emoji(self):
+        assert lib._qq_monitor_content_chars("？？？") == ""
+        assert lib._qq_monitor_content_chars("😭😭") == ""
+        assert lib._qq_monitor_content_chars("（￣▽￣）") == ""
+        assert lib._qq_monitor_content_chars("好的，abc 123") == "好的abc123"
+
+
+class TestQqMonitorAllocate:
+    def test_it_hands_out_exactly_the_budget(self):
+        sizes = [1000, 500, 27, 3, 900]
+        quotas = lib._qq_monitor_allocate(sizes, 300)
+        assert sum(quotas) == 300
+        assert all(0 <= q <= s for q, s in zip(quotas, sizes))
+
+    def test_a_quiet_bucket_is_never_starved_by_a_busy_one(self):
+        """A purely proportional split gives the 27-message hour two lines
+        and the digest loses the quiet parts of the day."""
+        quotas = lib._qq_monitor_allocate([10_000, 27], 400)
+        assert quotas[1] == 27
+
+    def test_it_never_over_allocates_a_small_bucket(self):
+        quotas = lib._qq_monitor_allocate([2, 2, 2], 100)
+        assert quotas == [2, 2, 2]
+
+    def test_it_is_a_pure_function(self):
+        sizes = [317, 44, 1290, 8, 76, 903]
+        first = lib._qq_monitor_allocate(sizes, 500)
+        assert all(lib._qq_monitor_allocate(sizes, 500) == first for _ in range(5))
+
+    def test_degenerate_inputs(self):
+        assert lib._qq_monitor_allocate([], 100) == []
+        assert lib._qq_monitor_allocate([5, 5], 0) == [0, 0]
 
     def test_a_missing_database_is_a_loud_failure(self, tmp_path):
         now = datetime(2026, 8, 19, 9, 0, tzinfo=ZoneInfo(TZ))
