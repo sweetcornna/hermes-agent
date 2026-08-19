@@ -56,6 +56,17 @@ optional_env:
     description: "Human label for the home channel (defaults to the id)"
     prompt: "Home channel display name (or empty)"
     password: false
+  - name: ONEBOT_DIRECT_REPLIES_ENABLED
+    description: >-
+      Master switch for direct-message replies (default: true, matching
+      today's unconfigured behaviour of answering every DM). Set to false for
+      a receive-only observation mode: the adapter still connects and (with
+      group history on) still archives group traffic, but never answers a
+      private message — useful during a smoke test run alongside another bot
+      instance still live on the same account, so a DM is never answered
+      twice.
+    prompt: "Enable direct-message replies? (true/false, default true)"
+    password: false
   - name: ONEBOT_GROUP_REPLIES_ENABLED
     description: >-
       Master switch for ALL group activity (default: false). While false every

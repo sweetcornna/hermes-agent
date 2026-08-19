@@ -658,6 +658,22 @@ class OneBotAdapter(BasePlatformAdapter):
             extra.get("self_ids", os.getenv("ONEBOT_SELF_IDS"))
         )
 
+        # ---- direct-message gate ------------------------------------------
+        # Default True: unlike the group master switch below, private chat
+        # was dispatched unconditionally before this key existed, and that
+        # is the behaviour every deployment already depends on — corlinman's
+        # production QQ account replies to DMs today. Defaulting True with
+        # the key unset reproduces that exactly. Flip to False for a
+        # receive-only observation window (e.g. a group-archive smoke test)
+        # run while another bot instance is still answering this account's
+        # private chats, so hermes never double-replies to a real person.
+        self.direct_replies_enabled = _as_bool(
+            extra.get(
+                "direct_replies_enabled", os.getenv("ONEBOT_DIRECT_REPLIES_ENABLED")
+            ),
+            True,
+        )
+
         # ---- group gates -------------------------------------------------
         # The master switch defaults to False: see the module README. The
         # whole group pipeline below is configured and tested, but a
@@ -720,6 +736,7 @@ class OneBotAdapter(BasePlatformAdapter):
         self.router = ChannelRouter(
             group_keywords=self.group_keywords,
             group_replies_enabled=self.group_replies_enabled,
+            direct_replies_enabled=self.direct_replies_enabled,
             group_whitelist=self.group_whitelist,
             group_reply_policy=self.group_reply_policy,
             group_reply_cooldown_secs=self.group_reply_cooldown_secs,
@@ -2034,6 +2051,7 @@ _PRIVATE_YAML_KEYS = (
     "self_ids",
     "instance_id",
     "bot_nickname",
+    "direct_replies_enabled",
     "group_replies_enabled",
     "group_whitelist",
     "group_keywords",

@@ -121,6 +121,64 @@ class TestGroupMasterSwitch:
 
 
 # ---------------------------------------------------------------------------
+# The direct-message switch — symmetric with the group master switch, but
+# with the opposite default (E1: private chat answered unconfigured, same as
+# before this switch existed at all).
+# ---------------------------------------------------------------------------
+
+class TestDirectMasterSwitch:
+
+    def test_enabled_by_default(self):
+        """On unless someone turns it off — matches pre-switch behaviour."""
+        assert ChannelRouter().direct_replies_enabled is True
+
+    def test_default_dispatches_private_unconditionally(self):
+        """Unset key ⇒ byte-for-byte the old 'always dispatch' private path."""
+        router = ChannelRouter(self_ids=[100])
+        assert router.dispatch(_private_event()) is not None
+
+    def test_disabled_drops_private_messages(self):
+        router = ChannelRouter(self_ids=[100], direct_replies_enabled=False)
+        assert router.dispatch(_private_event()) is None
+
+    def test_disabled_drops_regardless_of_content(self):
+        """Off is unconditional — no mention/command/keyword can punch through,
+        exactly like the group master switch (there is no group whitelist
+        equivalent to check here: private chat has no analogous exemption)."""
+        router = ChannelRouter(self_ids=[100], direct_replies_enabled=False)
+        assert router.dispatch(_private_event("/status")) is None
+        assert router.dispatch(_private_event("")) is None
+
+    def test_disabled_does_not_touch_the_group_path(self):
+        """The two switches are independent: turning DMs off must not mute,
+        gate, or otherwise change group dispatch in any way."""
+        router = _enabled(group_reply_policy="all", direct_replies_enabled=False)
+        req = router.dispatch(_group_event("hi", [TextSegment(text="hi")], 321, user_id=200))
+        assert req is not None
+        assert req.binding.is_group is True
+        # ...and private stays dropped.
+        assert router.dispatch(_private_event()) is None
+
+    def test_enabled_does_not_touch_the_group_path(self):
+        """Same independence check with groups OFF (their own default) and
+        DMs explicitly ON: the group switch must still win for group events."""
+        router = ChannelRouter(self_ids=[100], group_replies_enabled=False,
+                               direct_replies_enabled=True)
+        assert router.dispatch(_group_event("hi", [TextSegment(text="hi")], 9999)) is None
+        assert router.dispatch(_private_event()) is not None
+
+    def test_explicit_true_matches_the_default(self):
+        router_default = ChannelRouter(self_ids=[100])
+        router_explicit = ChannelRouter(self_ids=[100], direct_replies_enabled=True)
+        ev = _private_event("same content", user_id=42)
+        r1 = router_default.dispatch(ev)
+        r2 = router_explicit.dispatch(ev)
+        assert r1 is not None and r2 is not None
+        assert r1.content == r2.content
+        assert r1.binding == r2.binding
+
+
+# ---------------------------------------------------------------------------
 # Whitelist — a hard gate
 # ---------------------------------------------------------------------------
 

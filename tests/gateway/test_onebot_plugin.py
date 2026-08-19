@@ -246,10 +246,12 @@ class TestApplyYamlConfig:
             "ws_url": "ws://h:3001",
             "group_replies_enabled": True,
             "group_whitelist": [1, 2],
+            "direct_replies_enabled": False,
         })
         assert extras["ws_url"] == "ws://h:3001"
         assert extras["group_replies_enabled"] is True
         assert extras["group_whitelist"] == [1, 2]
+        assert extras["direct_replies_enabled"] is False
 
     def test_does_not_re_emit_generic_keys(self):
         """Re-emitting them would clobber the core loader's precedence."""
@@ -434,6 +436,31 @@ class TestAdapterConfig:
 
     def test_master_switch_is_one_line(self):
         ad = make_adapter({"group_replies_enabled": True})
+        assert ad.router.group_replies_enabled is True
+
+    def test_direct_replies_default_to_on(self):
+        """E1: unset ⇒ answered, matching pre-switch and corlinman behaviour."""
+        ad = make_adapter()
+        assert ad.direct_replies_enabled is True
+        assert ad.router.direct_replies_enabled is True
+
+    def test_direct_switch_is_one_line(self):
+        ad = make_adapter({"direct_replies_enabled": False})
+        assert ad.direct_replies_enabled is False
+        assert ad.router.direct_replies_enabled is False
+
+    def test_direct_switch_env_var(self, monkeypatch):
+        monkeypatch.setenv("ONEBOT_DIRECT_REPLIES_ENABLED", "false")
+        ad = make_adapter()
+        assert ad.direct_replies_enabled is False
+        assert ad.router.direct_replies_enabled is False
+
+    def test_direct_switch_is_independent_of_group_switch(self):
+        """Flipping one must not move the other in either direction."""
+        ad = make_adapter({"direct_replies_enabled": False, "group_replies_enabled": True})
+        assert ad.direct_replies_enabled is False
+        assert ad.group_replies_enabled is True
+        assert ad.router.direct_replies_enabled is False
         assert ad.router.group_replies_enabled is True
 
     def test_env_configures_the_production_shape(self, monkeypatch):

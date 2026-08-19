@@ -55,7 +55,8 @@ ONEBOT_ACCESS_TOKEN=<the OneBot token, not the WebUI token>
 ```
 
 That is enough to answer **direct messages**. Groups stay silent until you flip
-the master switch below.
+the master switch below. (DMs have their own switch too, defaulting to
+answer — see "The direct-message switch".)
 
 ---
 
@@ -109,6 +110,49 @@ a whitelist already in place.
 
 ---
 
+## The direct-message switch
+
+```
+ONEBOT_DIRECT_REPLIES_ENABLED   default: true
+```
+
+The mirror image of the group master switch above, gating the other lane —
+but with the **opposite default**, because the two switches reproduce two
+different starting behaviours. Before this key existed, private chat was
+dispatched unconditionally (see "Reply gating, in order" below); that is the
+behaviour every deployment already relies on, corlinman's production QQ
+account included, which answers DMs today. Defaulting to `true` reproduces
+that exactly with the key unset — adding this switch changes nothing until
+someone sets it.
+
+**Every private message is dropped while this is `false`**: `dispatch()`
+returns before a `Binding` is even built, so no turn is started and no reply
+is generated. This is an **inbound-only** gate, unlike the group switch —
+D44's two-way mute is deliberately not repeated here. It does not touch
+`send()`, `send_message`, or `standalone_sender_fn`, so a cron job or a model
+tool call can still deliver to a DM chat id (`onebot:2104743984`) while this
+is `false`, the same way the group switch does not cover `sanhu` / `jlu`'s
+cron deliveries to a DM (see above). Turning this off only stops the bot from
+*answering* an inbound DM; it does not suppress outbound delivery to one.
+
+One purpose of this switch is a **receive-only observation mode**. With
+`ONEBOT_DIRECT_REPLIES_ENABLED=false` and the group master switch left at its
+own default (`false`), the adapter connects and receives traffic — and, if
+group history is separately enabled, archives it — while never answering
+anyone, group or DM. This is the posture a group-archive smoke test needs
+when another bot instance is still live on the same QQ account and answering
+its DMs: without this switch, both bots would answer the same private
+message, visibly, to a real person.
+
+```
+ONEBOT_DIRECT_REPLIES_ENABLED=false
+```
+
+is the single line that switches DMs to receive-only. Leaving the key unset
+(or setting it `true`) keeps today's behaviour unchanged.
+
+---
+
 ## Configuration keys
 
 Every key can be set as an environment variable **or** under
@@ -134,6 +178,12 @@ secrets; YAML is the better home for the group policy.
 | `ONEBOT_HOME_CHANNEL` | *(none)* | Default target for cron / notification delivery. |
 | `ONEBOT_HOME_CHANNEL_NAME` | = id | Display label for the home channel. |
 
+### Direct-message gating
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ONEBOT_DIRECT_REPLIES_ENABLED` | **`true`** | Master switch for private-chat replies — see "The direct-message switch" above. Inbound-only; does not affect outbound delivery to a DM chat id. |
+
 ### Group gating
 
 | Key | Default | Meaning |
@@ -149,7 +199,8 @@ secrets; YAML is the better home for the group policy.
 | `ONEBOT_RATE_LIMIT_SENDER_PER_MIN` | `0` (off) | Inbound token bucket per sender. |
 
 Direct messages bypass the whole group chain. They are still subject to the core
-`ONEBOT_ALLOWED_USERS` allowlist.
+`ONEBOT_ALLOWED_USERS` allowlist, and to their own `ONEBOT_DIRECT_REPLIES_ENABLED`
+gate (default `true`, i.e. answered) above.
 
 ### Per-channel persona binding
 
@@ -291,7 +342,8 @@ of them at once.
 
 The order is the contract; the tests pin it.
 
-1. **Direct message** → always dispatched.
+1. **Direct message** → `direct_replies_enabled` gate (default `true`) ⇒
+   dispatched unless explicitly switched off.
 2. **Group**:
    1. `group_replies_enabled` — off ⇒ drop (an @mention cannot punch through);
    2. whitelist — a hard gate; an @mention does **not** bypass it, and an empty
@@ -489,6 +541,7 @@ Worth knowing:
 |---|---|
 | `onebot_auth_rejected` in the log | Wrong token — most often the WebUI token instead of the OneBot one. |
 | Connects, but nothing arrives from groups | `ONEBOT_GROUP_REPLIES_ENABLED` is still `false` (the default). |
+| Connects, but direct messages are never answered | `ONEBOT_DIRECT_REPLIES_ENABLED` has been explicitly set `false` (the default is `true` — answered). Likely a leftover from a receive-only observation window. |
 | Connects, group is whitelisted, @mention still ignored | The group id is missing from `ONEBOT_GROUP_WHITELIST`; an @mention does not bypass it. |
 | Replies stop after a few messages in one group | The hard speech cap. Check `ONEBOT_GROUP_RATE_LIMIT_*`. |
 | Reconnect loop with no obvious error | The URL points at a *reverse* WebSocket entry. This adapter needs a **forward** (`websocketServers`) entry — NapCat as the server, Hermes as the client. |

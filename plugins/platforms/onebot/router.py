@@ -9,7 +9,10 @@ contract; several of the tests exist only to pin it down:
    config edit.
 2. Flatten the text (``raw_message`` when the backend supplies it, else the
    segments).
-3. Private chat: always dispatch.
+3. Private chat: ``direct_replies_enabled`` gate, checked before anything
+   else about the message — off drops it outright, on (the default, and
+   today's unconfigured behaviour) dispatches unconditionally, same as
+   before this gate existed.
 4. Group chain, in order:
    a. ``group_replies_enabled`` master switch — checked BEFORE mention and
       keyword, so it really is an emergency mute (an @ cannot punch through).
@@ -155,13 +158,32 @@ class ChannelRouter:
     """Master switch for group dispatch.
 
     ``False`` drops every group message BEFORE the mention/keyword checks
-    (private chat is unaffected).
+    (private chat is unaffected by THIS switch — see
+    :attr:`direct_replies_enabled` for the private-chat equivalent).
 
     **The default is False on purpose.**  The deployment this was ported for
     runs with the whole group pipeline configured — whitelist, keyword,
     rate limits — and this switch off, so the bot is silent in groups and
     answers only DMs.  Defaulting to False reproduces that exactly; turning
     groups on is a one-line config change.
+    """
+
+    direct_replies_enabled: bool = True
+    """Master switch for private-chat dispatch.
+
+    ``False`` makes :meth:`dispatch` return ``None`` for every
+    ``MessageType.PRIVATE`` event, unconditionally — symmetric with
+    :attr:`group_replies_enabled` for groups, just gating the other lane.
+
+    **The default is True on purpose**, the mirror image of
+    :attr:`group_replies_enabled`'s default: before this switch existed,
+    private chat was dispatched unconditionally (see the module docstring's
+    old step 3), and that is the behaviour every deployment already depends
+    on including corlinman's, which replies to QQ DMs today.  Defaulting to
+    True reproduces that exactly with the key unset; turning DMs off is a
+    one-line config change, useful for a receive-only observation window
+    (e.g. a group-archive smoke test) run while another bot instance is
+    still answering the same account's private chats.
     """
 
     group_whitelist: Optional[FrozenSet[str]] = None
@@ -240,6 +262,8 @@ class ChannelRouter:
         is_command = looks_like_command(text)
 
         if event.message_type == MessageType.PRIVATE:
+            if not self.direct_replies_enabled:
+                return None
             binding = Binding.private(event.self_id, event.user_id)
         elif event.message_type == MessageType.GROUP:
             if not self.group_replies_enabled:
