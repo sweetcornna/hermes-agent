@@ -1675,3 +1675,71 @@ Mem: total 1966 MB   used 1587   available 379
 | `hermes.diary_summary` | 11 | **已启用** | 08-19 23:41 CST |
 | `hermes.competition_daily` | 13 | paused（待搜索能力） | — |
 | `hermes.youtube_daily` | 680 | paused（待搜索能力 + 重验） | — |
+
+---
+
+## 28. 切主与内存：三处归因更正 + 顺序重排（2026-08-19）
+
+用户指示：把 corlinman 剔除下线、切换 hermes 为主、内存 swap 扩容。
+照做之前先量了一遍，**三条前提里有两条与实测不符**。
+
+### 更正一：我把无关服务的内存算到了 corlinman 头上
+
+我先前写"现有搜索 MCP 的 Chrome 已占约 607 MB"，据此得出 D59「共存期塞不下第二份 Chrome」。**错的。**
+
+```
+corlinman 的 search-mcp Chrome：10+4+3+1+1+0 ≈ 19 MB 常驻（空闲时基本被换出）
+  且归属 /user.slice/user-0.slice/session-11067.scope —— 不在 corlinman 的 cgroup 里
+chrome-cdp.service      355 MB   --user-data-dir=/opt/chrome-cdp    ← 与本迁移无关
+chrome-headless.service  55 MB   --user-data-dir=/tmp/chrome-data   ← 与本迁移无关
+```
+
+我把后两个算进来了。**D59 的依据不成立，撤回**（见 D63）。
+
+### 更正二：swap 不是瓶颈，物理内存才是
+
+```
+Swap: 6143 MB 总量，已用 4181，**尚余 1962 MB**
+Mem:  1966 MB 总量，可用仅 344 MB
+磁盘: 50 G 用了 85%，仅剩 7.5 G
+```
+
+swap 还剩近 2 G 没用完 ⇒ **再加 swap 一寸也换不来**，只会加剧换页；
+而磁盘是这台机器上真正稀缺的资源。这笔交易是拿稀缺换不稀缺。
+
+### 更正三：下线 corlinman 腾不出多少内存
+
+```
+corlinman.service cgroup 总 RSS: 51 MB
+  + 其 search-mcp Chrome ≈ 19 MB
+  ≈ 70 MB
+```
+
+真正吃内存的是**与本迁移无关的另一套业务**：
+`redis`（936 MB swap，单项最大）、docker 里的 copytrader 栈（550 MB）、
+`chrome-cdp`（355 MB）、`binance-copy-sync`、`nginx`、`sota-vless-hy-xray` 等。
+
+⇒ **"下线 corlinman 换内存"不成立**：付单向门的代价，换回 70 MB。
+退役 corlinman 的正当理由是**消除双主、让真相只有一处**，不是内存。
+
+### 实际执行的动作
+
+`/etc/systemd/system/hermes.service.d/primary-role.conf`（备份 `hermes.service.20260819T171516Z`）：
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| `OOMScoreAdjust` | **500** | **0** |
+| `MemoryHigh` | 384M | 512M |
+| `MemoryMax` | 512M | 768M |
+| `MemorySwapMax` | 512M | 768M |
+
+`OOMScoreAdjust=500` 是"corlinman 是主、hermes 陪跑"时代的产物 ——
+内存一紧内核**优先杀 hermes**，而 corlinman 是 0 且三项限额全 `infinity`。
+主从要反过来，这一项必须先反，否则切主只是名义上的。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D61 | OOM 优先级反转（500 → 0），限额小幅上调 | 这才是"切主"在操作系统层的实际含义。不设负值：负分留给系统关键组件，把 hermes 提到比 redis / copytrader 更不可杀，是替用户做跨业务取舍 |
+| D62 | **不扩 swap** | 6 G swap 尚余 1.9 G，扩了换不来物理内存；而磁盘 85% 已满，是真正稀缺的一侧。若用户在知悉此数据后仍要扩，随时可加 |
+| D63 | **撤回 D59**，搜索 MCP 的迁移不必压缩到退役那一瞬 | 其 Chrome 空闲仅约 19 MB，我先前 607 MB 的归因是错的。共存期大概率放得下，改为在阶段 5 一并评估实测峰值 |
+| D64 | 退役顺序不变：**阶段 5 迁数据 → 搬搜索 MCP → 才下线** | 凡需从 corlinman **读**数据的步骤（qzone 三个状态账本、群历史回填、搜索 MCP 配置）都必须在它还活着时做完。先下线会把这些永久留在门的另一侧 |
