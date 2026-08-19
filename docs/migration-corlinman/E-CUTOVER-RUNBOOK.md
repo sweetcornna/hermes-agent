@@ -344,3 +344,40 @@ platforms.onebot.extra.group_history_enabled:  true    # D48 —— 开归档
 
 ### 回滚
 `systemctl stop hermes.service`；或把三个键设回 `enabled:false` / 删除新增两键（备份可整体还原）。
+
+### 观察期进展（15:51 JST，运行 17 分钟）
+
+| 项 | 读数 |
+|---|---|
+| 归档行数 | 4 → 37 → 42 → **45**，持续增长（约 2.6 行/分） |
+| 覆盖范围 | 群 `183287894` 39 行 / 13 人；群 `667528618` 6 行 / 3 人 |
+| `journal_mode` | `delete`（与 D48 一致），文件 36864 bytes |
+| 出站发送 | **0** |
+| SQLite 锁争用 | **0** |
+| hermes 内存 | **89.8 MB** / `MemoryHigh` 384M / `MemoryMax` 512M |
+| hermes 进程 | PID 3177183，自 15:34:29 未重启 |
+| corlinman | `active`，已连续运行 2 周 5 天，PID 2581308 未变 |
+
+**写→读闭环已在生产用真实数据打通**（阶段 7 前置项之一，提前完成）：
+
+```
+_qq_monitor_query(instance='default', group=183287894) -> 39 行
+最新一行: 08-19 15:45 JST  sender=1029594195  len(text)=298
+```
+
+⇒ 写入方（`onebot/group_history.py`）与读取方（`corlinman_jobs_lib._qq_monitor_query`）
+在 `instance_id / group_id / received_at_ms / sender_user_id / sender_name / event_time_ms / text`
+上完全对齐，**无需任何 schema 适配层**。
+
+> **两次自我更正**（都是我的核对脚本写错，不是生产异常）：
+> ① 我用 `:8080` 探 corlinman 健康，得到 `000` 一度以为共存被破坏；
+> 其实它监听 **6005**（`--port 6005` 就写在命令行里），正确端口返回 **200**。
+> ② 生产机**没有 `sqlite3` CLI**，查库要走 `python`。
+> 教训：核对脚本本身也要先验证，否则"红色告警"会污染观察期结论。
+
+### corlinman_jobs 已部署（提前于原计划）
+
+原计划"D47 落地后随阶段 4 一并部署"；D47 已验收，故提前部署（15 个文件）。
+`hermes plugins list` 四个插件均 `bundled`：
+`corlinman_jobs` / `grantley` / `onebot-platform` / `qzone` —— 全部 `not enabled`，
+**部署 ≠ 启用**，当前不产生任何行为。
