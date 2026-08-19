@@ -151,6 +151,39 @@ secrets; YAML is the better home for the group policy.
 Direct messages bypass the whole group chain. They are still subject to the core
 `ONEBOT_ALLOWED_USERS` allowlist.
 
+### Per-channel persona binding
+
+| Key | Default | Meaning |
+|---|---|---|
+| `persona_channels` | *(unset)* | YAML/`extra` only. `{"<chat_id>": {persona, channel_owner, group, name}}`. Overrides the persona plugin's own map; **present but empty means "no bindings"**, not "fall back". |
+
+Unset, the same map is read from
+`plugins.entries.grantley.settings.channels` (the path
+`docs/migration-corlinman/C1-grantley-port-notes.md` §4.1 documents). Either way
+the adapter sets `MessageEvent.channel_prompt` on **both** lanes — inbound
+replies and proactive posts — so the persona is framed identically whichever way
+it speaks. An unbound chat id simply gets no frame; nothing breaks and no empty
+block is injected. See `persona_binding.py`.
+
+```yaml
+plugins:
+  entries:
+    grantley:
+      settings:
+        channels:
+          "183287894":
+            persona: grantley
+            channel_owner: "2104743984"   # 群主 — the 单相思 dynamic points here
+            group: true
+            name: "群聊-JLU"
+```
+
+The rendered frame is a **daily frozen snapshot** (`channel_binding.py`'s cache
+contract: byte-stable within a day for a given channel), memoised per
+`(channel, day)` so an inbound message does not re-read the seed pack off disk.
+The `plugins.entries.…` source is read once per process; the `persona_channels`
+form in `extra` is re-read live, like every other key here.
+
 ### Outbound behaviour
 
 | Key | Default | Meaning |

@@ -85,6 +85,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tup
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.response_filters import is_autonomous_silence_response
 
+from . import persona_binding
 from .adapter import (
     _GROUP_RECENT_MAX,
     _GROUP_SPEECH,
@@ -621,6 +622,13 @@ async def generate(adapter: Any, group: str, prompt: str) -> str:
         # prompt that happens to start with "/" would otherwise be dispatched
         # as a gateway slash command.
         allow_gateway_control=False,
+        # The same per-channel persona frame the reply lane sets, through the
+        # same resolver.  A proactive post is PURE persona output — no user
+        # message carries the framing for it — so this lane is the one where
+        # the missing binding actually showed (00-PLAN.md §17/§18).
+        channel_prompt=persona_binding.channel_prompt(
+            live_extra(adapter), chat_id=group_id, is_group=True
+        ),
         metadata={
             "onebot_self_id": adapter.self_id,
             "onebot_group_id": group_id,

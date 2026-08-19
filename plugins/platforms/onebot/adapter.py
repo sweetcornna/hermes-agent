@@ -58,7 +58,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import MessageDeduplicator
 
-from . import protocol
+from . import persona_binding, protocol
 from .client import (
     OneBotClient,
     OneBotConfig,
@@ -322,6 +322,7 @@ def _reset_module_state() -> None:
     from . import proactive as _proactive  # local: .proactive imports this module
 
     _proactive.reset_state()
+    persona_binding.reset_state()
 
 
 # ---------------------------------------------------------------------------
@@ -1291,6 +1292,16 @@ class OneBotAdapter(BasePlatformAdapter):
                 datetime.fromtimestamp(event.time, tz=timezone.utc)
                 if event.time
                 else datetime.now(tz=timezone.utc)
+            ),
+            # Per-channel persona framing (00-PLAN.md §18).  The gateway folds
+            # this into ``combined_ephemeral`` at API-call time
+            # (``gateway/run.py:5211``); ``None`` simply leaves it unset.  The
+            # proactive lane resolves it through the SAME function, so the
+            # persona is framed identically whether it answers or speaks first.
+            channel_prompt=persona_binding.channel_prompt(
+                _gh_live_extra(self),
+                chat_id=event.group_id if is_group else event.user_id,
+                is_group=is_group,
             ),
             metadata={
                 "onebot_self_id": self_id,

@@ -54,8 +54,13 @@ _CONFIG_PATHS = (
 )
 
 
-def _load_plugin_config() -> Dict[str, Any]:
-    """Read plugin settings from config.yaml. Never raises."""
+def load_plugin_config() -> Dict[str, Any]:
+    """Read plugin settings from config.yaml. Never raises.
+
+    Public because the OneBot adapter needs the same block to find
+    ``settings.channels`` (the per-channel persona bindings). Re-deriving the
+    config path over there would be a second source of truth for it.
+    """
     try:
         from hermes_cli.config import cfg_get, load_config
 
@@ -79,7 +84,7 @@ def register(ctx) -> None:
     because ``SOUL.md`` is the correct layer and registering both would pay
     for the identity twice.
     """
-    config = _load_plugin_config()
+    config = load_plugin_config()
 
     from .memory_provider import GrantleyMemoryProvider
 
@@ -98,4 +103,7 @@ def register(ctx) -> None:
             logger.warning("grantley: identity section not registered (%s)", exc)
 
 
-__all__ = ["register"]
+#: Back-compat alias for the pre-E0 private name.
+_load_plugin_config = load_plugin_config
+
+__all__ = ["load_plugin_config", "register"]
