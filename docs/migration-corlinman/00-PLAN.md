@@ -1598,3 +1598,80 @@ tools/registry.py:98  source = module_path.read_text(encoding="utf-8")
 
 - `hermes.service` 每次停止都以 `code=exited, status=1/FAILURE` 收场（16:04:04、16:20:11 各一次），
   重启后正常。疑为关停路径的退出码问题，非本阶段范围，记录待查。
+
+---
+
+## 27. E3 —— `youtube_daily` 空响应：查出一个**迁移清单遗漏**（2026-08-19）
+
+### 验收：✅ 通过（诊断正确、证据是抓到的原始报文；但违反了一条硬约束，见下）
+
+子智能体抓到了 provider 的原始往返（key 已脱敏）。四次尝试的响应都是：
+
+```json
+{"choices":[{"message":{"role":"assistant"},"finish_reason":"stop"}],
+ "usage":{"completion_tokens":689}}
+```
+
+`message` 里**根本没有 `content` 键**（不是 `""`，是不存在），`finish_reason:"stop"`，
+却计费了几百个 completion_tokens。生产日志签名一致：
+`Empty response (no content or reasoning) — retry N/3` ×3 → `empty_response_exhausted`。
+
+它同时纠正了 Orchestrator 的一个错误框定，证据我已独立复核：
+
+```
+16:28:40  check_fn check_web_api_key returned False; dependent tools will be unavailable this turn
+16:28:57  competition_daily  reason=text_response  api_calls=1/500  tool_turns=0  response_len=1812
+```
+
+⇒ **`competition_daily` 那 1812 字竞赛简报是一次模型调用凭记忆写出来的，没有检索任何东西。**
+我先前对用户说它"跑出了带 web 检索的实质内容"是错的。
+生产机 `.env` 只有 4 个键（`TELEGRAM_BOT_TOKEN`/`CORNNA_API_KEY`/`ONEBOT_ACCESS_TOKEN`/`ONEBOT_WS_URL`），
+无任何搜索后端凭据，无密钥回退包 `ddgs` 也未安装。**`web` 工具集对本机所有任务都是静默空转。**
+
+### Orchestrator 补查：这不是环境限制，是**我的迁移遗漏**
+
+子智能体的结论止于"环境/provider 限制"，并说无法确认源系统的搜索层。我补查了：
+
+```
+corlinman 进程环境：无任何搜索后端变量
+运行中进程：      uvx free-search-mcp>=0.8.0（配 Playwright + headless Chrome）
+mcp_servers 表：  ('search', enabled=1)
+```
+
+**corlinman 的搜索能力来自一个无密钥的 MCP 服务器，而我的迁移清单里从来没有它。**
+我把依赖搜索的任务搬过来了，没搬它们赖以工作的搜索能力。
+这是本次迁移目前为止唯一一个**整块能力级别的遗漏**（此前的问题都是单点缺陷）。
+
+### 内存把排期也定死了
+
+```
+Mem: total 1966 MB   used 1587   available 379
+现有 search MCP 的 Chrome 进程：257 + 139 + 114 + 50 + 48 ≈ 607 MB
+```
+
+**379 MB 装不下第二份 headless Chrome。** 共存期内不能给 hermes 复制一份搜索 MCP。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D58 | 阶段 4 只放开 `analysis_digest` + `diary_summary`；`competition_daily` 与 `youtube_daily` **保持 paused** | 前两者只读本地数据、已实测正确。后两者依赖搜索：`youtube_daily` 硬失败（11 位 video_id 编不出来），`competition_daily` 更糟——它会**每天把编造的赛事时间与报名窗口投进用户真实群**，且失败得静悄悄。宁可不跑，不可跑出假的 |
+| D59 | 搜索能力（`free-search-mcp`）的迁移安排在**阶段 7 corlinman 退役时交接**，不在共存期做 | 只剩 379 MB 可用内存，第二份 Chrome 会把 1.9 GB 的机器推向 OOM。这不是偷懒，是硬约束 |
+| D60 | `youtube_daily` 即使补上搜索也需重验 | 空响应发生在**没有工具**的前提下；provider 对该 prompt 形状返回空这一现象，在有工具时是否消失尚未验证 |
+
+### 子智能体违反了一条硬约束（不打回，但如实记录）
+
+我下达的约束里写明"绝不打印令牌"。它读 `/opt/corlinman/data/config.toml` 时，
+脱敏正则没有覆盖 TOML 的嵌套表写法（`[providers.cornna.api_key]` 后另起一行 `value = "..."`），
+**corlinman 的 `providers.cornna` API key 明文进入了会话记录**。它主动申报了此事。
+
+不打回的理由：重跑无法挽回已经泄露的密钥，而其工作产出本身正确完整。
+处置：**已建议用户轮换该密钥**。今后向子智能体下达的读取类任务，
+约束要从"不要打印令牌"改为"**不得整体输出任何配置文件；只按白名单取所需字段**"。
+
+### 阶段 4 收尾状态
+
+| 任务 | topic | 状态 | 下次 |
+|---|---|---|---|
+| `hermes.analysis_digest` | 680 | **已启用** | 08-20 15:12 CST |
+| `hermes.diary_summary` | 11 | **已启用** | 08-19 23:41 CST |
+| `hermes.competition_daily` | 13 | paused（待搜索能力） | — |
+| `hermes.youtube_daily` | 680 | paused（待搜索能力 + 重验） | — |
