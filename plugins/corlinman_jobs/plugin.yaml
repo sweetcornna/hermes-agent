@@ -1,0 +1,73 @@
+name: corlinman_jobs
+version: 1.0.0
+label: Corlinman scheduler jobs
+# ``standalone``: this plugin adds no tools, no hooks and no runtime
+# behaviour — it registers a single operator CLI command. Bundled standalone
+# plugins are opt-in via ``plugins.enabled``, which is the property we want:
+# loading it must never be a side effect of starting hermes, and installing
+# the jobs must always be somebody typing a command.
+kind: standalone
+description: >
+  Migrates the corlinman scheduler's jobs to hermes-native cron. Ports nine
+  of the twelve production jobs (three are deliberately dropped — see
+  ``specs.DROPPED_JOBS``), copies their job-side scripts into
+  ``$HERMES_HOME/scripts/``, and creates every job PAUSED.
+
+  ``hermes corlinman-jobs plan`` is a pure dry run: it prints the preflight
+  verdicts, the files it would write and the jobs it would create, and
+  touches nothing. ``install`` refuses to proceed on any preflight FAIL and
+  refuses to overwrite a script it did not write.
+
+  Nothing here enables a job. Three of them (``hermes.qzone_daily``,
+  ``hermes.qzone_reply``, ``hermes.qzone_friends``) publish to a real public
+  QQ空间 feed with no delete tool on the far side, and four deliver to a
+  Telegram chat that is currently unreachable. Enabling is a deliberate
+  ``hermes cron resume <name>`` after reading
+  ``docs/migration-corlinman/D1-cron-port-notes.md``.
+author: corlinman (original), ported to hermes-agent
+# No config_schema on purpose. Every schedule, chat id, persona id and
+# parameter bag lives in ``plugins/corlinman_jobs/specs.py``, which is the
+# migration's single source of truth and is asserted by the test suite. A
+# settings block would create a second place for a cron expression to live
+# and a silent way for the installed schedule to drift from the reviewed one.
+requires_env:
+  - name: HERMES_TIMEZONE
+    description: >
+      Must be Asia/Shanghai. hermes cron has no per-job timezone — every
+      schedule is evaluated against one process-wide clock — while the
+      production host's local zone is Asia/Tokyo (JST, +0900). The preflight
+      check refuses to install when this does not match the zone the specs
+      declare, rather than letting all nine jobs fire an hour off with no
+      error anywhere. ``timezone:`` in config.yaml works instead.
+optional_env:
+  - name: ONEBOT_WS_URL
+    description: >
+      Required only for the three QQ空间 jobs; ONEBOT_HTTP_URL works instead.
+      Without one the qzone tools are gated out of the model's schema and
+      those jobs would run with no tools at all, so the preflight refuses to
+      install them.
+  - name: QZONE_PERSONA_ID
+    description: >
+      Must resolve to "grantley". The qzone dedup ledgers are keyed by
+      persona; the wrong value reads an empty ledger and the first run
+      re-replies to comments that were already answered, publicly.
+  - name: QZONE_STATE_DIR
+    description: >
+      Directory holding the migrated qzone_post_log/, qzone_seen_comments/
+      and qzone_friend_comments/ ledgers. Preflight refuses to install the
+      QQ jobs while all three read empty.
+  - name: TELEGRAM_BOT_TOKEN
+    description: >
+      Needed by the four Telegram-targeted jobs. Their destination chat is
+      known-unreachable today (D16); the jobs are migrated verbatim anyway
+      and start delivering when the chat id is fixed upstream.
+  - name: HERMES_CRON_MAX_PARALLEL
+    description: >
+      Should stay at 2. The staggered schedules were designed around that
+      ceiling because the target host's SQLite 3.40.1 forces hermes into
+      DELETE journal mode, where concurrent writers serialise behind fsync.
+python_dependencies: []
+tags:
+  - cron
+  - migration
+  - corlinman
