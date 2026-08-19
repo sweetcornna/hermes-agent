@@ -19,7 +19,7 @@ Implemented exactly to D46-①…⑦. Nothing is enabled.
 | `plugins/platforms/onebot/group_history.py` | **913** | new — config resolution, the writer thread, the store, retention |
 | `plugins/platforms/onebot/group_history_backfill.py` | **380** | new — the one-shot idempotent import, runnable as `python -m` |
 | `tests/gateway/test_onebot_group_history.py` | **1376** | new — 81 tests |
-| `plugins/platforms/onebot/adapter.py` | 2109 (+126) | modified — mount point, lifecycle, YAML keys |
+| `plugins/platforms/onebot/adapter.py` | 2111 (+128) | modified — mount point, lifecycle, YAML keys |
 | `plugins/platforms/onebot/plugin.yaml` | 186 (+54) | modified — seven `ONEBOT_GROUP_HISTORY_*` entries |
 | `plugins/platforms/onebot/README.md` | 439 (+68/-1) | modified — the archive section |
 
