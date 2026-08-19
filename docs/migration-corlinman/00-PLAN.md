@@ -1039,3 +1039,73 @@ B3 称用户提供的 key 与生产配置中的**逐字节相同**，因此"不�
 6. `image_model` 未迁（格兰零立绘资产、19 篇说说全纯文本、C3 的 `generate` 已退化为提示词字符串 ⇒ 无消费者）
 7. `[admin]` / `[agent] endpoint` / `[models] backend=grpc_agent` 未迁 —— hermes 无对应概念
 8. 诊断期间对用户中转站发了约 30 次请求，十几次把池打到冷却（每次约 30 秒自愈），无持久损害
+
+---
+
+## 19. D2 验收（2026-08-19）—— ✅ 通过（Sonnet，零打回）
+
+Orchestrator 独立复核，全部亲自执行：
+
+| 验收项 | 结果 |
+|---|---|
+| `pytest tests/plugins/corlinman_jobs/ -q` | **291 passed**（D1 时为 248） |
+| 广回归 `corlinman_jobs + qzone + grantley + cron` | **1452 passed, 1 skipped** |
+| 零上游改动 | 全分支 `--diff-filter=MDRT` 仅 `.gitignore` +4（C4 遗留，非 D2） |
+| 无任务被启用 | ✅ `ALL_SPECS` 12 项 `install_enabled` 全 False |
+| 无任务落在整点 | ✅ NONE |
+| **时区补偿（D25）** | ✅ `qunjlu` 08:05 / `sanhu` 09:05 / `jlu` 10:05 —— 各较配置字面值 -1 小时 |
+| **调度冲突** | ✅ 逐对检查 hour+minute，**零真实冲突**；均避开 `persona.decay` 的每小时 `:17` |
+
+### qunjlu 抑制机制（D26）—— 机制正确，且比"照抄开关名"更稳健
+
+D2 用**两道结构性抑制**而非读运行时配置：`deliver="local"`（cron 投递解析器拿不到目标）
++ `enabled_toolsets=()`（无可发送工具）。
+
+**关键复核**：`()` 正是 D1 发现的那个假值陷阱（空列表在 `cron/scheduler.py:444` 为假 ⇒ 静默拿到**完整**默认工具集）。
+我驱动 `installer._spec_job_fields()` 逐 spec 验证实际落盘值：
+
+```
+qunjlu / sanhu / jlu    spec=()  ->  payload=['no_mcp']     ✅ 三个 monitor 均正确翻译
+```
+
+陷阱在 monitor 上也被正确处理。
+
+### ⚠️ D2 发现的真实行为差异（我已独立复核，属实且比它说的更要紧）
+
+**本移植的 `adapter.send()` 根本不检查 `group_replies_enabled`。**
+我用 AST 验证 `plugins/platforms/onebot/adapter.py` 的 `send()`（L1258-1343）：
+`references group_replies_enabled inside send(): **False**`。
+该标志只在三处被消费：L552 解析、L609 传给 router（**入站回复门控**）、L670 打日志；
+另由 `proactive.py` 消费（B4）。
+
+⇒ **与 corlinman 的语义不同**：corlinman 那道闸是"紧急静音**所有**群发言"，
+连 monitor 摘要都一并掐死（`qunjlu` 从未送达正因如此）；
+**本移植中，一个投递到 `onebot:group:<id>` 的 cron 任务会照发不误。**
+
+D2 因此**拒绝照抄开关名**做抑制——判断正确：照抄会造出一个方向相反的
+"配置说关、行为却开"陷阱，而这正是本次迁移已踩过五次的那一类。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D44 | **切换前必须让 `adapter.send()` 也遵守 `group_replies_enabled`**，列为切换窗口的**阻塞项** | 该标志被文档与运维直觉当作"群发言总闸"。事故中运维按下它、以为一切群输出停止，而 cron 投递仍在发——这是安全缺口。且 D17 的双发风险本就高，QQ 侧的整个安全论证依赖"静音可信" |
+| D45 | D2 的结构性抑制**保留**，不因 D44 落地而改回读标志 | 结构性抑制（无目标 + 无工具）不依赖任何运行时配置读取正确，是更强的保证。两者叠加，不是二选一 |
+
+### D2 申报的两个重大缺口（均经我复核属实）
+
+**1. 本移植没有 `qq_group_history.sqlite` 的写入方。**
+全仓库 grep 确认：只有 `preflight.py` 的读取与校验，**零 INSERT**。
+只有 corlinman 自己的 dispatch 循环在写；本移植的 OneBot 适配器只保留 30 条内存缓冲。
+⇒ **共存期**把 `QQ_GROUP_HISTORY_DB` 指向 corlinman 的活文件可正常工作；
+**corlinman 一旦退役，三个 monitor 会在该库约 3 天保留期内全部静默**，除非另建采集管线。
+**这是 D2 范围外的真实功能缺口，必须在退役 corlinman 前解决。**
+
+**2. 源实现的并行 map-reduce 摘要未复现。**
+源实现对 >1000 条的窗口分段摘要再合并；本移植只做一次模型调用，超出部分**保留最新 1000 条**并标注截断。
+D2 用真实数据确认：**`sanhu` 的群 `980927602` 日均约 15000 条**，即几乎每次真实运行都会触发截断
+⇒ **摘要实际只覆盖当天最新约 7% 的消息**。这是显著的保真度损失，**需用户裁定**是否补做分段摘要。
+
+### 遗留观察
+
+`hermes.daily_agenda` 的 `enabled_toolsets` 为 `None`（⇒ hermes 完整默认工具集），
+与 `specs.py` 自述"every agent job here names its toolsets"不符。
+影响有限（该任务在生产即为 `enabled=false`），登记待查。
