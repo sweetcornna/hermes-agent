@@ -346,10 +346,77 @@ Worth knowing:
   window). A bad zone name falls back loudly; no usable tz database at all
   skips the beat rather than guessing.
 
+## Group-message archive (`group_history.py`) — OFF by default
+
+> This is the **writer** for `qq_group_history.sqlite`, the store the three
+> migrated QQ monitors (`sanhu` / `jlu` / `qunjlu`, in `plugins/corlinman_jobs`)
+> read and that nothing in this port used to write. Without it those monitors
+> go permanently, silently quiet once corlinman is decommissioned. Full
+> reasoning, cutover steps and known gaps:
+> `docs/migration-corlinman/D3-group-history-writer-notes.md`.
+
+Every inbound message from a captured group is appended to a SQLite table in
+corlinman's own schema — recorded **before** the reply gate, so a digest of
+"what did the room say today" sees the whole room and not just the messages
+the bot answered. Direct messages are never archived.
+
+```yaml
+platforms:
+  onebot:
+    extra:
+      group_whitelist: ["183287894", "980927602"]
+      group_history_enabled: false      # ← the switch
+      group_history_groups: []          # empty ⇒ falls back to group_whitelist
+      group_history_db: ""              # blank ⇒ $HERMES_HOME/plugin-data/corlinman_jobs/qq_group_history.sqlite
+      group_history_retention_days: 7   # floor 2 — the monitors read a 24h window
+      group_history_batch_rows: 200     # commit on N rows...
+      group_history_flush_secs: 30      # ...or T seconds, whichever first
+      group_history_queue_max: 2000     # hard bound; overflow is dropped, not buffered
+```
+
+Worth knowing:
+
+* **Two variables, not one.** `ONEBOT_GROUP_HISTORY_DB` names the file this
+  gateway *writes*; the monitors' own `QQ_GROUP_HISTORY_DB` names the file
+  they *read*. During the corlinman coexistence window those are two different
+  files on purpose — the reader points at corlinman's live store while the
+  writer fills ours. Cutover is: back-fill ours, then move the reader onto it.
+  The writer additionally **refuses** to open a WAL-mode database, because
+  corlinman opens its store in WAL and this module never does: a WAL target is
+  almost certainly corlinman's live file, and two writers on one SQLite file
+  is the corruption case this separation exists to avoid.
+* **The event loop never waits on the disk.** `record()` is a bounded
+  `put_nowait`; a background thread owns the connection and commits in
+  batches. On the target host SQLite stays in DELETE journal mode (3.40.1
+  carries the WAL-reset corruption bug, and `hermes_state.py` declines to
+  enable WAL on such builds), where every commit is a full fsync — one
+  transaction per message on 2 vCPUs is not affordable.
+* **Bounded, and it drops rather than grows.** A full queue drops the new row
+  and counts it. The alternative — buffering behind a stalled disk — trades
+  the gateway's 512 MB cap for chat lines the monitors would tolerate losing.
+* **Fail-open.** No failure here reaches the inbound path: a broken archive
+  costs rows, never replies.
+* **DELETE, never VACUUM.** Rows past the retention horizon are deleted in
+  chunks (so one prune cannot hold the write lock against a reading cron job);
+  freed pages are reused rather than rewriting the whole file.
+* **It complements, and does not replace, the 30-row proactive buffer.** That
+  one is in-memory prompt context; this one is durable history. Both are fed
+  at the same point, before the reply gate.
+* **One-shot import from corlinman**, idempotent by QQ message id so a re-run
+  never duplicates a row — including messages this writer already captured
+  live under a different `received_at_ms`:
+
+  ```bash
+  python -m plugins.platforms.onebot.group_history_backfill \
+      --source /opt/corlinman/execution-state/qq_group_history.sqlite \
+      --days 7 --dry-run
+  ```
+
 ## Not implemented here (deliberately)
 
 * **Group digests** (scheduled plain-language summaries of a group's chatter)
-  are out of scope for this adapter.
+  are out of scope for this adapter: it captures the messages, the summarising
+  is `plugins/corlinman_jobs`' three cron monitors.
 * **Document-corpus retrieval for proactive posts.** The source folded
   `kb.sqlite` snippets into the prompt; hermes has no such corpus and this
   port does not invent one. The snippet-folding logic and its "query on other
