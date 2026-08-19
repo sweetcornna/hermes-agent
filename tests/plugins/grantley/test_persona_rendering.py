@@ -31,10 +31,30 @@ from plugins.grantley.state import PersonaState
 # claimed as a routine pattern (no 俺様 in any official line — downgraded, not
 # deleted, per the Orchestrator's D42 ruling), and the "骑士 is a moral anchor"
 # framing (no textual support). It also added an official-facts block and
-# folded the researched speech-pattern rules into 表达 DNA. This hash is the
-# new pinned baseline post-amendment — it still guards against *accidental*
-# drift, just not against this one intentional, documented rewrite.
-SOURCE_PROMPT_SHA256 = "e8af1d1d2a37163fb399e7199212144e47d1d9192e1acd9096941eb5d0d93a9e"
+# folded the researched speech-pattern rules into 表达 DNA.
+#
+# Second-round revision, same C6 pass: the Orchestrator's review caught two
+# more problems in the first cut and asked for a fix before landing:
+#   1. "弗罗汀骑士学院" was a made-up composite — Frontail (弗罗汀) is the
+#      *country*, "骑士学院" (Knights College) is the *school*; no official
+#      source ever fuses them into one institution name.
+#   2. The "官方档案，不要改口" block had smuggled in a 中-confidence,
+#      single-source (Fandom) claim about Grantly's E.P. mechanics
+#      (invisibility + wall-passing + carrying a companion through) inside a
+#      block explicitly labelled "don't waver from this" — readers of that
+#      block have no way to see the confidence tier, so it read as fact on
+#      par with his height. Reworded to only the officially-corroborated
+#      claim ("good for pranks"), and softened two more medium-confidence
+#      specifics (the exact "uniform never buttoned" mannerism, and Oscar
+#      being described as "bantering" rather than the official "doesn't get
+#      along") the same way. The four leftover 装傻/骑士 phrasings the first
+#      cut had deliberately left untouched (see the 建议1/建议5 "C6 处置"
+#      notes) were also cleaned up in this pass, under the Orchestrator's
+#      explicit follow-up authorization.
+# This hash is the baseline after *both* rounds — it still guards against
+# *accidental* drift, just not against these two intentional, documented
+# rewrites.
+SOURCE_PROMPT_SHA256 = "a3c567391247d3ba0075070d0f8cf1439b921d4323e78478af06fc152d99c067"
 
 # Originally the sha256 of corlinman's
 # python/packages/corlinman-agent/src/corlinman_agent/persona/life_seeds/grantley.yaml
