@@ -281,33 +281,53 @@ def resolve_config(
 ) -> Optional[ProactiveConfig]:
     """Read the flat ``proactive_*`` keys; ``None`` when the feature is off.
 
-    ``proactive_groups`` empty falls back to ``group_whitelist`` — the natural
-    reading of "speak in my whitelisted groups".  Enabled with no resolvable
-    target logs a warning and stays off: guessing at a target here means
-    guessing at which real people get messaged.
+    Two different empties, two different answers:
+
+    * ``proactive_groups`` **unset or empty** falls back to ``group_whitelist``
+      — the natural reading of "speak in my whitelisted groups";
+    * ``proactive_groups`` **set but nothing survives the whitelist filter**
+      stays off.  The operator asked to narrow the target; answering that by
+      broadening to every whitelisted group is the opposite of what they said.
+
+    Enabled with no resolvable target logs a warning and stays off: guessing at
+    a target here means guessing at which real people get messaged.
     """
     get = extra.get if hasattr(extra, "get") else (lambda k, d=None: getattr(extra, k, d))
     if not _as_bool(get("proactive_enabled", None), False):
         return None
 
-    groups = _parse_groups(get("proactive_groups", None))
-    if groups and group_whitelist is not None:
+    requested = _parse_groups(get("proactive_groups", None))
+    groups = requested
+    if requested and group_whitelist is not None:
         # The whitelist is the hard gate everywhere else — an @mention cannot
         # bypass it, so proactive speech certainly must not.  It is the last
         # barrier between a config typo and a message in a stranger's group.
-        outside = [g for g in groups if g not in group_whitelist]
+        groups = tuple(g for g in requested if g in group_whitelist)
+        outside = [g for g in requested if g not in group_whitelist]
         if outside:
             logger.warning(
                 "OneBot: proactive_groups outside group_whitelist ignored: %s",
                 outside,
             )
-        groups = tuple(g for g in groups if g in group_whitelist)
+        if not groups:
+            # DELIBERATE FIX to the source implementation, not a port of it.
+            # There, an explicit target list that filtered down to nothing fell
+            # through to "no groups ⇒ use the whole whitelist", which contradicts
+            # that same function's own docstring ("Enabled with no resolvable
+            # target ... stays off (never spam-guess)").  It is also fail-open in
+            # the worst direction: an operator narrowing the bot down to one
+            # group, and mistyping the id, would get unprompted speech in EVERY
+            # whitelisted group instead of none.  Safe to correct because the
+            # feature never ran in production, so there is no behaviour to stay
+            # bug-compatible with.
+            logger.warning(
+                "OneBot: every requested proactive_groups entry (%s) is outside "
+                "group_whitelist — proactive speech stays OFF rather than "
+                "falling back to the whole whitelist",
+                list(requested),
+            )
+            return None
     if not groups and group_whitelist:
-        # Note the interaction: explicit groups that are ALL outside the
-        # whitelist filter down to nothing and then land here, so the bot
-        # speaks in the whitelisted groups rather than in the requested ones.
-        # Surprising, ported verbatim, and safe by construction — the outcome
-        # never leaves the whitelist.
         groups = tuple(sorted(group_whitelist))
     if not groups:
         logger.warning(

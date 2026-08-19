@@ -209,12 +209,35 @@ class TestResolveConfig:
         )
         assert cfg.groups == ("2", "3")
 
-    def test_groups_entirely_outside_whitelist_fall_back_to_it(self):
-        """The requested group is dropped; the whitelist is never exceeded."""
-        cfg = PR.resolve_config(
-            {"proactive_enabled": True, "proactive_groups": [1]}, frozenset({"9"})
+    def test_groups_entirely_outside_whitelist_stay_off(self):
+        """Fail closed, not open.
+
+        The source fell through to "no groups ⇒ use the whole whitelist" here,
+        contradicting its own docstring and turning a mistyped id in a
+        narrowing config into unprompted speech in EVERY whitelisted group.
+        A deliberate correction, safe because the feature never ran.
+        """
+        assert (
+            PR.resolve_config(
+                {"proactive_enabled": True, "proactive_groups": [1]}, frozenset({"9"})
+            )
+            is None
         )
-        assert cfg.groups == ("9",)
+
+    def test_an_unset_group_list_still_falls_back_to_the_whitelist(self):
+        """The other empty keeps its old meaning: 'my whitelisted groups'."""
+        for absent in ({}, {"proactive_groups": []}, {"proactive_groups": ""}):
+            cfg = PR.resolve_config(
+                {"proactive_enabled": True, **absent}, frozenset({"9"})
+            )
+            assert cfg is not None and cfg.groups == ("9",)
+
+    def test_a_partly_valid_list_keeps_only_the_whitelisted_entries(self):
+        """Between the two empties: some survive, so those are the targets."""
+        cfg = PR.resolve_config(
+            {"proactive_enabled": True, "proactive_groups": [1, 9]}, frozenset({"9"})
+        )
+        assert cfg is not None and cfg.groups == ("9",)
 
     def test_probability_parsing_and_clamping(self):
         base = {"proactive_enabled": True, "proactive_groups": [1]}
@@ -730,16 +753,29 @@ class TestLoopGates:
         assert calls["n"] == 2  # the loop went round again instead of dying
 
     @pytest.mark.asyncio
-    async def test_groups_outside_the_whitelist_are_never_targeted(self, monkeypatch):
+    async def test_an_unwhitelisted_only_target_silences_the_loop(self, monkeypatch):
+        """A mistyped narrowing config must not become five open groups."""
         one_beat(monkeypatch)
         freeze_clock(monkeypatch)
-        handler = FakeHandler("大家下午好呀")
+        handler = FakeHandler("不该出现")
         ad = make_adapter(
             {"proactive_enabled": True, "proactive_groups": ["99999999"]},
             handler=handler,
         )
         await run_one_beat(ad)
-        # The un-whitelisted target is dropped; the fallback is the whitelist.
+        assert handler.calls == 0
+        assert sent_texts(ad) == []
+
+    @pytest.mark.asyncio
+    async def test_posts_only_into_the_whitelisted_half_of_a_mixed_list(self, monkeypatch):
+        one_beat(monkeypatch)
+        freeze_clock(monkeypatch)
+        handler = FakeHandler("大家下午好呀")
+        ad = make_adapter(
+            {"proactive_enabled": True, "proactive_groups": ["99999999", GROUP]},
+            handler=handler,
+        )
+        await run_one_beat(ad)
         assert handler.events[0].source.chat_id == f"g{GROUP}"
         for action in ad._client.actions:
             assert action.group_id == int(GROUP)

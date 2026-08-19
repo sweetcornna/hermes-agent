@@ -323,7 +323,13 @@ Worth knowing:
   promise about the bot's total volume in the room.
 * **`proactive_groups` cannot reach outside `group_whitelist`.** Entries
   outside it are dropped with a warning; the whitelist is the last barrier
-  between a config typo and a message in a stranger's group.
+  between a config typo and a message in a stranger's group. If *every*
+  requested group is outside it, proactive speech stays **off** rather than
+  falling back to the whole whitelist — narrowing the target with a mistyped
+  id must not turn into speaking in every group. (Leaving `proactive_groups`
+  unset still means "all my whitelisted groups"; the two empties differ on
+  purpose. This corrects a defect in the implementation this was ported from —
+  see `docs/migration-corlinman/B4-proactive-speech-notes.md` §5.)
 * **The model may decline.** Answering `SKIP` (or hermes' `[SILENT]` /
   `NO_REPLY`) posts nothing. This is deliberate: a bot that always has
   something to say is the most obvious kind of bot.

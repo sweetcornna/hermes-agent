@@ -35,10 +35,10 @@
 
 | File | Lines | What |
 |---|---:|---|
-| `plugins/platforms/onebot/proactive.py` | 797 (new) | Config resolution, the gate ladder, prompt composition, the SKIP hatch, the resident loop. |
+| `plugins/platforms/onebot/proactive.py` | 817 (new) | Config resolution, the gate ladder, prompt composition, the SKIP hatch, the resident loop. |
 | `plugins/platforms/onebot/adapter.py` | +85 / −7 | Lifecycle wiring (start on connect, stop on disconnect), context-buffer hygiene, the `proactive_*` YAML keys. |
-| `plugins/platforms/onebot/README.md` | +85 / −9 | Documents the feature; removes the "not implemented" entry. |
-| `tests/gateway/test_onebot_proactive.py` | 879 (new) | 78 tests, fully offline. |
+| `plugins/platforms/onebot/README.md` | +93 / −9 | Documents the feature; removes the "not implemented" entry. |
+| `tests/gateway/test_onebot_proactive.py` | 915 (new) | 81 tests, fully offline. |
 
 No file outside `plugins/platforms/onebot/` and `tests/gateway/` was touched.
 `plugins/platforms/onebot/` is a migration-created directory; the invariant
@@ -157,14 +157,45 @@ window uses the configured literal `9–23`.
 warning. Ported verbatim from `service.py:882` ("@mentions don't bypass the
 whitelist — proactive speech must not either").
 
-One inherited surprise, ported deliberately and pinned by
-`test_groups_entirely_outside_whitelist_fall_back_to_it`: if *every* entry in
-`proactive_groups` is outside the whitelist, the filtered list becomes empty
-and then hits the "empty ⇒ use the whitelist" rule. So the bot speaks in the
-whitelisted groups rather than in the requested one. Surprising, but safe by
-construction — the outcome can never leave the whitelist, which is the
-property that matters. Changing it would be inventing behaviour, so it was
-left as-is and documented instead.
+### A deliberate correction to the source, not a port of it
+
+The source distinguished only one empty. After filtering:
+
+```python
+groups = tuple(g for g in groups if g in group_whitelist)   # filter
+if not groups and group_whitelist:
+    groups = tuple(sorted(group_whitelist))                 # ← fall back to ALL
+```
+
+So an explicit `proactive_groups` whose every entry is outside the whitelist
+filtered down to nothing and then fell through to "no groups ⇒ speak in every
+whitelisted group". **This port stays off instead**, and logs which entries
+were rejected and why.
+
+Three reasons this is a fix rather than a divergence:
+
+1. **The source contradicts its own docstring.** The same function documents
+   "Enabled with no resolvable target logs a warning and **stays off** (never
+   spam-guess)." Every requested group being outside the whitelist *is* no
+   resolvable target. The code does not do what the docstring says it does —
+   this is a defect in the source, and porting it verbatim would have been
+   porting the bug rather than the intent.
+2. **It fails open, in the direction opposite to the operator's intent.**
+   Setting `proactive_groups: [X]` is an act of *narrowing*. If X is mistyped
+   or not yet whitelisted, the source's answer is unprompted speech in **all
+   five real QQ groups**. "Never leaves the whitelist" bounds the blast radius
+   but does not prevent the blowup.
+3. **There is no production behaviour to stay compatible with** — the feature
+   never ran a single time (see the banner). This is the same condition that
+   justified D18's correction of an inherited defect, so the same standard
+   applies: zero regression risk, and the bug-compatible option has no
+   constituency.
+
+The other empty keeps its old meaning. **`proactive_groups` unset or empty
+still falls back to `group_whitelist`** — that is the natural reading of
+"speak in my whitelisted groups", and it is the configuration the production
+export actually uses. Both branches are pinned by test, along with the middle
+case (a partly valid list keeps only its whitelisted entries).
 
 ## 6. Retrieval — the one deliberate design divergence
 
@@ -206,9 +237,9 @@ the top-3 cap and the 300-char snippet cap, all already tested.
 
 ## 7. Ported test coverage
 
-`tests/gateway/test_onebot_proactive.py`, 78 tests, all offline.
+`tests/gateway/test_onebot_proactive.py`, 81 tests, all offline.
 Command and result: `.venv/bin/python -m pytest tests/gateway/test_onebot_proactive.py -q`
-→ **78 passed**. Whole OneBot suite (7 files): **382 passed**.
+→ **81 passed**. Whole OneBot suite (7 files): **385 passed**.
 
 Ported from `test_qq_proactive.py` (all 34 cases): config resolution and
 defaults, whitelist intersection, probability clamping, timezone/context
@@ -220,6 +251,15 @@ parsing, bubble splitting on send, and every loop gate (post + budget,
 emergency mute, probability 0, model SKIP, speech cap, min gap, bot-spoke-last,
 post-recorded-as-self, retrieval reaching the prompt, retrieval failure being
 non-fatal).
+
+One source case was **inverted rather than ported**:
+`test_explicit_groups_all_outside_whitelist_stays_off` asserted the fall-back
+to the whole whitelist (its own name says "stays off", which the source did
+not do). It is now
+`test_groups_entirely_outside_whitelist_stay_off`, asserting `None`, joined by
+`test_an_unset_group_list_still_falls_back_to_the_whitelist` and
+`test_a_partly_valid_list_keeps_only_the_whitelisted_entries` so the fix
+cannot silently break the two neighbouring cases. See §5.
 
 Ported from `test_qq_speech_cap.py`: the shared-budget property, restated as
 `test_the_post_spends_the_shared_speech_budget` — a proactive post makes the
