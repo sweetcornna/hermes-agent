@@ -274,3 +274,73 @@ elif event.message_type == MessageType.GROUP:
 | D51 | 本手册 §0 补一条：**`group_replies_enabled` 不管私聊** | 与 E0 缺陷 #2（`sanhu`/`jlu` 投私聊、不受该开关管）是同一类认知盲区，必须写明 |
 
 **阶段 3 待 E1 落地并验收后继续。**
+
+## 阶段 3 —— 🟢 已启动，观察期进行中（2026-08-19 15:34 JST）
+
+**E1 私聊门控先行验收**（Orchestrator 直接驱动 `dispatch()` 验五种组合）：
+
+```
+不设新键（须与今天逐字节一致）  private=ROUTED   group=ROUTED    ✅
+direct=True                     private=ROUTED   group=ROUTED    ✅
+direct=False, group=True        private=dropped  group=ROUTED    ✅ 独立
+direct=False, group=False       private=dropped  group=dropped   ✅ 只收不回（本阶段所需）
+direct=True,  group=False       private=ROUTED   group=dropped   ✅ 独立性反向
+```
+
+### 启动前查清的两件事
+
+**① NapCat 是 forward WS server，支持多客户端。** 三份 `onebot11*.json` 的 `websocketServers`
+均 `enable=true / port=3001`，且 **`token: ''` 全为空** —— NapCat 根本不校验 access token。
+⇒ corlinman 配置里的 `napcat_access_token` 是装饰性的（又一例「配置写着 X、实际是 Y」）；
+hermes 多发一个 token 无害。
+
+**② 共存实测成功。** 启动后 `ss -tnp` 显示：
+
+```
+corlinman-gatew (pid 2581308, fd 55)  127.0.0.1:16738 → 3001   ← 原连接完好
+hermes          (pid 3177183, fd 13)  127.0.0.1:47408 → 3001   ← 新增，未挤掉对方
+```
+
+### 落地配置
+
+```yaml
+platforms.onebot.enabled: true
+platforms.onebot.extra.direct_replies_enabled: false   # E1/D50 —— 不回私聊
+platforms.onebot.extra.group_replies_enabled:  false   # 原有 —— 不回群
+platforms.onebot.extra.group_history_enabled:  true    # D48 —— 开归档
+```
+
+写入目标 `ONEBOT_GROUP_HISTORY_DB` 与读取用的 `QQ_GROUP_HISTORY_DB` **是两个不同变量**
+（D3 的设计），故 corlinman 的活库全程不被本进程写。备份：`config.yaml.bak.stage3.*`。
+
+### 启动后核验
+
+| 项 | 结果 |
+|---|---|
+| `hermes.service` | **active** |
+| corlinman `/health` / `corlinman.service` | **200 / active** |
+| corlinman 的 NapCat WS 连接 | **完好未断** |
+| 运行中容器 | **9** |
+| hermes 内存 | **150 MB**（限额 `MemoryHigh=384M`） |
+| **归档库** | `/opt/hermes/data/plugin-data/corlinman_jobs/qq_group_history.sqlite` 已建 |
+| **D48 实测** | `journal_mode: **delete**`、`sqlite: **3.40.1**` —— 生产确为 DELETE 模式 |
+| **真实归档** | `group_messages` **4 行**（真实群消息，非构造数据） |
+| **出站发送** | **0 条**（journal 中零 `send_group_msg` / `send_private_msg`） |
+| corlinman 自己的库 | 独立文件（16.7 MB），未被本进程写 |
+
+⇒ **D48 由推导升级为实测：归档写入方在 SQLite 3.40.1 + DELETE 模式下正常工作。**
+
+### 观察期需要盯的（≥1 天）
+
+- [ ] `group_messages` 行数持续增长，且与群活跃度相称
+- [ ] hermes cgroup 内存峰值不逼近 `MemoryHigh=384M`（启动时 150 MB；日志已提示"系统内存压力偏高"）
+- [ ] journald 无 SQLite 锁争用 / `database is locked`
+- [ ] corlinman `/health` 持续 200、其 WS 连接不掉
+- [ ] 出站发送保持 **0**
+- [ ] 保留期裁剪（7 天）到期后正常 DELETE
+
+**额外的安全层（意外发现）**：hermes 日志提示未配置 `GATEWAY_ALLOW_ALL_USERS`，
+平台默认走 allowlist 策略、拒绝未知发送者 —— 即便私聊门控失效，这仍是第二道防线。
+
+### 回滚
+`systemctl stop hermes.service`；或把三个键设回 `enabled:false` / 删除新增两键（备份可整体还原）。
