@@ -20,14 +20,30 @@ from plugins.grantley.persona import (
 )
 from plugins.grantley.state import PersonaState
 
-# sha256 of corlinman's
+# Originally the sha256 of corlinman's
 # python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.md
 # (the repo copy — the one that says `web_search`, not `WebSearch`).
-SOURCE_PROMPT_SHA256 = "db2efde6b62902dc11fd7e151c2518ef01cec848eee2f5c8012fcfcd5881ec25"
+#
+# C6 (docs/migration-corlinman/C5-grantley-canon-research.md, section E)
+# deliberately amended this asset to fix three places where it contradicted
+# KAIJYU-09's official character data: the "hidden honor-student" bit
+# ("嫌い：勉強" / "裏表のない実直な性格" rule that out), the "本大爷" self-address
+# claimed as a routine pattern (no 俺様 in any official line — downgraded, not
+# deleted, per the Orchestrator's D42 ruling), and the "骑士 is a moral anchor"
+# framing (no textual support). It also added an official-facts block and
+# folded the researched speech-pattern rules into 表达 DNA. This hash is the
+# new pinned baseline post-amendment — it still guards against *accidental*
+# drift, just not against this one intentional, documented rewrite.
+SOURCE_PROMPT_SHA256 = "e8af1d1d2a37163fb399e7199212144e47d1d9192e1acd9096941eb5d0d93a9e"
 
-# sha256 of corlinman's
+# Originally the sha256 of corlinman's
 # python/packages/corlinman-agent/src/corlinman_agent/persona/life_seeds/grantley.yaml
-SOURCE_SEEDS_SHA256 = "ce280754ed9e0e8cdb88d559b9685cca7956178587b284b0f35d496c07fb26fb"
+#
+# C6 corrected five companion names to KC1's official Simplified-Chinese
+# translations and moved the two instructors (戴德里克 / 西利欧) out of the
+# `companion` pool into a new `mentor` pool — they are teachers, not
+# same-cohort companions. See C5 report section B3/F.
+SOURCE_SEEDS_SHA256 = "2d626c4f46262f59e6cdfaa8dde015a941b5c5a4f70addfb4af5b296de2be0ac"
 
 
 def _sha(path) -> str:
@@ -35,11 +51,18 @@ def _sha(path) -> str:
 
 
 def test_prompt_asset_is_byte_exact():
-    """The character content must not drift. Ever."""
+    """The character content must not drift from the pinned baseline.
+
+    Not "must equal corlinman's copy forever" — C6 deliberately diverged
+    from corlinman once, for documented canon reasons (see the comment on
+    ``SOURCE_PROMPT_SHA256``). This still catches any *further*, undocumented
+    edit.
+    """
     assert _sha(PROMPT_ASSET_PATH) == SOURCE_PROMPT_SHA256
 
 
 def test_seed_pack_is_byte_exact():
+    """Byte-exact against the pinned baseline (see ``SOURCE_SEEDS_SHA256``)."""
     from plugins.grantley.life import bundled_seeds_path
 
     path = bundled_seeds_path("grantley")

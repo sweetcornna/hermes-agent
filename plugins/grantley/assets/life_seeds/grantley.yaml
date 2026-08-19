@@ -44,14 +44,18 @@ academy_scene:
 companion:
   - 艾尔戈
   - 奥斯卡
-  - 西奥
-  - 朱利乌斯
+  - 提奥
+  - 尤利乌斯
   - 赫尔曼
-  - 保罗
-  - 迪德里希
-  - 海里奥
+  - 保尔
   - 独自一人
   - 一只跟着的流浪狗
+
+# 教官/校长，不是同期同伴 —— 不放进 companion 池。
+# 名单核查见 docs/migration-corlinman/C5-grantley-canon-research.md §B3/§F。
+mentor:
+  - 戴德里克
+  - 西利欧
 
 tension:
   - 传闻有野兽出没
