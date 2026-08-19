@@ -202,6 +202,21 @@ def recent_group_messages(
     return list(_GROUP_RECENT.get(speech_key(instance_id, group_id), ()))
 
 
+def _gh_live_extra(adapter: Any) -> Dict[str, Any]:
+    """The adapter's *live* settings mapping, for group-history resolution.
+
+    Same precedence rule as :func:`plugins.platforms.onebot.proactive.live_extra`
+    — ``config.extra`` (what an in-place config reconcile mutates) before
+    ``_extra`` (the copy taken at construction).  Duplicated here rather than
+    imported because ``.proactive`` imports this module.
+    """
+    extra = getattr(getattr(adapter, "config", None), "extra", None)
+    if isinstance(extra, dict):
+        return extra
+    fallback = getattr(adapter, "_extra", None)
+    return fallback if isinstance(fallback, dict) else {}
+
+
 def _reset_module_state() -> None:
     """Test hook — clear every process-wide buffer, this module's and the
     proactive loop's daily budget, so state cannot leak between tests."""
@@ -655,6 +670,9 @@ class OneBotAdapter(BasePlatformAdapter):
         self._health_task: Optional[asyncio.Task] = None
         self._proactive_task: Optional[asyncio.Task] = None
         self._proactive_cancel: Optional[asyncio.Event] = None
+        #: Persistent group-message archive (D3).  ``None`` until ``connect()``
+        #: resolves a config that switches it on; see :mod:`.group_history`.
+        self._history_writer: Optional[Any] = None
         self._turn_tasks: set = set()
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._dedup = MessageDeduplicator()
@@ -771,6 +789,7 @@ class OneBotAdapter(BasePlatformAdapter):
             self._health_loop(), name="onebot-health"
         )
         self._start_proactive_loop()
+        self._start_group_history()
         # Publish for the synchronous tool layer (tools/onebot_client.py) so
         # QQ-borrowing tools reuse this connection instead of opening a
         # second one against the same backend.
@@ -849,6 +868,93 @@ class OneBotAdapter(BasePlatformAdapter):
             name="onebot-proactive",
         )
 
+    def _start_group_history(self) -> None:
+        """Start the persistent group-message archive, if it is switched on.
+
+        This is the writer for ``qq_group_history.sqlite`` — the store the
+        three migrated QQ monitors read and that nothing in this port used to
+        write (00-PLAN.md §19 / §21, D46).  Off unless
+        ``group_history_enabled`` says otherwise.
+
+        Guarded against ``connect()``'s reconnect path exactly like
+        :meth:`_start_proactive_loop`: a second writer would be a second
+        thread appending the same messages, i.e. duplicate rows in every
+        digest.  Imported lazily and wrapped, because a broken optional
+        archive must never cost the channel its QQ connection.
+        """
+        if self._history_writer is not None and self._history_writer.running:
+            return
+        try:
+            from . import group_history as _gh
+
+            config = _gh.resolve_config(
+                _gh_live_extra(self), getattr(self, "group_whitelist", None)
+            )
+            if config is None:
+                self._history_writer = None
+                return
+            writer = _gh.GroupHistoryWriter(config)
+            if not writer.start():
+                self._history_writer = None
+                return
+            self._history_writer = writer
+        except Exception:  # noqa: BLE001 — archiving is never load-bearing
+            logger.exception(
+                "OneBot: group history archiving unavailable — continuing without it"
+            )
+            self._history_writer = None
+
+    def _record_group_history(
+        self, event: protocol.MessageEvent, sender_name: str
+    ) -> None:
+        """Archive one inbound group message.  Best-effort, never raises.
+
+        Mirrors corlinman's own capture point
+        (``corlinman-channels/service.py`` ``_qq_dispatch_loop``, L2694-2716):
+        called BEFORE the router gate, so the digest sees the whole room —
+        including the messages the bot would never have answered — and with
+        the same field conventions, so rows written here and rows corlinman
+        wrote are indistinguishable to the monitors' reader:
+
+        * ``sender_name`` is blanked when it is merely the user id repeated,
+          because the digest renderer prints ``name(id)`` and would otherwise
+          emit ``123(123)``;
+        * the text is ``segments_to_text(...) or raw_message`` — segments
+          first, which is corlinman's order for the *archive* (the in-memory
+          proactive buffer above deliberately prefers ``raw_message``).
+        """
+        writer = self._history_writer
+        if writer is None:
+            return
+        try:
+            writer.record(
+                instance_id=self.instance_id,
+                group_id=event.group_id,
+                sender_user_id=event.user_id,
+                sender_name="" if sender_name == str(event.user_id) else sender_name,
+                message_id=event.message_id,
+                event_time_ms=int(event.time) * 1000 if event.time else None,
+                text=protocol.segments_to_text(event.message) or event.raw_message,
+            )
+        except Exception:  # noqa: BLE001 — an archive miss is not a reply miss
+            logger.exception("OneBot: group history capture failed")
+
+    async def _stop_group_history(self) -> None:
+        """Flush and stop the archive writer without blocking the event loop.
+
+        ``close()`` joins a thread that may be mid-fsync, so it runs in the
+        default executor.  A writer that will not stop is left as the daemon
+        thread it already is rather than delaying shutdown.
+        """
+        writer = self._history_writer
+        self._history_writer = None
+        if writer is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.to_thread(writer.close), timeout=15.0)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — best-effort
+            logger.warning("OneBot: group history writer did not shut down cleanly")
+
     async def disconnect(self) -> None:
         """Stop the loops and close the socket."""
         self._running = False
@@ -872,6 +978,9 @@ class OneBotAdapter(BasePlatformAdapter):
             if not task.done():
                 task.cancel()
         self._turn_tasks.clear()
+        # After the turn tasks, before the socket: nothing can still be
+        # recording by now, so this flush really is the last word.
+        await self._stop_group_history()
         if self._client is not None:
             try:
                 await self._client.close()
@@ -973,6 +1082,12 @@ class OneBotAdapter(BasePlatformAdapter):
                 event.raw_message or protocol.segments_to_text(event.message),
                 False,
             )
+            # ...and the PERSISTENT archive, for the same reason and at the
+            # same point.  The two are complements, not duplicates: the buffer
+            # above is 30 rows of 200 chars in RAM, sized to be a proactive
+            # turn's prompt context and lost on restart; this one survives
+            # restarts and holds the 24h window three cron monitors summarise.
+            self._record_group_history(event, sender_name)
 
         routed = self.router.dispatch(event)
         if routed is None:
@@ -1817,6 +1932,17 @@ _PRIVATE_YAML_KEYS = (
     "proactive_probability",
     "proactive_context_messages",
     "proactive_prompt",
+    # Persistent group-message archive (see .group_history).  Off unless
+    # group_history_enabled is set.  ``group_history_db`` names the file this
+    # gateway WRITES; the monitors' own QQ_GROUP_HISTORY_DB names the file
+    # they READ, and during coexistence those are two different files.
+    "group_history_enabled",
+    "group_history_groups",
+    "group_history_db",
+    "group_history_retention_days",
+    "group_history_batch_rows",
+    "group_history_flush_secs",
+    "group_history_queue_max",
 )
 
 

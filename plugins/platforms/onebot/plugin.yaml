@@ -130,3 +130,57 @@ optional_env:
     description: "Seconds without any frame before the link is reported silent (default 120)"
     prompt: "Link-lost threshold (seconds)"
     password: false
+  # --- Persistent group-message archive (see group_history.py) -------------
+  # Writes the ``group_messages`` table that plugins/corlinman_jobs' three QQ
+  # monitors read. OFF by default: it records real people's group chat to
+  # disk, so it starts only when someone asks for it.
+  - name: ONEBOT_GROUP_HISTORY_ENABLED
+    description: >-
+      Archive inbound messages from the captured groups into a SQLite store
+      (default: false). This is the writer for qq_group_history.sqlite, the
+      only data source of the sanhu / jlu / qunjlu cron monitors. Direct
+      messages are never archived.
+    prompt: "Archive group messages to SQLite? (true/false, default false)"
+    password: false
+  - name: ONEBOT_GROUP_HISTORY_DB
+    description: >-
+      Path of the archive this gateway WRITES. NOT the same variable as the
+      monitors' QQ_GROUP_HISTORY_DB, which names the file they READ — during
+      the corlinman coexistence window the reader points at corlinman's own
+      live store and the writer must not follow it there (two writers on one
+      SQLite file risk corrupting it). Defaults to
+      $HERMES_HOME/plugin-data/corlinman_jobs/qq_group_history.sqlite, the
+      same path the reader falls back to when its own variable is unset.
+    prompt: "Group-history database path (blank for the default)"
+    password: false
+  - name: ONEBOT_GROUP_HISTORY_GROUPS
+    description: >-
+      Comma-separated group ids to archive. Unset means "every group in
+      ONEBOT_GROUP_WHITELIST"; entries outside that whitelist are ignored, and
+      an absent whitelist leaves archiving OFF rather than capturing every
+      group the account is in.
+    prompt: "Group ids to archive (comma-separated, blank = the whitelist)"
+    password: false
+  - name: ONEBOT_GROUP_HISTORY_RETENTION_DAYS
+    description: >-
+      Delete archived rows older than this many days (default 7; floor 2,
+      because the monitors summarise a 24h window). Rows are DELETEd, never
+      VACUUMed — freed pages are reused instead of rewriting the whole file.
+    prompt: "Group-history retention (days)"
+    password: false
+  - name: ONEBOT_GROUP_HISTORY_BATCH_ROWS
+    description: "Commit after this many queued rows (default 200). Paired with ONEBOT_GROUP_HISTORY_FLUSH_SECS; whichever hits first wins."
+    prompt: "Group-history commit batch size (rows)"
+    password: false
+  - name: ONEBOT_GROUP_HISTORY_FLUSH_SECS
+    description: "Commit at most this long after the first queued row (default 30). Also the worst-case row loss on an unclean kill; a graceful shutdown flushes."
+    prompt: "Group-history flush interval (seconds)"
+    password: false
+  - name: ONEBOT_GROUP_HISTORY_QUEUE_MAX
+    description: >-
+      Hard cap on un-written rows held in memory (default 2000). When the
+      queue is full new rows are dropped and counted, never buffered — a
+      stalled disk must cost archived chat lines, not the gateway's memory
+      limit.
+    prompt: "Group-history queue bound (rows)"
+    password: false
