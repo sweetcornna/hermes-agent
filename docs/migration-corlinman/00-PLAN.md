@@ -1109,3 +1109,62 @@ D2 用真实数据确认：**`sanhu` 的群 `980927602` 日均约 15000 条**，
 `hermes.daily_agenda` 的 `enabled_toolsets` 为 `None`（⇒ hermes 完整默认工具集），
 与 `specs.py` 自述"every agent job here names its toolsets"不符。
 影响有限（该任务在生产即为 `enabled=false`），登记待查。
+
+---
+
+## 20. D27 执行完毕（2026-08-19 13:36 JST，用户放行）—— ✅ 成功，线上零扰动
+
+停用并屏蔽两个被容器取代的原生 NapCat 残留单元。
+
+### 执行
+
+```
+systemctl disable --now corlinman-napcat-manager.service   # 移除 multi-user.target.wants 符号链接
+systemctl disable --now corlinman-napcat.service
+# mask 首次失败：单元文件实体位于 /etc/systemd/system/，与 mask 的符号链接同路径冲突
+mv  /etc/systemd/system/corlinman-napcat{,-manager}.service  /root/napcat-units-disabled-20260819T043624Z/
+systemctl mask corlinman-napcat.service corlinman-napcat-manager.service
+systemctl daemon-reload
+```
+
+**为什么必须补 mask（而非止于 disable）**：`corlinman-napcat.service` 带 `PartOf=corlinman.service`。
+`disable` 只移除开机自启的 `WantedBy` 符号链接，**不阻止依赖传播与手动启动**——
+将来任何一次 `systemctl restart corlinman.service` 都会把崩溃循环拉回来，
+而切换窗口几乎必然要重启它。原文件已备份，`.orig` 副本一并保留。
+
+### 结果核验（对照变更前快照）
+
+| 指标 | 变更前 | 变更后 |
+|---|---|---|
+| `corlinman-napcat` **容器** | Up 4 weeks，3001/6099 | **Up 4 weeks，3001/6099**（未受影响） |
+| ws `127.0.0.1:3001` | — | **可连** |
+| webui `127.0.0.1:6099` | — | **301（存活）** |
+| corlinman `/health` | 200 | **200** |
+| `corlinman.service` / `corlinman-agent` | active | **active / active** |
+| 运行中容器 | 9 | **9** |
+| 监听 socket | 21 | **21** |
+| 两单元状态 | `activating`，NRestarts 318441 / 620342 | **`masked` / `inactive`** |
+| 可用内存 | 390–407 MB | **407 MB** |
+
+### journald 噪音消除 —— 实测远超预期
+
+| 窗口 | napcat 相关行 | 全系统总行 | 占比 |
+|---|---|---|---|
+| 变更前 10 分钟（13:26–13:36） | **2658** | 3350 | **79%** |
+| 变更后（13:37 起） | **0** | **1** | — |
+
+约 335 行/分钟 → 近乎静默。§5 估计的 61% 偏保守，实际为 **79%**。
+叠加 P3 已放宽的 `SystemMaxUse=300M`，journald 保留窗口将从约 19 小时大幅延长
+——**hermes 上线后终于具备可用的排障窗口**（原为 7.5 小时）。
+
+### 回滚
+
+```
+systemctl unmask corlinman-napcat.service corlinman-napcat-manager.service
+cp /root/napcat-units-disabled-20260819T043624Z/corlinman-napcat.service          /etc/systemd/system/
+cp /root/napcat-units-disabled-20260819T043624Z/corlinman-napcat-manager.service  /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now corlinman-napcat.service corlinman-napcat-manager.service
+```
+回滚即恢复到原先的崩溃循环态（这正是变更前的状态，无其他副作用）。
+
+**P2 / D14 就此关闭**，且**未触碰线上 QQ 桥接**——它自始至终是那个 Docker 容器。
