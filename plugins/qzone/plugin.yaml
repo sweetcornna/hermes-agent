@@ -1,0 +1,58 @@
+name: qzone
+version: 1.0.0
+label: QQ空间 (QZone)
+# ``backend``: bundled and auto-loaded like the other service integrations
+# (spotify, image_gen). The tools gate themselves on a configured OneBot
+# endpoint via check_fn, so loading costs nothing on an install without QQ.
+kind: backend
+description: >
+  QQ空间 (QZone) tools for a QQ account already bridged through OneBot v11
+  (NapCat / Lagrange): publish a 说说, read the 好友动态 timeline, fetch one
+  post with its comments, comment or reply under a post, and list QQ friends.
+
+  No credentials of its own — the logged-in session is borrowed from the
+  running OneBot backend (get_login_info + get_cookies) and the g_tk CSRF
+  token is derived locally. Requires ONEBOT_WS_URL or ONEBOT_HTTP_URL; the
+  tools are absent from the model's schema without one.
+
+  These drive unofficial, reverse-engineered QZone web endpoints. Automated
+  posting violates Tencent's Terms of Service and carries an account-ban
+  risk. Publishing and commenting write to a real public feed and cannot be
+  undone from here — there is no delete tool.
+author: corlinman (original), ported to hermes-agent
+provides_tools:
+  - qzone_publish
+  - qzone_list_feed
+  - qzone_get_post
+  - qzone_post_comment
+  - qzone_list_friends
+requires_env:
+  - name: ONEBOT_WS_URL
+    description: >
+      Forward WebSocket of the OneBot v11 backend, e.g. ws://127.0.0.1:3001.
+      ONEBOT_HTTP_URL works instead and takes precedence when both are set.
+      Shared with the OneBot platform plugin; do not configure a second
+      NapCat instance.
+optional_env:
+  - name: ONEBOT_ACCESS_TOKEN
+    description: >
+      OneBot access token. NOT the NapCat WebUI token — they are separate
+      secrets and swapping them gives a permanent 401.
+  - name: QZONE_STATE_DIR
+    description: >
+      Directory holding qzone_post_log/, qzone_seen_comments/ and
+      qzone_friend_comments/. Defaults to <hermes home>/plugin-data/qzone/.
+      Point it at a migrated execution-state directory to keep the existing
+      publish history and dedup ledgers.
+  - name: QZONE_PERSONA_ID
+    description: >
+      Default persona whose sidecar files are read and written when a tool
+      call does not name one. Production uses "grantley".
+  - name: QZONE_QQ_INSTANCE_ID
+    description: >
+      Account namespace for the sidecar paths. "default" (the default) keeps
+      the unqualified <store>/<persona>.json layout production already uses.
+tags:
+  - qq
+  - qzone
+  - social
