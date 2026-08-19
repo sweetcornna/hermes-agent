@@ -1,0 +1,295 @@
+# =============================================================================
+# B3 — corlinman → hermes configuration migration
+# =============================================================================
+# This is the EXACT block appended to the production `$HERMES_HOME/config.yaml`
+# (`/opt/hermes/data/config.yaml`, owner hermes, mode 0640) on 2026-08-19.
+#
+# NO SECRETS LIVE HERE. Every credential is referenced by env-var name only.
+# Real values live exclusively in `/opt/hermes/data/.env` (0600, owner hermes),
+# copied server-side straight out of `/opt/corlinman/data/config.toml`.
+#
+#   env var                | source in corlinman config.toml
+#   -----------------------|--------------------------------------------------
+#   CORNNA_API_KEY         | providers.cornna.api_key.value
+#   ONEBOT_ACCESS_TOKEN    | channels.qq.instances.default.napcat_access_token
+#   TELEGRAM_BOT_TOKEN     | (already placed by the earlier Telegram batch)
+#
+# Rollback: delete everything below the B3 banner in config.yaml, or restore
+# `/opt/hermes/data/config.yaml.bak.b3.<UTC-timestamp>`.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Scheduler / clock timezone  (D8, B3 hard constraint 5)
+# -----------------------------------------------------------------------------
+# The production host's local zone is Asia/Tokyo (JST, +0900). hermes cron has
+# NO per-job timezone: `cron/jobs.py` compares every schedule against
+# `hermes_time.now()`, a single process-wide clock. Leaving this unset means
+# "whatever the host happens to be", which is exactly the implicit dependency
+# D8 forbids.
+#
+# Asia/Shanghai is chosen because:
+#   * it is the business zone of the QQ groups being served, and
+#   * `plugins/corlinman_jobs/specs.py` (batch D1) declares Asia/Shanghai on
+#     every migrated job, and its preflight check FAILS the install unless the
+#     configured zone matches.
+#
+# ⚠ This is a deliberate 1-hour BEHAVIOUR CHANGE relative to corlinman for any
+# schedule copied verbatim: corlinman's three QQ monitors carry
+# `timezone = ""`, so their nominal 09:00/10:00/11:00 fired at 09:00/10:00/11:00
+# JST == 08:00/09:00/10:00 Beijing. Whoever migrates those monitors (D2) must
+# subtract one hour from the nominal times, or they will run an hour late.
+timezone: "Asia/Shanghai"
+
+
+# -----------------------------------------------------------------------------
+# LLM provider  (corlinman `[providers.cornna]`)
+# -----------------------------------------------------------------------------
+# ⚠ base_url is NOT a verbatim copy of corlinman's value, and that is not a
+# transcription error. corlinman has:
+#
+#     base_url = "https://api.cornna.xyz/antigravity/"   # kind = openai_compatible
+#
+# `api.cornna.xyz` is a custom relay with THREE separate mounts, all reachable
+# with the same key. Measured on the host, live:
+#
+#   mount                                     wire                    result
+#   ----------------------------------------- ----------------------- ---------------
+#   POST /v1/chat/completions                  OpenAI chat             200  ✅
+#   GET  /v1/models                            OpenAI                  200 — 3 models
+#   POST /antigravity/v1/messages              Anthropic Messages      200  ✅
+#   GET  /antigravity/v1/models                Anthropic               200 — 28 models
+#   POST /antigravity/v1beta/models/M:generateContent  Gemini native   200  ✅
+#   GET  /antigravity/v1beta/models            Gemini native           200 — 19 models
+#   POST /antigravity/chat/completions         OpenAI chat             404
+#   POST /antigravity/v1/chat/completions      OpenAI chat             404
+#   POST /antigravity/v1beta/chat/completions  OpenAI chat             404
+#   POST /antigravity/v1beta/openai/chat/completions                   404
+#
+# So the gateway IS OpenAI-compatible — but only at the relay ROOT `/v1`, never
+# under `/antigravity`. The three models the root exposes to this token are
+# EXACTLY corlinman's three names (gemini-3.7-flash-tiered,
+# claude-opus-4-6-thinking, claude-sonnet-4-6).
+#
+# `chat_completions` @ `/v1` is chosen over `anthropic_messages` @ `/antigravity`
+# for one hard reason: the `anthropic` SDK is NOT installed in this venv (zero-
+# extras install), and hermes does not fail loudly on that — see
+# `agent/auxiliary_client.py:3606-3618` and `:6538-6552`, which log
+# "declares api_mode=anthropic_messages but the anthropic SDK is not installed
+# — falling back to OpenAI-wire". That fallback would rewrite the base to
+# `.../antigravity/v1/chat/completions`, which 404s. i.e. configuring the
+# Anthropic mount WITHOUT installing the SDK yields a silently broken provider.
+#
+# To switch to the Anthropic mount instead (28-model superset), both steps are
+# mandatory — `uv pip install --python /opt/hermes/venv/bin/python
+# --only-binary=:all: anthropic` (dry-run: 2 wheels, anthropic==0.122.0 +
+# docstring-parser==0.18.0), then:
+#     base_url: "https://api.cornna.xyz/antigravity"   # no /v1 — the SDK adds it
+#     api_mode: anthropic_messages
+# Note hermes' URL heuristic `models.py::_base_url_looks_like_anthropic_messages`
+# only matches paths ending in `/anthropic` or `/anthropic/v1`, so `api_mode`
+# MUST be stated explicitly here; auto-detection will not fire for `/antigravity`.
+#
+# Aside: corlinman's own `[providers.cornna]` block is dead config. It sets
+# `[models] backend = "grpc_agent"`, so inference is delegated to
+# corlinman-agent, and the HTTP provider was never exercised. Its agent log
+# does show `reasoning_loop.error error='404 page not found'` (2026-08-18)
+# whenever something does fall through to it. Copying the value verbatim would
+# have migrated a 404.
+providers:
+  cornna:
+    enabled: true
+    base_url: "https://api.cornna.xyz/v1"
+    api_mode: chat_completions
+    key_env: "CORNNA_API_KEY"
+    default_model: "gemini-3.7-flash-tiered"
+    models:
+      - gemini-3.7-flash-tiered
+      - claude-opus-4-6-thinking
+      - claude-sonnet-4-6
+
+model:
+  # corlinman `[models] default`
+  default: "gemini-3.7-flash-tiered"
+  # Selects the named `providers.cornna` block above. Resolution path:
+  # runtime_provider.resolve_requested_provider() -> _resolve_named_custom_runtime()
+  # -> _get_named_custom_provider("cornna"). `model.base_url` is deliberately
+  # NOT set: the provider block is the single source of truth for the endpoint.
+  provider: "cornna"
+
+# -----------------------------------------------------------------------------
+# Model aliases  (corlinman `[models.aliases]`)
+# -----------------------------------------------------------------------------
+# hermes' equivalent of corlinman's alias table. Resolved by
+# `hermes_cli/model_switch.py::_load_direct_aliases` BEFORE the models.dev
+# catalog, so these route to the relay rather than to a public vendor.
+# corlinman's alias `params` blocks are all empty, so nothing is dropped.
+model_aliases:
+  gemini-3.7-flash-tiered:
+    model: gemini-3.7-flash-tiered
+    provider: cornna
+    base_url: "https://api.cornna.xyz/v1"
+  claude-opus-4-6-thinking:
+    model: claude-opus-4-6-thinking
+    provider: cornna
+    base_url: "https://api.cornna.xyz/v1"
+  claude-sonnet-4-6:
+    model: claude-sonnet-4-6
+    provider: cornna
+    base_url: "https://api.cornna.xyz/v1"
+
+
+# -----------------------------------------------------------------------------
+# Channels — STAGED, ALL DISABLED
+# -----------------------------------------------------------------------------
+# corlinman is still the live service on both QQ and Telegram. Two agents
+# answering the same groups / posting to the same QZone account produces
+# duplicate, publicly visible, unretractable output. Everything below is
+# configured and inert; the cutover window flips the switches.
+platforms:
+
+  # corlinman `[channels.qq.instances.default]`.
+  #
+  # THREE independent locks currently hold this shut:
+  #   1. the `onebot` plugin code is not deployed to /opt/hermes/repo at all;
+  #   2. `plugins.enabled` does not list it, so it would not load if it were;
+  #   3. `enabled: false` here sets `_enabled_explicit`, which
+  #      `gateway/config.py`'s plugin-platform sweep honours — it will NOT
+  #      auto-enable the platform just because ONEBOT_WS_URL is present.
+  onebot:
+    enabled: false
+    extra:
+      ws_url: "ws://127.0.0.1:3001"          # the existing corlinman-napcat container
+      # access_token comes from ONEBOT_ACCESS_TOKEN in .env — never inlined here.
+      self_ids: []
+
+      # corlinman `group_replies_enabled = false`. Master switch for ALL group
+      # activity; while false every group message is dropped before the
+      # mention/keyword checks. Reproduces today's behaviour exactly.
+      group_replies_enabled: false
+
+      group_whitelist:
+        - 1082225370
+        - 183287894
+        - 894800697
+        - 149881991
+        - 667528618
+
+      # corlinman `[channels.qq.instances.default.reply]`
+      # on_at_mention = true, on_direct_message = true, no "reply to everything".
+      group_reply_policy: mention_or_keyword
+
+      # corlinman `[channels.qq.instances.default.group_keywords]`
+      group_keywords:
+        "1082225370": ["格兰"]
+        "183287894":  ["格兰"]
+        "894800697":  ["格兰"]
+        "149881991":  ["格兰"]
+        "667528618":  ["格兰"]
+
+      # corlinman group_rate_limit_window_minutes / _max_messages
+      group_rate_limit_window_minutes: 3
+      group_rate_limit_max_messages: 5
+
+      reply_with_mention: true
+      # 2 vCPU / 1.9 GB host; the source implementation used 8.
+      max_concurrency: 2
+
+  # corlinman `[channels.telegram] enabled = true`, but TELEGRAM_BOT_TOKEN is
+  # already in .env and the built-in Telegram platform auto-enables on a bare
+  # token. Pinned false so `systemctl start hermes` cannot begin polling while
+  # corlinman still owns the bot.
+  telegram:
+    enabled: false
+
+
+# -----------------------------------------------------------------------------
+# Persona binding  (corlinman `[...].humanlike] persona_id = "grantley"`)
+# -----------------------------------------------------------------------------
+# Consumed by `plugins/grantley/channel_binding.py::resolve_channel_prompt`.
+# `channel_owner` is the 单相思 relationship anchor UID 2104743984, established
+# in A2 §468 — one global anchor, not a per-group 群主.
+#
+# ⚠ INERT ON TWO COUNTS: the `grantley` plugin is not deployed to the host, and
+# no adapter calls `resolve_channel_prompt` yet (the OneBot adapter does not
+# import it). This block is staged for the cutover, not live.
+plugins:
+  entries:
+    grantley:
+      settings:
+        channels:
+          "1082225370": { persona: grantley, group: true,  channel_owner: "2104743984" }
+          "183287894":  { persona: grantley, group: true,  channel_owner: "2104743984" }
+          "894800697":  { persona: grantley, group: true,  channel_owner: "2104743984" }
+          "149881991":  { persona: grantley, group: true,  channel_owner: "2104743984" }
+          "667528618":  { persona: grantley, group: true,  channel_owner: "2104743984" }
+          # Monitor delivery target (corlinman monitors `sanhu` / `jlu`).
+          "2104743984": { persona: grantley, group: false, channel_owner: "2104743984" }
+
+# NOT migrated here, deliberately:
+#   * `[channels.telegram.humanlike] persona_id = "lycaon"` — the lycaon persona
+#     does not exist in the live `personas.sqlite` (only in the frozen 07-27
+#     snapshot) and was not ported by C1. Binding a channel to a persona that
+#     has no definition would fail at runtime rather than degrade.
+#   * `[admin]` username / password_hash — hermes' dashboard has its own auth;
+#     migrating a bcrypt hash across auth systems is not meaningful.
+#   * `[agent] endpoint = 127.0.0.1:50051` — corlinman's gRPC backend split.
+#     hermes calls the provider directly; there is no equivalent.
+#   * `[models] backend = "grpc_agent"` and `image_model` — same reason; hermes
+#     has no `grpc_agent` backend, and image generation is out of scope (A2:
+#     grantley has zero image assets and all 19 real posts are plain text).
+#   * `[channels.qq.instances.default].monitors` (sanhu / jlu / qunjlu) — these
+#     are scheduled jobs, owned by batch D2, not channel configuration.
+
+
+# =============================================================================
+# ⛔ BLOCKER FOUND WHILE VERIFYING — read before batch D/E
+# =============================================================================
+# The relay REJECTS hermes' default agent identity line and, when it does, marks
+# its upstream account pool exhausted:
+#
+#     429 {"error":{"message":"All available accounts exhausted","type":"server_error"}}
+#     503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"}}
+#
+# It is content-based, not size-based, and it was isolated to a single sentence.
+# All of the following were measured against POST https://api.cornna.xyz/v1/chat/completions,
+# each after waiting for three consecutive successful control probes:
+#
+#   no system message                                          -> 200
+#   generic system, 170 chars                                  -> 200
+#   generic system, 1015 chars                                 -> 200
+#   generic system, 5000 chars                                 -> 200
+#   27 tool schemas, tiny system   (13466 prompt tokens!)      -> 200
+#   hermes' real system prompt as a USER message (5077 tokens) -> 200
+#   hermes' real system prompt, chars 300-1000, as system      -> 200
+#   hermes' real system prompt, chars 1000-2000, as system     -> 200
+#   hermes' real system prompt, chars 0-300, as system         -> 429  ⛔
+#   "You are Hermes Agent, an intelligent AI assistant created
+#    by Nous Research. You are helpful, knowledgeable, and direct."  -> 429  ⛔
+#   same sentence with the name replaced by 格兰特利                  -> 200  ✅
+#
+# So: the identity preamble is what the upstream refuses (it proxies Google
+# Antigravity accounts and evidently guards its client identity). Any other
+# identity passes — including a full agent turn.
+#
+# Proof, run on the host: with `$HERMES_HOME/SOUL.md` temporarily rewritten to a
+# 格兰特利 identity,
+#     hermes -z "Reply with exactly this and nothing else: PONG-B3-HERMES"
+# returned `PONG-B3-HERMES` — a complete agent turn, 18.7 KB system prompt,
+# 27 tools, streaming. With the stock SOUL.md the identical command returns
+# `HTTP 503: No available accounts`. SOUL.md was restored afterwards; the
+# production file is byte-identical to before (513 bytes, the stock default).
+#
+# Consequence: EVERY migrated cron job will fail against this provider until the
+# agent identity changes. The remedy is one file, and the migration is already
+# heading there — C1 installs the grantley persona, whose identity is 格兰特利,
+# not "Hermes Agent". Concretely, either:
+#   * install the grantley persona / profile (C1) before enabling any job, or
+#   * rewrite `$HERMES_HOME/SOUL.md` so it does not open with the stock
+#     "You are Hermes Agent … created by Nous Research" sentence.
+# Naming the agent is a product decision, so B3 left SOUL.md untouched.
+#
+# Note `agent/prompt_builder.py::HERMES_AGENT_HELP_GUIDANCE` carries a second
+# "Hermes Agent (by Nous Research)" mention; it was NOT reached by these probes
+# (the neutral-SOUL.md turn succeeded with it present), but it is worth knowing
+# about if the symptom ever returns.
