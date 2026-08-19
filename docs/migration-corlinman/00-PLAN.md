@@ -1522,3 +1522,79 @@ corlinman 的四个 Telegram 任务长期 `non_zero_exit / builtin_not_ok`，
 |---|---|---|
 | D53 | 维持 D29，阶段 4 照原计划执行，无需先停 corlinman 的 Telegram 任务 | 旧 bot 不在群内，实测 `chat not found`；停它反而是对生产系统的无谓改动 |
 | D54 | 手册 4.1 的 topic 表述改为按任务列出，不再写成 11/12/13/680 的并列 | 原写法暗示一一映射，实际 680 有两个任务、12 对应禁用任务，上线时会误判"少投了一个" |
+
+---
+
+## 26. E2 —— cron UTF-8 解码失败：根因、修复与验收（2026-08-19）
+
+### 验收：✅ 通过（七条标准逐条自查，全部由 Orchestrator 独立复现）
+
+| 标准 | 复现结果 |
+|---|---|
+| 回归测试改前必失败 | 还原 `registry.py` 到 HEAD → **2 failed, 2 passed** |
+| 改后必通过 | **4 passed** |
+| `tests/plugins/corlinman_jobs` | **312 passed**（此前 308，+4 为新测试） |
+| 未打坏上游 | `test_registry.py` + `test_toolsets.py` + `test_api_server_toolset.py` → **69 passed** |
+| 生产任务状态 | 四个全 `paused`；`analysis_digest` `last_status=ok`、`failure_streak=0` |
+| 执行记录 | `completed / error=None` @15:17:44 |
+| corlinman 未受影响 | PID 2581308 未变、`/health` 200 |
+
+### 根因
+
+```
+tools/registry.py:98  source = module_path.read_text(encoding="utf-8")
+  ← 命中 /opt/hermes/repo/tools/._onebot_client.py（163 字节，macOS AppleDouble 伴生文件）
+```
+
+`position 45` 是 AppleDouble 头部第二个条目**偏移字段的低位字节** `0xA3` = 163
+= 该伴生文件自身的长度。**与任何中文无关** —— 我最初怀疑全角括号（GBK `0xA3 0xA8`）
+是错的，字节偏移当时就对不上，那本该让我停下而不是继续猜。
+
+这条根因还一次性解释了两个此前对不上的现象：
+
+- **脚本单跑成功**：物料脚本从不 import agent；崩溃发生在 **cron 父进程**，
+  只有 `no_agent: False` 才会走到 `from run_agent import AIAgent`
+  → `model_tools` 模块级的 `discover_builtin_tools()`。
+- **网关 16:04 启动正常**：`gateway.run` 导入 `tools.registry` 但**不导入** `model_tools`。
+
+**回溯栈为什么没留下**：`cron/scheduler.py:6588` 是 `str(e) or type(e).__name__`
+配 `logger.error(...)`，**没有 `exc_info`**，存进 `executions.error` 的就是那个裸字符串。
+
+### 修复
+
+`tools/registry.py` 一行 + 注释：`except OSError:` → `except (OSError, UnicodeDecodeError):`
+
+该函数本就为"读不了"（`OSError`）和"解析不了"（`SyntaxError`）返回"不注册工具"；
+"解码不了"是同一个判定。放任它逃逸会让 **所有** 工具的发现中止，
+而发现发生在 `import model_tools` 时，等于整个 agent 引导失败。
+
+### 这是我造成的
+
+那 49 个伴生文件**来自我的部署**：我从 Mac 推送时保留了 xattr
+（`tools/onebot_client.py` 带 `com.apple.provenance`，本地 `tools/*.py` 共 123 条 xattr），
+落到不支持 xattr 的文件系统上就物化成 `._*` 文件，**三批正好对应我三次部署**。
+其中一个直接打断了生产的工具发现。
+
+已清理：49 个全删，备份 `/opt/hermes/appledouble-backup-20260819T162554Z.tgz`，
+123 个真实 `.py` 完好，`import model_tools` 正常。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D55 | 接受修复落在 `tools/registry.py`（**打破本次迁移"零上游文件改动"的性质**） | 这是真实的上游缺陷：任何非 UTF-8 文件混进 `tools/*.py` 都会击穿全部工具发现。放在 `corlinman_jobs` 里只能绕过自己这一条路径，别的调用方照样中招。改动一行，子智能体主动申报了越界 |
+| D56 | 此后一切向生产的部署必须剥离 xattr | `COPYFILE_DISABLE=1` + `tar --exclude='._*'`，或 `rsync --exclude='._*'`（**不要** `rsync -X`）。本次事故的完整因果链就是部署方式 |
+| D57 | 用户群 topic 680 因本轮测试收到 3 条消息，如实记录不隐去 | 2 条失败告警（16:06 / 16:08）+ 1 条成功输出（16:17）。cron 失败路径确实会投递告警（`_deliver_result(job, _summarize_cron_failure_for_delivery(...))`，`scheduler.py:6609`）；告警原文我本地跑格式化函数取得，与子智能体的推断**逐字一致** |
+
+投进用户群的确切内容：
+
+```
+16:06  ⚠️ Cron 'hermes.analysis_digest' failed: 'utf-8' codec can't decode byte 0xa3 in position 45: invalid start byte
+16:08  （同上）
+16:17  过去 24 小时没有发现新的分析、研究或策略记录。
+```
+
+第三条正是 prompt 里写死的无命中话术，与物料脚本的 `NO_ANALYSIS_MARKER` 分支一致 —— **链路通了**。
+
+### 待办（未阻塞）
+
+- `hermes.service` 每次停止都以 `code=exited, status=1/FAILURE` 收场（16:04:04、16:20:11 各一次），
+  重启后正常。疑为关停路径的退出码问题，非本阶段范围，记录待查。
