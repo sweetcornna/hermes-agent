@@ -1400,3 +1400,66 @@ D45 的 `qunjlu` 结构性抑制**未被改动**，并有测试钉住。
 | 4 | `_deliver_forward()` 与文件上传分支无自身门控 | 今日安全（仅经已门控入口可达），登记 |
 | 5 | **从未经真实模型轮次端到端跑过** | ⚠️ **进切换手册**：需先解决 D42 身份问题，否则只是烧池 |
 | 6 | `error_kind="unknown"` 是次优解，正解需改上游 | 接受：维持零上游改动 |
+
+---
+
+## 24. D47 / E1 验收 + 切换阶段 1–3 执行（2026-08-19）
+
+### E1 私聊门控 —— ✅ 通过
+
+切换执行到阶段 3 时发现的阻塞：`router.py::dispatch()` 对 `MessageType.PRIVATE` **无任何门控**
+（docstring 明写 `private chat is unaffected`），启用 onebot 平台 = hermes 开始回 QQ 私聊，
+而 corlinman 仍在回同一账号的私聊 ⇒ **对真人双回复**。这是 D17 的私聊变体，**切换手册 §0 原本漏了**。
+
+Orchestrator 直接驱动 `dispatch()` 验五种组合，全部正确，且**不设新键时与今天逐字节一致**。
+
+### D47 摘要预归约 —— ✅ 通过
+
+| 项 | 结果 |
+|---|---|
+| `tests/plugins/corlinman_jobs` | **308 passed**（D2 时 291） |
+| 广回归 | **1469 passed, 1 skipped**（基线 1452，+17 净增） |
+| 零上游改动 | 全分支仅 `.gitignore` +4 |
+| **模型调用仍为 1** | 脚本内模型引用数 **0** —— 归约是纯 Python |
+
+**Orchestrator 在真实 18334 行数据上独立复验**（未采信其自述）：
+
+```
+total=18334  →  kept=2143   (budget=1500, buckets=17)
+3 runs identical: True   8f6d3934918be1f5
+```
+
+**focus 保证用最严苛的方式验证**：故意挑**发言最多**的那个人当 focus
+⇒ `focus_kept=2143`，其消息**全部保留并直接冲破预算**。
+这正是 D47 申报的设计第 4 条（focus 保证优先于预算），**一条不丢**属实。
+
+其自报的关键取舍：`QQ_MONITOR_FETCH_CAP` 由源实现的 10000 提到 **40000**
+——因为真实一天就有 18334 行，10000 的旧上限会在任何策略生效**之前**先丢掉最旧的约 45%。
+**主动申报的有依据偏离，接受。**
+
+### 切换阶段 1–3（详见 `E-CUTOVER-RUNBOOK.md` 执行记录）
+
+| 阶段 | 状态 | 关键结果 |
+|---|---|---|
+| 1 身份切换 | ✅ | `hermes -z` → `PONG-CUTOVER`（此前 503）。**D42/D43 解除** |
+| 2 插件部署 | ✅ | onebot/grantley/qzone/corlinman_jobs 四者均 `bundled / not enabled` |
+| 3 归档冒烟 | 🟢 观察期中 | **D48 由推导升为实测** |
+
+**阶段 3 实测（D48）**：生产 `sqlite 3.40.1` / `journal_mode: delete`，
+归档库真实增长（4 行 → **37 行**／约 25 分钟），出站发送 **0**，hermes 内存 150 MB（限额 384M），
+corlinman `/health` 全程 200、其 NapCat WS 连接完好、容器 9 不变。
+
+**NapCat 共存实测**：它是 forward WS server，三份配置 `token` **全为空**
+（⇒ corlinman 的 `napcat_access_token` 是装饰性的，本次迁移第六个"配置写着 X、实际是 Y"）；
+hermes 与 corlinman 各持一条 WS 连接并存，未互相挤掉。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D52 | 接受 `QQ_MONITOR_FETCH_CAP` 10000 → 40000 | 旧值低于真实单日量，会在策略生效前静默丢弃约 45% 数据——那才是与源实现"行为一致"的假象 |
+
+### Orchestrator 自身的一处疏漏
+
+提交 `9356a310f` 使用 `git add -A docs/`，把 D47 当时未跟踪的
+`D47-digest-prereduction-notes.md` 卷进了一个与之无关的提交。
+内容无损（D47 的 `b3f02f166` 携带最终版），但该文档历史被拆到两个提交。
+**教训：并发子智能体在场时，提交必须按显式路径 add，不得用 `-A`。**
