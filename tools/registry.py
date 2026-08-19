@@ -96,7 +96,16 @@ def _module_registers_tools(module_path: Path) -> bool:
     """
     try:
         source = module_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # A file that does not decode as UTF-8 cannot be an importable Python
+        # module, so it registers nothing — the same verdict this function
+        # already returns for an unreadable file (OSError) or an unparseable
+        # one (SyntaxError below). Letting the decode error escape instead
+        # aborted discovery for EVERY tool, and since discover_builtin_tools()
+        # runs at ``import model_tools`` time that took down the whole agent
+        # bootstrap. Real trigger: a macOS AppleDouble sidecar ("._foo.py",
+        # written when an xattr-carrying tree is copied onto a filesystem
+        # without xattrs) matches the *.py glob and is binary.
         return False
     if "registry" not in source or "register" not in source:
         return False
