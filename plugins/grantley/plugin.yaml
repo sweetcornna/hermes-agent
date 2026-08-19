@@ -1,0 +1,49 @@
+name: grantley
+version: 1.0.0
+description: "格兰特利·贝尔 — long-lived character persona: cache-safe live state, decaying life-event log, no-LLM daily life beat, and per-channel binding."
+author: "corlinman (original), ported to hermes-agent"
+# Exclusive: a memory provider is activated by name via `memory.provider`,
+# not by `plugins.enabled`. Declared explicitly rather than relying on the
+# source-text heuristic in `_detect_kind_from_source`.
+kind: exclusive
+provides_tools:
+  - persona_life_get
+  - persona_life_set_state
+  - persona_life_diary_add
+  - persona_life_event_seed
+  - persona_life_get_seeds
+  - persona_life_set_seeds
+config_schema:
+  event_half_life_days:
+    type: number
+    default: 14
+    description: "Half-life in days for life-event decay (0 disables decay)."
+  event_top_n:
+    type: number
+    default: 5
+    description: "How many decayed life events ride on each user message."
+  event_min_weight:
+    type: number
+    default: 0.05
+    description: "Drop events whose decayed weight falls below this."
+  emit_life_nudges:
+    type: boolean
+    default: true
+    description: "Emit go_out / wrap_outing / change_scene rhythm nudges."
+  inject_identity_section:
+    type: boolean
+    default: false
+    description: >-
+      Register the stable identity as a frozen system-prompt section instead
+      of managing SOUL.md. Off by default; SOUL.md is the correct layer.
+  channels:
+    type: object
+    default: {}
+    description: >-
+      Per-channel persona bindings, keyed by chat id. Each entry accepts
+      persona / channel_owner / group / name. Consumed by the platform
+      adapter through plugins.grantley.channel_binding.
+tags:
+  - persona
+  - memory
+  - character
