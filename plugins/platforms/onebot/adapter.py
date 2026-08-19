@@ -952,7 +952,9 @@ class OneBotAdapter(BasePlatformAdapter):
             return
         try:
             await asyncio.wait_for(asyncio.to_thread(writer.close), timeout=15.0)
-        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — best-effort
+        except Exception:  # noqa: BLE001 — includes TimeoutError; shutdown is best-effort
+            # The thread is a daemon, so an unfinished join cannot hold up
+            # process exit; at worst the last un-committed batch is lost.
             logger.warning("OneBot: group history writer did not shut down cleanly")
 
     async def disconnect(self) -> None:
