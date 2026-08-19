@@ -1,17 +1,22 @@
-"""The corlinman scheduler's jobs, migrated to hermes-native cron.
+"""The corlinman scheduler's jobs, and its three QQ monitors, migrated to
+hermes-native cron.
 
-Twelve jobs ran on the corlinman production host. Nine are ported here; three
-are deliberately dropped with their reasons recorded in code
-(:data:`~plugins.corlinman_jobs.specs.DROPPED_JOBS`). See
-``docs/migration-corlinman/D1-cron-port-notes.md`` for the full mapping
-table, the trade-offs and the cutover procedure.
+Twelve scheduler jobs ran on the corlinman production host. Nine are ported
+here; three are deliberately dropped with their reasons recorded in code
+(:data:`~plugins.corlinman_jobs.specs.DROPPED_JOBS`). Alongside them, three
+QQ group-digest monitors (``sanhu``, ``jlu``, ``qunjlu`` — a separate
+corlinman subsystem, config-driven rather than job-definition-driven; D2)
+are ported in full. See ``docs/migration-corlinman/D1-cron-port-notes.md``
+and ``D2-qq-monitor-port-notes.md`` for the full mapping tables, the
+trade-offs and the cutover procedure.
 
 Layout::
 
     plugins/corlinman_jobs/
     ├── plugin.yaml   kind: standalone (opt-in; registers one CLI command)
     ├── __init__.py   register(ctx) — the CLI command, and nothing else
-    ├── specs.py      the nine JobSpecs + three DroppedJobs — single source of truth
+    ├── specs.py      JOB_SPECS (9) + MONITOR_SPECS (3) + DROPPED_JOBS (3)
+    │                 single source of truth; ALL_SPECS = JOB_SPECS + MONITOR_SPECS
     ├── prompts.py    prompt bodies, each tagged VERBATIM or RECONSTRUCTED
     ├── preflight.py  the checks that gate an install, expressed as data
     ├── installer.py  dry-run planner, file writer, job creator, drift detector

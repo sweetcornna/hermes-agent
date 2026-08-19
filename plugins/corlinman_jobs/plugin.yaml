@@ -8,10 +8,12 @@ label: Corlinman scheduler jobs
 # the jobs must always be somebody typing a command.
 kind: standalone
 description: >
-  Migrates the corlinman scheduler's jobs to hermes-native cron. Ports nine
-  of the twelve production jobs (three are deliberately dropped — see
-  ``specs.DROPPED_JOBS``), copies their job-side scripts into
-  ``$HERMES_HOME/scripts/``, and creates every job PAUSED.
+  Migrates the corlinman scheduler's jobs, and its three QQ group-digest
+  monitors, to hermes-native cron. Ports nine of the twelve scheduler jobs
+  (three are deliberately dropped — see ``specs.DROPPED_JOBS``) plus all
+  three monitors (``sanhu``, ``jlu``, ``qunjlu`` — D2), copies their
+  job-side scripts into ``$HERMES_HOME/scripts/``, and creates every job
+  PAUSED.
 
   ``hermes corlinman-jobs plan`` is a pure dry run: it prints the preflight
   verdicts, the files it would write and the jobs it would create, and
@@ -20,10 +22,14 @@ description: >
 
   Nothing here enables a job. Three of them (``hermes.qzone_daily``,
   ``hermes.qzone_reply``, ``hermes.qzone_friends``) publish to a real public
-  QQ空间 feed with no delete tool on the far side, and four deliver to a
-  Telegram chat that is currently unreachable. Enabling is a deliberate
-  ``hermes cron resume <name>`` after reading
-  ``docs/migration-corlinman/D1-cron-port-notes.md``.
+  QQ空间 feed with no delete tool on the far side, four deliver to a
+  Telegram chat that is currently unreachable, and ``qunjlu`` additionally
+  carries a structural suppression (``deliver=local``, no toolset) that
+  install/resume alone does not lift — see
+  ``docs/migration-corlinman/D2-qq-monitor-port-notes.md`` §"qunjlu stays
+  suppressed". Enabling the rest is a deliberate ``hermes cron resume
+  <name>`` after reading ``docs/migration-corlinman/D1-cron-port-notes.md``
+  and ``D2-qq-monitor-port-notes.md``.
 author: corlinman (original), ported to hermes-agent
 # No config_schema on purpose. Every schedule, chat id, persona id and
 # parameter bag lives in ``plugins/corlinman_jobs/specs.py``, which is the
@@ -42,10 +48,21 @@ requires_env:
 optional_env:
   - name: ONEBOT_WS_URL
     description: >
-      Required only for the three QQ空间 jobs; ONEBOT_HTTP_URL works instead.
-      Without one the qzone tools are gated out of the model's schema and
-      those jobs would run with no tools at all, so the preflight refuses to
-      install them.
+      Required for the three QQ空间 jobs and for two of the three QQ
+      monitors (sanhu/jlu, which deliver via deliver=onebot:<uin>);
+      ONEBOT_HTTP_URL works instead. Without one the qzone tools are gated
+      out of the model's schema for the qzone jobs, and the monitors'
+      delivery has nowhere to go, so the preflight refuses to install
+      whichever of them needs it.
+  - name: QQ_GROUP_HISTORY_DB
+    description: >
+      Path to qq_group_history.sqlite — the sole data source for the three
+      QQ monitors (sanhu/jlu/qunjlu). Defaults to
+      $HERMES_HOME/plugin-data/corlinman_jobs/qq_group_history.sqlite.
+      This port has no ingestion path of its own into that table (D2's
+      known gap — see the port notes); point this at a migrated copy, or at
+      corlinman's own live file during the coexistence window so the
+      monitors see fresh data instead of an aging ~3-day snapshot.
   - name: QZONE_PERSONA_ID
     description: >
       Must resolve to "grantley". The qzone dedup ledgers are keyed by

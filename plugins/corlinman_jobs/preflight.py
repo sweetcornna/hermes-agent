@@ -12,10 +12,11 @@ them without parsing text.
 from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from .specs import JOB_SPECS, PERSONA_ID, TIMEZONE, JobSpec
+from .specs import ALL_SPECS, PERSONA_ID, TIMEZONE, JobSpec
 
 #: Checks at this level block an install / enable.
 FAIL = "fail"
@@ -59,7 +60,7 @@ def _configured_timezone() -> tuple[Optional[str], str]:
     return None, "unset (hermes would use the host's local zone)"
 
 
-def check_timezone(specs: tuple[JobSpec, ...] = JOB_SPECS) -> Check:
+def check_timezone(specs: tuple[JobSpec, ...] = ALL_SPECS) -> Check:
     """D8: the declared per-job zone must be the zone cron evaluates in.
 
     hermes cron has no per-job timezone — ``cron/jobs.py`` compares
@@ -254,6 +255,62 @@ def check_telegram() -> Check:
     )
 
 
+def check_qq_group_history() -> Check:
+    """D2: the three QQ monitors' only data source.
+
+    Unlike :func:`check_qzone_state`, an empty-but-reachable store is not a
+    FAIL: a monitor with no messages in its window is a normal day (all
+    three migrated monitors have ``send_when_empty=false`` — a quiet day
+    means no digest, not an error), whereas an empty qzone ledger means
+    "not migrated yet" and is unsafe to write dedup decisions against. A
+    missing or wrong-schema store, on the other hand, means the monitors
+    have no data at all and cannot possibly do their job.
+    """
+    from .installer import qq_group_history_db_path
+
+    path = qq_group_history_db_path()
+    if not path.is_file():
+        return Check(
+            "qq_group_history",
+            FAIL,
+            f"qq_group_history.sqlite not found at {path}",
+            "sanhu/jlu/qunjlu have no other data source (A1 §4); point "
+            "QQ_GROUP_HISTORY_DB at a migrated copy, or at corlinman's own "
+            "live file during the coexistence window",
+        )
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM group_messages").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return Check(
+            "qq_group_history",
+            FAIL,
+            f"qq_group_history.sqlite at {path} is unreadable or has the wrong schema",
+            f"{exc}; expected the group_messages table from "
+            "corlinman_server.qq_group_history",
+        )
+    count = int(row[0]) if row else 0
+    if count == 0:
+        return Check(
+            "qq_group_history",
+            WARN,
+            f"qq_group_history.sqlite at {path} is reachable but has 0 rows",
+            "every monitor will see an empty window (and, with "
+            "send_when_empty=false, produce no digest) until this store has "
+            "rows — copy the migrated snapshot in, or point "
+            "QQ_GROUP_HISTORY_DB at corlinman's live file",
+        )
+    return Check(
+        "qq_group_history",
+        OK,
+        f"qq_group_history.sqlite reachable, {count} row(s)",
+        str(path),
+    )
+
+
 def check_scripts_installed() -> Check:
     """Scripts must be present in ``$HERMES_HOME/scripts/`` and match the tree."""
     from .installer import script_drift
@@ -279,13 +336,43 @@ def check_scripts_installed() -> Check:
     return Check("scripts", OK, f"{len(drift)} job script(s) installed and current")
 
 
-def run_checks(*, include_qq: bool = True, include_scripts: bool = True) -> list[Check]:
-    """All applicable checks, most important first."""
+def run_checks(
+    *,
+    include_qq: bool = True,
+    include_qzone: Optional[bool] = None,
+    include_qq_history: Optional[bool] = None,
+    include_scripts: bool = True,
+) -> list[Check]:
+    """All applicable checks, most important first.
+
+    Three different QQ-shaped failure modes used to share one flag
+    (``include_qq``): "no onebot connectivity", "qzone dedup ledgers not
+    migrated" and — new for D2 — "the monitors' qq_group_history.sqlite is
+    missing". They stayed coupled fine as long as every QQ job also used
+    the qzone toolset; the three monitors don't (they carry no toolset at
+    all — delivery is cron's own, not a tool call), so a plan selecting
+    only e.g. ``sanhu`` must require onebot connectivity and the history
+    store without also demanding the (irrelevant) qzone ledgers.
+
+    ``include_qzone`` and ``include_qq_history`` default to mirroring
+    ``include_qq`` when left unspecified, so every existing caller that only
+    ever set ``include_qq`` keeps behaving exactly as before; the installer
+    passes all three explicitly, computed per selected spec set (see
+    ``installer.needs_qq`` / ``needs_qzone`` / ``needs_qq_history``).
+    """
+    if include_qzone is None:
+        include_qzone = include_qq
+    if include_qq_history is None:
+        include_qq_history = include_qq
     checks = [check_timezone(), check_croniter(), check_parallelism()]
     if include_scripts:
         checks.append(check_scripts_installed())
     if include_qq:
-        checks.extend([check_onebot(), check_qzone_state()])
+        checks.append(check_onebot())
+    if include_qzone:
+        checks.append(check_qzone_state())
+    if include_qq_history:
+        checks.append(check_qq_group_history())
     checks.append(check_telegram())
     return checks
 
@@ -303,6 +390,7 @@ __all__ = [
     "check_croniter",
     "check_onebot",
     "check_parallelism",
+    "check_qq_group_history",
     "check_qzone_state",
     "check_scripts_installed",
     "check_telegram",

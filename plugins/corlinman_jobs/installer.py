@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -52,7 +53,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from . import preflight
 from .preflight import Check
-from .specs import JOB_SPECS, PERSONA_ID, JobSpec
+from .specs import ALL_SPECS, MONITOR_NAMES, PERSONA_ID, JobSpec
 
 #: The shared job-side library, copied verbatim.
 LIB_FILENAME = "corlinman_jobs_lib.py"
@@ -155,6 +156,36 @@ def grantley_decay_script() -> Path:
     return repo_root() / "plugins" / "grantley" / "scripts" / "grantley_job.py"
 
 
+#: Env var override for the three monitors' shared, read-only data source.
+#: See :func:`qq_group_history_db_path` and
+#: docs/migration-corlinman/D2-qq-monitor-port-notes.md §2.
+QQ_GROUP_HISTORY_DB_ENV = "QQ_GROUP_HISTORY_DB"
+
+
+def qq_group_history_db_path() -> Path:
+    """Resolve ``qq_group_history.sqlite``, baked into each generated
+    monitor entry script the same way :func:`grantley_decay_script` and
+    ``repo_root()`` (see ``script_call``'s qzone_daily case) are baked in —
+    resolved once, explicitly, at install time, rather than trusted to a
+    per-run environment lookup a stripped cron subprocess env might not
+    carry.
+
+    Default: ``<hermes home>/plugin-data/corlinman_jobs/
+    qq_group_history.sqlite`` — this plugin's own state directory, the same
+    convention ``plugins.qzone.state.state_root`` uses. Overridden by
+    ``QQ_GROUP_HISTORY_DB``, which is how the monitors point at
+    corlinman's still-live capture file during the coexistence window
+    instead of at a one-time copy — this port has no equivalent of the
+    dispatch loop that writes new rows into that table (see the D2 notes),
+    so pointing at a copy that stops updating means the monitors go quiet
+    within the store's ~3-day retention window.
+    """
+    override = os.getenv(QQ_GROUP_HISTORY_DB_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return state_dir() / "qq_group_history.sqlite"
+
+
 # ---------------------------------------------------------------------------
 # Generated entry scripts
 # ---------------------------------------------------------------------------
@@ -242,6 +273,21 @@ def script_call(spec: JobSpec) -> tuple[str, dict[str, Any], bool]:
             # loudly and carries the payload into the error report.
             True,
         )
+    if spec.name in MONITOR_NAMES:
+        return (
+            "main_qq_monitor_digest",
+            {
+                "db_path": str(qq_group_history_db_path()),
+                "instance_id": str(params["qq_instance_id"]),
+                "group_id": str(params["group_id"]),
+                "watch_user_ids": [str(u) for u in params["watch_user_ids"]],
+                "focus_user_ids": [str(u) for u in params["focus_user_ids"]],
+                "window_minutes": int(params["window_minutes"]),
+                "timezone": spec.timezone,
+                "monitor_id": spec.name,
+            },
+            False,
+        )
     raise KeyError(
         f"{spec.name} declares script={spec.script!r} but installer.script_call "
         "has no entry for it"
@@ -299,7 +345,7 @@ def render_entry_script(spec: JobSpec) -> str:
     )
 
 
-def planned_files(specs: Sequence[JobSpec] = JOB_SPECS) -> dict[str, str]:
+def planned_files(specs: Sequence[JobSpec] = ALL_SPECS) -> dict[str, str]:
     """``filename -> content`` for everything the install would write.
 
     The library comes first so a reader of the plan sees the dependency
@@ -354,7 +400,7 @@ class FileAction:
         return self.action == "conflict"
 
 
-def file_actions(specs: Sequence[JobSpec] = JOB_SPECS) -> tuple[FileAction, ...]:
+def file_actions(specs: Sequence[JobSpec] = ALL_SPECS) -> tuple[FileAction, ...]:
     """Classify every planned file against what is on disk. Read-only."""
     recorded = _recorded_hashes()
     directory = scripts_dir()
@@ -395,7 +441,7 @@ def file_actions(specs: Sequence[JobSpec] = JOB_SPECS) -> tuple[FileAction, ...]
     return tuple(out)
 
 
-def script_drift(specs: Sequence[JobSpec] = JOB_SPECS) -> dict[str, str]:
+def script_drift(specs: Sequence[JobSpec] = ALL_SPECS) -> dict[str, str]:
     """``filename -> "ok" | "missing" | "stale"``.
 
     The vocabulary preflight's ``check_scripts_installed`` speaks. A
@@ -482,7 +528,7 @@ class JobAction:
     spec: JobSpec
 
 
-def job_actions(specs: Sequence[JobSpec] = JOB_SPECS) -> tuple[JobAction, ...]:
+def job_actions(specs: Sequence[JobSpec] = ALL_SPECS) -> tuple[JobAction, ...]:
     """Classify every spec against the cron store. Read-only."""
     existing = _existing_jobs()
     out: list[JobAction] = []
@@ -509,22 +555,52 @@ def job_actions(specs: Sequence[JobSpec] = JOB_SPECS) -> tuple[JobAction, ...]:
 
 
 def needs_qq(spec: JobSpec) -> bool:
-    """Whether this job talks to QQ, and so needs the QQ preflight checks."""
+    """Whether this job needs a live OneBot/QQ connection.
+
+    Two independent reasons a job can need one: its agent turn calls the
+    onebot toolset (the three qzone jobs), or its own ``deliver`` routes
+    through onebot (the "sanhu"/"jlu" monitors — D2). The three monitors
+    carry no toolset at all — delivery is cron's own ``deliver`` step, not a
+    tool call — so the original narrower definition (toolset only) would
+    have let ``sanhu``/``jlu`` plan and install without ever checking that
+    ONEBOT_WS_URL/ONEBOT_HTTP_URL exists, and then fail silently at their
+    first delivery attempt instead of at preflight.
+    """
+    if "onebot" in (spec.enabled_toolsets or ()):
+        return True
+    return spec.deliver.startswith("onebot:")
+
+
+def needs_qzone(spec: JobSpec) -> bool:
+    """Whether this job calls the qzone tools and so needs the qzone dedup
+    ledgers migrated (:func:`preflight.check_qzone_state`).
+
+    Narrower than :func:`needs_qq`: the three QQ monitors need onebot
+    connectivity but never touch ``plugins/qzone`` — requiring their
+    (irrelevant) ledgers to be migrated before ``sanhu`` can even be
+    planned would be a spurious blocker.
+    """
     return "onebot" in (spec.enabled_toolsets or ())
+
+
+def needs_qq_history(spec: JobSpec) -> bool:
+    """Whether this job reads ``qq_group_history.sqlite`` — the three
+    monitors, and nothing else in this plugin."""
+    return spec.name in MONITOR_NAMES
 
 
 def select_specs(only: Optional[Sequence[str]] = None) -> tuple[JobSpec, ...]:
     """Resolve a ``--only`` selection to specs, rejecting unknown names."""
     if not only:
-        return JOB_SPECS
+        return ALL_SPECS
     wanted = list(only)
-    known = {spec.name: spec for spec in JOB_SPECS}
+    known = {spec.name: spec for spec in ALL_SPECS}
     missing = [name for name in wanted if name not in known]
     if missing:
         raise KeyError(
             f"unknown job(s): {', '.join(missing)}; known: {', '.join(sorted(known))}"
         )
-    return tuple(spec for spec in JOB_SPECS if spec.name in set(wanted))
+    return tuple(spec for spec in ALL_SPECS if spec.name in set(wanted))
 
 
 @dataclass(frozen=True)
@@ -573,6 +649,8 @@ def plan(only: Optional[Sequence[str]] = None) -> Plan:
     specs = select_specs(only)
     checks = preflight.run_checks(
         include_qq=any(needs_qq(spec) for spec in specs),
+        include_qzone=any(needs_qzone(spec) for spec in specs),
+        include_qq_history=any(needs_qq_history(spec) for spec in specs),
         include_scripts=False,
     )
     return Plan(
@@ -775,6 +853,8 @@ def status(only: Optional[Sequence[str]] = None) -> str:
     specs = select_specs(only)
     checks = preflight.run_checks(
         include_qq=any(needs_qq(spec) for spec in specs),
+        include_qzone=any(needs_qzone(spec) for spec in specs),
+        include_qq_history=any(needs_qq_history(spec) for spec in specs),
         include_scripts=True,
     )
     existing = _existing_jobs()
@@ -872,6 +952,7 @@ __all__ = [
     "LIB_FILENAME",
     "MANIFEST_FILENAME",
     "NO_TOOLS_SENTINEL",
+    "QQ_GROUP_HISTORY_DB_ENV",
     "FileAction",
     "InstallResult",
     "JobAction",
@@ -885,8 +966,11 @@ __all__ = [
     "job_actions",
     "manifest_path",
     "needs_qq",
+    "needs_qq_history",
+    "needs_qzone",
     "plan",
     "planned_files",
+    "qq_group_history_db_path",
     "read_manifest",
     "register_cli",
     "render_entry_script",
