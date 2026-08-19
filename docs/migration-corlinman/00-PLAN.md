@@ -1337,3 +1337,66 @@ _qq_monitor_format_lines(..., Asia/Shanghai):
 |---|---|---|
 | D48 | 切换窗口**必须在生产机上做一次归档写入冒烟测试**，不得直接依赖本地验证结论 | D3 自陈全部测试在 SQLite 3.53.1（WAL 可用）上完成，而生产是 3.40.1 强制 DELETE 模式——**两者的提交与锁行为正是本设计最吃紧的地方**。诚实自陈值得嘉许，但不能替代实测 |
 | D49 | 切换顺序**先回填、再改 `QQ_GROUP_HISTORY_DB` 指向**，不得颠倒 | 顺序反了会让 monitor 读到未回填的空库，而 `send_when_empty=false` 使这种失败**静默无声** |
+
+---
+
+## 23. E0 验收（2026-08-19）—— ✅ 通过（零打回）
+
+| 验收项 | 结果 |
+|---|---|
+| `test_onebot_group_mute.py` + `test_onebot_persona_binding.py` | **51 passed**（31 + 20） |
+| 广回归 | **1452 passed, 1 skipped** —— 与基线**逐字一致** |
+| 零上游改动 | 全分支仅 `.gitignore` +4（C4 遗留） |
+
+**五个出口全部门控**（AST 逐函数验证）：
+
+```
+send             L1489  gated=True
+_send_attachment L1636  gated=True
+send_image       L1747  gated=True
+_send_segments   L1405  gated=True   ← 纵深防御的收口点
+_standalone_send L2093  gated=True   ← 跨进程 cron 投递路径，D44 真正要堵的地方
+```
+
+`_standalone_send` 是关键：只堵 `send()` 会把 D44 的洞原样留在隔壁进程里。
+
+### E0 一处非显然的正确判断（我已复核属实）
+
+被静音时返回的 `error_kind` **刻意不用 `forbidden` / `not_found`**。我查证：
+
+```python
+gateway/dead_targets.py:40   _DEAD_ERROR_KINDS = frozenset({"forbidden", "not_found"})
+                             'unknown' in _DEAD_ERROR_KINDS -> False
+```
+
+用那两个值会让该群被标记为**永久失效**，其效力**活得比静音本身还久**——解除静音后群依然发不出去。
+E0 还刻意让错误文案避开 `classify_send_error` 的全部子串（投递层会从异常文本二次分类），并用测试钉住。
+调用方以 `adapter.is_muted_send_result(result)` 区分「被静音」与「发送失败」，**不是静默假成功，也不抛异常**。
+
+### 三通道叠加矩阵（row 3 是重点）
+
+| router_flag | live_flag | 入站门控 | 主动发言 | 出站 send | 群实际收到 |
+|:--:|:--:|:--:|:--:|:--:|:--:|
+| F | F | drop | muted | refuse | 无 |
+| F | T | drop | muted | refuse | 无 |
+| **T** | **F** | **放行**（router 标志陈旧） | muted | **refuse** | **无** |
+| T | T | 放行 | 不静音 | send | 正常 |
+
+D45 的 `qunjlu` 结构性抑制**未被改动**，并有测试钉住。
+
+### 任务 B：按实际签名接线，非按 docstring
+
+`bindings_from_config(raw)` + `resolve_channel_prompt(binding, *, on, data_dir)`，
+并用 `inspect.signature` 把参数名、`on` 的 keyword-only 类型、dataclass 字段集写进测试钉住。
+两条通道一致性靠**结构保证**（同一个 resolver、每条通道一处调用）+ 两个一致性用例。
+
+### E0 自报缺陷（接受，其中两条进切换手册）
+
+| # | 缺陷 | 处置 |
+|---|---|---|
+| 1 | 入站门控仍读**构造期**的 router 标志：热静音时该轮仍会跑，被拒在门口 ⇒ **每次 @提及烧一次上游模型调用**，而 §18 已证账号池很紧 | 登记；属 B2 范围，未做 |
+| 2 | **`sanhu`/`jlu` 投递到私聊 `onebot:2104743984`，D44 不门控它们** | ⚠️ **进切换手册**：`group_replies_enabled` **不是这两个任务的急停开关**，它们只由 `install_enabled=False` 拦着 |
+| 3 | `plugins.entries.grantley.settings.channels` 每进程只读一次（需重启）；`extra["persona_channels"]` 路径是热的 | 登记 |
+| 4 | `_deliver_forward()` 与文件上传分支无自身门控 | 今日安全（仅经已门控入口可达），登记 |
+| 5 | **从未经真实模型轮次端到端跑过** | ⚠️ **进切换手册**：需先解决 D42 身份问题，否则只是烧池 |
+| 6 | `error_kind="unknown"` 是次优解，正解需改上游 | 接受：维持零上游改动 |
