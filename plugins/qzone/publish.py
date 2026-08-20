@@ -322,11 +322,10 @@ def _load_image_reference(ref: str) -> Tuple[bytes, str]:
 def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
     """Generate a 配图 through hermes's configured image backend.
 
-    PORT NOTE: corlinman calls its own ``image_with_refs`` tool (character-
-    anchored generation against reference art), which does not exist in this
-    repo. This keeps the older hermes behaviour — a plain prompt through
-    ``image_generate`` — so ``generate`` is a prompt string, not corlinman's
-    nested args object. Character anchoring is therefore *not* ported.
+    PORT NOTE: corlinman's character-anchored ``image_with_refs`` path is now
+    available through Cornna's ``character:<short name>`` image references.
+    QZone reads its optional cast from config and falls back to plain prompt
+    generation when none of the configured reference art is deployed.
     """
     from tools.image_generation_tool import (  # noqa: PLC0415 — heavy, lazy on purpose
         _handle_image_generate,
@@ -339,22 +338,100 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
             "`hermes tools` → Image Generation (FAL / OpenAI / xAI)."
         )
 
-    raw = _handle_image_generate({"prompt": prompt, "aspect_ratio": aspect_ratio})
-    if isinstance(raw, str):
-        try:
-            result = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"image_generate returned non-JSON: {raw[:200]}") from exc
-    elif isinstance(raw, dict):
-        result = raw
-    else:
-        raise RuntimeError(f"image_generate returned an unexpected type: {type(raw).__name__}")
+    generation_args: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+    try:
+        from hermes_cli.config import cfg_get, load_config
 
-    if result.get("error"):
-        raise RuntimeError(str(result["error"]))
-    image_ref = result.get("image")
-    if not image_ref:
-        raise RuntimeError("image_generate produced no image.")
+        configured_characters = cfg_get(
+            load_config(), "qzone", "reference_characters", default=[]
+        )
+        reference_characters = (
+            list(configured_characters) if isinstance(configured_characters, list) else []
+        )
+        if reference_characters:
+            from plugins.image_gen.cornna import (
+                MAX_REFERENCE_IMAGES,
+                RECOMMENDED_REFERENCE_IMAGES,
+                available_characters,
+            )
+
+            reference_limit = min(RECOMMENDED_REFERENCE_IMAGES, MAX_REFERENCE_IMAGES)
+            if len(reference_characters) > reference_limit:
+                logger.warning(
+                    "qzone: limiting %d configured reference characters to %d; "
+                    "too many reference images can confuse the model and reduce "
+                    "prompt adherence",
+                    len(reference_characters),
+                    reference_limit,
+                )
+                reference_characters = reference_characters[:reference_limit]
+
+            available = set(available_characters())
+            missing_characters = [
+                character for character in reference_characters if character not in available
+            ]
+            if missing_characters:
+                logger.info(
+                    "qzone: skipping reference characters with no deployed art: %s",
+                    ", ".join(missing_characters),
+                )
+            reference_characters = [
+                character for character in reference_characters if character in available
+            ]
+        if reference_characters:
+            terminal_backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+            if terminal_backend not in ("", "local"):
+                logger.info(
+                    "qzone: terminal backend %s does not support character: references; "
+                    "using plain generation",
+                    terminal_backend,
+                )
+                reference_characters = []
+        if reference_characters:
+            # ``image_generate`` has no ``reference_characters`` argument.  Passing
+            # ``character:<name>`` via its supported ``reference_image_urls`` field
+            # keeps QZone on the configured image backend; calling Cornna's provider
+            # directly would hard-code that provider and bypass the tool layer.
+            generation_args["reference_image_urls"] = [
+                f"character:{character}" for character in reference_characters
+            ]
+    except Exception as exc:  # noqa: BLE001 — references must not block a post
+        logger.info("qzone: character references unavailable; using plain generation (%s)", exc)
+
+    def _generate_reference(args: Dict[str, Any]) -> str:
+        raw = _handle_image_generate(args)
+        if isinstance(raw, str):
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"image_generate returned non-JSON: {raw[:200]}") from exc
+        elif isinstance(raw, dict):
+            result = raw
+        else:
+            raise RuntimeError(
+                f"image_generate returned an unexpected type: {type(raw).__name__}"
+            )
+
+        if result.get("error"):
+            raise RuntimeError(str(result["error"]))
+        image_ref = result.get("image")
+        if not image_ref:
+            raise RuntimeError("image_generate produced no image.")
+        return str(image_ref)
+
+    if "reference_image_urls" in generation_args:
+        plain_generation_args = dict(generation_args)
+        plain_generation_args.pop("reference_image_urls")
+        try:
+            image_ref = _generate_reference(generation_args)
+        except Exception as exc:  # noqa: BLE001 — references are optional
+            logger.warning(
+                "qzone: reference image generation failed; retrying without references (%s)",
+                exc,
+            )
+            image_ref = _generate_reference(plain_generation_args)
+    else:
+        image_ref = _generate_reference(generation_args)
     return _load_image_reference(image_ref)
 
 

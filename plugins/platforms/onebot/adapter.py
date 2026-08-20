@@ -38,8 +38,10 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
@@ -56,9 +58,17 @@ from gateway.platforms.base import (
     classify_send_error,
     validate_media_delivery_path,
 )
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, strip_markdown
 
-from . import persona_binding, protocol
+# The Tencent-facing content policy, shared with the QZone tools.  It lives in
+# ``plugins/qzone`` because that is where it landed when it was ported, but it
+# is transport-neutral (pure stdlib, no QZone imports) and the QQ *account* is
+# the thing it protects — the same account both plugins speak as.  Importing it
+# here is cheap: ``plugins.qzone.__init__`` does all its real work inside
+# ``register()``, so this pulls in nothing but the rule table.
+from plugins.qzone import policy as content_policy
+
+from . import persona_binding, protocol, sticker
 from .client import (
     OneBotClient,
     OneBotConfig,
@@ -85,17 +95,38 @@ PLATFORM_LABEL = "QQ (OneBot v11 / NapCat)"
 #: safety margin so we never discover the real limit in production.
 MAX_MESSAGE_LENGTH = 3800
 
-#: Above this, a reply stops being chat and becomes a wall of text — fold it
-#: into a merged-forward ("聊天记录") card the reader taps to expand.
+#: Above this, a reply stops being chat and becomes a considered answer — the
+#: WHOLE reply folds into one merged-forward ("聊天记录") card the reader taps
+#: to expand, instead of being split into bubbles and capped.  Measured on the
+#: entire finished body, not per bubble: it is the reply's character that
+#: decides its shape, and that is not a property of any one fragment.
 FORWARD_TEXT_THRESHOLD = 1000
 
 #: A forward card cannot carry an @mention, so in a group we post this line
 #: (with the @) first — otherwise the person who asked never gets a ping.
 FORWARD_LEAD_TEXT = "回复较长，已折叠成聊天记录，点开查看 ↓"
 
+
+@dataclass(frozen=True)
+class _ForwardDeliveryResult:
+    """Outcome of a card attempt, including any separately delivered lead."""
+
+    success: bool
+    failure: Optional[SendResult]
+    lead_sent: bool
+
+
 #: Persona-style bubble separator: one logical reply, several chat bubbles.
 BUBBLE_SEPARATOR = "[MSG_BREAK]"
 BUBBLE_GAP_SECS = 0.3
+
+#: How many separate chat bubbles one reply may occupy.  Several short bubbles
+#: read as a person typing; eight in a row read as a bot flooding the window,
+#: and QQ users experience that as spam regardless of what the text says.  The
+#: default matches what the persona file already asks for in prose ("短句默认。
+#: 日常 2-3 句") — the model does not reliably obey that, so the transport
+#: enforces it.  ``<= 0`` disables the cap (escape hatch).
+DEFAULT_MAX_BUBBLES_PER_REPLY = 3
 
 #: Inline attachments are shipped as ``base64://`` because the backend
 #: usually runs in a different container and cannot read our filesystem.
@@ -121,7 +152,17 @@ HEALTH_LOST_SECS = 120.0
 DEFAULT_MAX_CONCURRENCY = 2
 
 #: Audio containers ``mimetypes`` does not know but QQ voice messages use.
-_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".amr", ".silk", ".m4a", ".flac", ".aac", ".opus"}
+_AUDIO_EXTS = {
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".amr",
+    ".silk",
+    ".m4a",
+    ".flac",
+    ".aac",
+    ".opus",
+}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".3gp"}
 
@@ -246,6 +287,15 @@ MUTED_MARKER = "onebot_group_muted"
 #: Stable machine-readable reason string carried alongside the marker.
 MUTED_REASON = "group_replies_enabled=false"
 
+#: Marker key set on ``SendResult.raw_response`` when a send was refused by the
+#: Tencent content policy.  Same role as :data:`MUTED_MARKER` and deliberately
+#: the same shape, so a caller can tell "refused by a local policy" from "the
+#: send failed" without parsing the message text.
+POLICY_MARKER = "onebot_policy_blocked"
+
+#: Stable machine-readable reason string carried alongside the policy marker.
+POLICY_REASON = "tencent_content_policy"
+
 
 def group_speech_muted(adapter: Any) -> bool:
     """``True`` when the emergency mute is silencing group speech.
@@ -312,6 +362,221 @@ def is_muted_send_result(result: Any) -> bool:
         return bool(result.get(MUTED_MARKER))
     raw = getattr(result, "raw_response", None)
     return bool(isinstance(raw, dict) and raw.get(MUTED_MARKER))
+
+
+def policy_blocked_send_result(
+    target: Any, is_group: bool, decision: Any
+) -> SendResult:
+    """The ``SendResult`` a content-policy refusal returns.  Logs once, here.
+
+    Deliberately the same shape as :func:`muted_send_result`, for the same
+    reasons spelled out there, which apply verbatim:
+
+    * ``error_kind`` is ``"unknown"``, **not** ``forbidden``/``not_found``.
+      Those two are the members of ``gateway.dead_targets._DEAD_ERROR_KINDS``,
+      so either one would let the delivery layer record this chat as
+      permanently unreachable — turning a single refused *message* into a
+      sticky dead *target* that outlives the sentence that tripped it.  A
+      policy refusal is a local decision about one body of text, not a
+      statement about whether the peer is reachable.
+    * ``retryable`` is False: re-sending the same text produces the same
+      verdict, deterministically (the classifier is a fixed rule table).
+    * the message text avoids every substring ``classify_send_error`` matches
+      on, so neither the retry ladder nor the dead-target classifier can
+      re-read this refusal as a platform failure.  ``tests/gateway/
+      test_onebot_content_gate.py`` asserts that by calling the real
+      classifier rather than trusting the wording.
+
+    Only the three audit fields from :func:`policy.policy_error_payload` go
+    into ``raw_response`` — category codes, rule ids, ruleset version.  None of
+    them contains the offending text, so this is safe to log, matching how
+    ``plugins/qzone`` surfaces the same refusal and corlinman's
+    ``_log_tencent_block`` audit record.
+    """
+    payload = content_policy.policy_error_payload(decision)
+    where = f"group {target}" if is_group else f"user {target}"
+    logger.warning(
+        "OneBot: Tencent content policy refused an outbound message to %s "
+        "(categories=%s rules=%s ruleset=%s)",
+        where,
+        payload.get("category_codes"),
+        payload.get("rule_ids"),
+        payload.get("ruleset_version"),
+    )
+    return SendResult(
+        success=False,
+        error=(
+            "OneBot: Tencent content policy refused this message "
+            f"({POLICY_REASON}); nothing was sent to {where}"
+        ),
+        error_kind="unknown",
+        retryable=False,
+        raw_response={
+            POLICY_MARKER: True,
+            "reason": POLICY_REASON,
+            ("group_id" if is_group else "user_id"): target,
+            **payload,
+        },
+    )
+
+
+def is_policy_blocked_send_result(result: Any) -> bool:
+    """Whether *result* is a content-policy refusal rather than a send failure.
+
+    Mirrors :func:`is_muted_send_result`, including accepting the plain dict
+    shape, so callers can ask the same question of either lane.
+    """
+    if isinstance(result, dict):
+        return bool(result.get(POLICY_MARKER))
+    raw = getattr(result, "raw_response", None)
+    return bool(isinstance(raw, dict) and raw.get(POLICY_MARKER))
+
+
+# ---------------------------------------------------------------------------
+# Hiding hermes' own system messages on QQ
+# ---------------------------------------------------------------------------
+#
+# QQ is a persona channel.  Between two lines of a conversation the reader
+# suddenly gets ``💾 Self-improvement review: User profile updated`` — hermes
+# talking about its own bookkeeping, in a chat window where everything else is
+# a person speaking.  There is no thread to hide it in and no collapsed
+# "system" lane the way Discord has; it lands as a chat bubble like any other,
+# and it reads as the mask slipping.
+#
+# The gateway already knows which of its sends are *not* conversation: every
+# lifecycle / status emitter routes its metadata through
+# ``gateway/run.py::_non_conversational_metadata``, which stamps
+# ``non_conversational: True``.  That marker was Discord-only (Discord uses it
+# to keep status bumps out of the conversation history it replays to the
+# model); it now also covers this platform, so the classification is made once,
+# at the emitter, by the code that knows what it is sending — not guessed here
+# from the text.
+#
+# That distinction is the whole point.  Matching on ``💾``/``⚠️`` prefixes was
+# the obvious alternative and it is the wrong one: the persona writes emoji,
+# so a text-shaped filter eventually eats a real reply.  Reading the emitter's
+# own flag cannot: a persona reply is never marked.
+#
+# Two marked categories are still delivered — see
+# :data:`_ALWAYS_DELIVER_PATTERNS`.
+
+#: Metadata key the gateway stamps on lifecycle/status sends.
+NON_CONVERSATIONAL_METADATA_KEY = "non_conversational"
+
+#: Marker key set on ``SendResult.raw_response`` when a send was dropped as a
+#: hermes system message.  Same shape and same role as :data:`MUTED_MARKER`
+#: and :data:`POLICY_MARKER`: a caller tells "suppressed by local policy" from
+#: "the send failed" by branching on this, never by parsing the message.
+SUPPRESSED_MARKER = "onebot_system_message_suppressed"
+
+#: Stable machine-readable reason string carried alongside the marker.
+SUPPRESSED_REASON = "suppress_system_messages=true"
+
+#: The carve-outs: marked messages that are delivered anyway.
+#:
+#: These regexes are safe in a way a general text filter is not, because they
+#: are only ever consulted for a message the *gateway* already flagged as
+#: non-conversational.  A persona reply never carries that flag, so nothing
+#: the persona writes can reach this table at all — the emoji-prefix problem
+#: that rules out matching on text alone does not apply here.
+#:
+#: 1. The update prompt.  ``_watch_update_progress`` asks a question and then
+#:    *blocks* on the answer.  This adapter implements no ``send_update_prompt``,
+#:    so the button lane never fires here and this text fallback is the only
+#:    form the question takes on QQ.  Swallowing it strands ``hermes update``
+#:    forever, waiting for a reply to a question nobody was shown.
+#: 2. The session-database alarm.  ``messages may not be persisted`` is data
+#:    loss in progress; hiding it means the operator finds out by noticing
+#:    history is gone.
+#:
+#: Approval requests ("⚠️ Dangerous command requires approval") need no entry:
+#: ``_approval_notify_sync`` passes its thread metadata straight through and
+#: never routes it via ``_non_conversational_metadata``, so an approval is not
+#: marked in the first place and this gate never sees it.  That is checked by
+#: a test rather than trusted.
+_ALWAYS_DELIVER_PATTERNS = (
+    re.compile(r"^\s*⚕\s*\*{0,2}\s*Update needs your input", re.IGNORECASE),
+    re.compile(r"^\s*⚠️?\s*\*{0,2}\s*Session database\b", re.IGNORECASE),
+)
+
+
+def system_messages_suppressed(adapter: Any) -> bool:
+    """``True`` when hermes' own status messages must not reach QQ.
+
+    Reads the *live* settings mapping first (what an in-place config reconcile
+    mutates) so flipping the switch hot-applies without a gateway restart,
+    exactly like :func:`group_speech_muted`, and falls back to the value
+    resolved at construction.
+    """
+    extra = _gh_live_extra(adapter)
+    if "suppress_system_messages" in extra:
+        return _as_bool(
+            extra.get("suppress_system_messages"),
+            bool(getattr(adapter, "suppress_system_messages", True)),
+        )
+    return bool(getattr(adapter, "suppress_system_messages", True))
+
+
+def is_suppressible_system_message(metadata: Any, content: Any) -> bool:
+    """Whether this send is a hermes system message QQ should not see."""
+    if not isinstance(metadata, dict):
+        return False
+    if not metadata.get(NON_CONVERSATIONAL_METADATA_KEY):
+        return False
+    text = str(content or "")
+    return not any(rx.search(text) for rx in _ALWAYS_DELIVER_PATTERNS)
+
+
+def suppressed_send_result(chat_id: Any, content: Any) -> SendResult:
+    """The ``SendResult`` a suppressed system message returns.  Logs once, here.
+
+    Dropped is not silent: the line below is the record that a message existed
+    and did not go out, at ``info`` because it is a routine, expected
+    consequence of an operator setting rather than a fault.  It intentionally
+    does not log any of the suppressed body: lifecycle/status text may include
+    user or task data and the whole reason this message does not reach QQ is
+    that it is internal.
+
+    ``error_kind`` is ``"unknown"`` for the reason spelled out at length in
+    :func:`muted_send_result`, which applies verbatim: ``forbidden`` and
+    ``not_found`` are the two members of ``gateway.dead_targets._DEAD_ERROR_KINDS``,
+    so either would let the delivery layer record this chat as permanently
+    unreachable — turning a display preference into a dead target that
+    outlives it.  ``retryable`` is False (retrying reaches the same verdict),
+    and the wording avoids every substring ``classify_send_error`` matches on.
+    """
+    logger.info(
+        "OneBot: hiding a hermes system message from %s (%s)",
+        chat_id,
+        SUPPRESSED_REASON,
+    )
+    return SendResult(
+        success=False,
+        error=(
+            "OneBot: hermes system messages are hidden on this platform "
+            f"({SUPPRESSED_REASON}); nothing was sent to {chat_id}"
+        ),
+        error_kind="unknown",
+        retryable=False,
+        raw_response={
+            SUPPRESSED_MARKER: True,
+            "reason": SUPPRESSED_REASON,
+            "chat_id": str(chat_id),
+        },
+    )
+
+
+def is_suppressed_send_result(result: Any) -> bool:
+    """Whether *result* is a suppressed system message rather than a failure.
+
+    Mirrors :func:`is_muted_send_result` and
+    :func:`is_policy_blocked_send_result`, including accepting the plain dict
+    shape, so callers can ask the same question of any of the three.
+    """
+    if isinstance(result, dict):
+        return bool(result.get(SUPPRESSED_MARKER))
+    raw = getattr(result, "raw_response", None)
+    return bool(isinstance(raw, dict) and raw.get(SUPPRESSED_MARKER))
 
 
 def _reset_module_state() -> None:
@@ -433,10 +698,10 @@ def parse_chat_id(chat_id: Any) -> Tuple[bool, int]:
     lowered = text.lower()
     for prefix in ("group:", "group/", "g:"):
         if lowered.startswith(prefix):
-            return True, int(text[len(prefix):].strip())
+            return True, int(text[len(prefix) :].strip())
     for prefix in ("private:", "user:", "dm:", "p:", "u:"):
         if lowered.startswith(prefix):
-            return False, int(text[len(prefix):].strip())
+            return False, int(text[len(prefix) :].strip())
     if lowered[0] == "g" and lowered[1:].isdigit():
         return True, int(text[1:])
     if text.isdigit():
@@ -455,6 +720,34 @@ def split_bubbles(content: str) -> List[str]:
         stripped = content.strip()
         return [stripped] if stripped else []
     return [part.strip() for part in content.split(BUBBLE_SEPARATOR) if part.strip()]
+
+
+def cap_bubbles(bubbles: List[str], limit: int) -> List[str]:
+    """Clamp a bubble list to *limit* entries by MERGING the overflow.
+
+    The overflow is folded into the last surviving bubble, joined with a
+    newline — never dropped.  A reader who receives half a thought is worse
+    off than one who receives a slightly longer message: truncation loses
+    content the sender believes was delivered, and the bot has no way to know
+    it was cut.  So the cap is about how many *notifications* a reply fires,
+    not about how much text it carries.
+
+    ``limit <= 0`` disables the cap.  Applied to the ``split_bubbles`` result
+    and BEFORE ``chunk_text``: the merged bubble is still subject to the
+    per-message length ceiling, which is a protocol constraint this cap has no
+    business overriding.
+
+    Only the degraded chat fallback reaches this.  With cards enabled, a reply
+    that crosses either ``forward_threshold`` or the bubble limit is delivered
+    as one merged-forward card, so ``send`` preserves each bubble as a node
+    instead of merging the overflow.
+    """
+    if limit <= 0 or len(bubbles) <= limit:
+        return list(bubbles)
+    head = list(bubbles[: limit - 1])
+    tail = [b for b in bubbles[limit - 1 :] if b]
+    head.append("\n".join(tail))
+    return head
 
 
 def chunk_text(
@@ -506,11 +799,11 @@ def chunk_text(
 #: classifier so this adapter speaks the same failure vocabulary as the rest
 #: of the gateway (it drives dead-target detection).
 _RETCODE_HINTS: Dict[int, str] = {
-    1401: "forbidden",   # unauthorized — bad or missing access token
-    1403: "forbidden",   # forbidden
-    1404: "not_found",   # unknown action / unknown target
+    1401: "forbidden",  # unauthorized — bad or missing access token
+    1403: "forbidden",  # forbidden
+    1404: "not_found",  # unknown action / unknown target
     10003: "bad_format",  # NapCat: invalid parameter
-    10004: "forbidden",   # NapCat: insufficient permission
+    10004: "forbidden",  # NapCat: insufficient permission
 }
 
 
@@ -538,7 +831,9 @@ def classify_onebot_error(
     # from a group, being muted, or a target that no longer exists.
     if any(s in message for s in ("不存在", "未找到", "没有找到")):
         return "not_found"
-    if any(s in message for s in ("禁言", "无权", "权限", "拒绝", "被限制", "不是群成员")):
+    if any(
+        s in message for s in ("禁言", "无权", "权限", "拒绝", "被限制", "不是群成员")
+    ):
         return "forbidden"
     if any(s in message for s in ("频繁", "过快", "限制发言")):
         return "rate_limited"
@@ -645,9 +940,7 @@ class OneBotAdapter(BasePlatformAdapter):
         self._extra = extra
 
         self.instance_id = str(extra.get("instance_id") or "default")
-        self.ws_url = str(
-            extra.get("ws_url") or os.getenv("ONEBOT_WS_URL", "")
-        ).strip()
+        self.ws_url = str(extra.get("ws_url") or os.getenv("ONEBOT_WS_URL", "")).strip()
         self.access_token = (
             extra.get("access_token") or _get_secret("ONEBOT_ACCESS_TOKEN", "") or ""
         ).strip()
@@ -752,16 +1045,47 @@ class OneBotAdapter(BasePlatformAdapter):
             extra.get("reply_with_mention", os.getenv("ONEBOT_REPLY_WITH_MENTION")),
             True,
         )
+        self.max_bubbles_per_reply = _as_int(
+            extra.get(
+                "max_bubbles_per_reply", os.getenv("ONEBOT_MAX_BUBBLES_PER_REPLY")
+            ),
+            DEFAULT_MAX_BUBBLES_PER_REPLY,
+        )
         self.forward_threshold = _as_int(
             extra.get("forward_threshold", os.getenv("ONEBOT_FORWARD_THRESHOLD")),
             FORWARD_TEXT_THRESHOLD,
         )
+        # Read through the sticker module so the adapter and the persona
+        # frame that offers the menu resolve ONE precedence rule.  If they
+        # drifted, the model could be shown a menu the adapter then refuses
+        # to honour — a silently broken feature rather than a loud one.
+        self.sticker_probability = sticker.probability_from_extra(extra)
+        self.sticker_dir = sticker.dir_from_extra(extra)
         self.wait_for_send_ack = _as_bool(
             extra.get("wait_for_send_ack", os.getenv("ONEBOT_WAIT_FOR_SEND_ACK")),
             True,
         )
         self.typing_indicator = _as_bool(
             extra.get("typing_indicator", os.getenv("ONEBOT_TYPING_INDICATOR")), True
+        )
+        # ---- hermes' own system messages ---------------------------------
+        # Default True, and deliberately NOT the "preserve today's behaviour"
+        # default the DM gate above uses.  QQ is the one platform hermes
+        # drives as a person rather than as a bot: a status bubble between two
+        # lines of conversation is the mask slipping, which is a defect on
+        # this channel specifically and not on Discord or Telegram.  The cost
+        # of the default is bounded — every dropped message is still logged
+        # (``suppressed_send_result``), the two categories where silence would
+        # actually cost something are delivered regardless
+        # (``_ALWAYS_DELIVER_PATTERNS``), and approval requests are never
+        # marked non-conversational in the first place.  Set false to get the
+        # status bubbles back.
+        self.suppress_system_messages = _as_bool(
+            extra.get(
+                "suppress_system_messages",
+                os.getenv("ONEBOT_SUPPRESS_SYSTEM_MESSAGES"),
+            ),
+            True,
         )
         self.max_concurrency = max(
             1,
@@ -860,7 +1184,9 @@ class OneBotAdapter(BasePlatformAdapter):
             )
             return False
         if not self.ws_url:
-            logger.error("OneBot: ONEBOT_WS_URL (or platforms.onebot.extra.ws_url) is required")
+            logger.error(
+                "OneBot: ONEBOT_WS_URL (or platforms.onebot.extra.ws_url) is required"
+            )
             return False
 
         try:
@@ -972,7 +1298,9 @@ class OneBotAdapter(BasePlatformAdapter):
         try:
             from . import proactive as _proactive
         except Exception:  # noqa: BLE001 — a broken optional loop must not kill the channel
-            logger.exception("OneBot: proactive speech unavailable — continuing without it")
+            logger.exception(
+                "OneBot: proactive speech unavailable — continuing without it"
+            )
             return
         self._proactive_task = asyncio.create_task(
             _proactive.proactive_loop(
@@ -1187,7 +1515,9 @@ class OneBotAdapter(BasePlatformAdapter):
             return
 
         is_group = event.message_type == protocol.MessageType.GROUP
-        sender_name = event.sender.display_name() if event.sender else str(event.user_id)
+        sender_name = (
+            event.sender.display_name() if event.sender else str(event.user_id)
+        )
 
         if is_group and event.group_id is not None:
             # Feed the context buffer BEFORE the gate: a persona should see
@@ -1344,7 +1674,11 @@ class OneBotAdapter(BasePlatformAdapter):
                 if ref.kind == "image":
                     ext = Path(ref.file_name or "").suffix or ".jpg"
                     path = await cache_image_from_url(ref.url, ext=ext)
-                    media_types.append("image/jpeg" if ext in (".jpg", ".jpeg") else f"image/{ext.lstrip('.')}")
+                    media_types.append(
+                        "image/jpeg"
+                        if ext in (".jpg", ".jpeg")
+                        else f"image/{ext.lstrip('.')}"
+                    )
                 elif ref.kind == "audio":
                     ext = Path(ref.file_name or "").suffix or ".amr"
                     path = await cache_audio_from_url(ref.url, ext=ext)
@@ -1354,7 +1688,9 @@ class OneBotAdapter(BasePlatformAdapter):
                     if path is None:
                         continue
                     media_types.append(
-                        "video/mp4" if ref.kind == "video" else "application/octet-stream"
+                        "video/mp4"
+                        if ref.kind == "video"
+                        else "application/octet-stream"
                     )
                 media_urls.append(path)
             except Exception as exc:  # noqa: BLE001 —媒体缺失 must not drop the text
@@ -1445,11 +1781,15 @@ class OneBotAdapter(BasePlatformAdapter):
         )
         if not self.wait_for_send_ack:
             if self._client is None:
-                return False, None, SendResult(
-                    success=False,
-                    error="OneBot adapter is not connected",
-                    error_kind="transient",
-                    retryable=True,
+                return (
+                    False,
+                    None,
+                    SendResult(
+                        success=False,
+                        error="OneBot adapter is not connected",
+                        error_kind="transient",
+                        retryable=True,
+                    ),
                 )
             await self._client.send_action(action)
             return True, None, None
@@ -1462,21 +1802,29 @@ class OneBotAdapter(BasePlatformAdapter):
             )
             return True, None, None
         except OneBotTransportError as exc:
-            return False, None, SendResult(
-                success=False,
-                error=str(exc),
-                error_kind=classify_onebot_error(None, str(exc), exc),
-                retryable=True,
+            return (
+                False,
+                None,
+                SendResult(
+                    success=False,
+                    error=str(exc),
+                    error_kind=classify_onebot_error(None, str(exc), exc),
+                    retryable=True,
+                ),
             )
         if not _response_ok(resp):
             detail = _response_error(resp)
             kind = classify_onebot_error(resp.get("retcode"), detail)
-            return False, None, SendResult(
-                success=False,
-                error=f"OneBot rejected the message: {detail}",
-                error_kind=kind,
-                raw_response=resp,
-                retryable=kind in ("transient", "rate_limited"),
+            return (
+                False,
+                None,
+                SendResult(
+                    success=False,
+                    error=f"OneBot rejected the message: {detail}",
+                    error_kind=kind,
+                    raw_response=resp,
+                    retryable=kind in ("transient", "rate_limited"),
+                ),
             )
         data = resp.get("data")
         mid = None
@@ -1503,6 +1851,55 @@ class OneBotAdapter(BasePlatformAdapter):
             segments.append(protocol.AtSegment(qq=str(at_user_id)))
         return segments
 
+    def _sticker_segment(self, slugs: Sequence[str]) -> Optional[protocol.ImageSegment]:
+        """Resolve the model's sticker choice into one inline image segment.
+
+        ``None`` whenever the reply should go out exactly as it would have
+        before this feature existed — which is every failure mode there is:
+        the feature is off, the model named a sticker that does not exist, or
+        the file has gone missing on the deployed box.  A sticker is a
+        flourish; nothing about it may cost the reader the actual answer, so
+        every branch here degrades to silence rather than to an error.
+
+        The probability and asset directory are resolved from live adapter
+        settings so this agrees with ``persona_binding.channel_prompt`` when
+        an in-place config reconcile changes them. Without that, the menu
+        could advertise a sticker after the adapter had been switched off, or
+        the adapter could emit one after the menu disappeared.
+
+        ``sticker_probability <= 0`` is checked FIRST and is a hard off
+        switch, not merely "never offer the menu".  The two are different
+        under hallucination: a model that has seen the menu on earlier turns
+        can emit the marker on a turn where it was not offered, and an
+        operator who set the knob to zero means "no stickers", not "no
+        stickers unless the model insists".
+
+        Only the first valid slug is honoured.  A model that writes three
+        markers gets one image, because the point of the whole feature is one
+        small flourish and a wall of stickers is the noise this outbound path
+        has been repeatedly reshaped to prevent.
+        """
+        live_extra = _gh_live_extra(self)
+        if sticker.probability_from_extra(live_extra) <= 0:
+            return None
+        for slug in slugs:
+            path = sticker.sticker_path(slug, sticker.dir_from_extra(live_extra))
+            if path is None:
+                continue
+            # Same reference form the attachment path has always used:
+            # ``base64://`` inline, with a literal path only as the
+            # oversize fallback.  See ``encode_base64_file`` — the backend
+            # usually runs in its own container and cannot read our disk.
+            payload = encode_base64_file(path)
+            if payload is None:
+                logger.info(
+                    "OneBot: sticker %r could not be inlined — sending a "
+                    "literal path, which needs a backend sharing this disk",
+                    slug,
+                )
+            return protocol.ImageSegment(file=payload or path)
+        return None
+
     async def send(
         self,
         chat_id: str,
@@ -1512,27 +1909,120 @@ class OneBotAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Deliver a reply, splitting bubbles / chunks / forward cards.
 
+        The single outbound choke point: both the reactive reply lane and the
+        proactive lane (``proactive.py``) reach the wire through here, so this
+        is where outbound shaping and the outbound gates live.
+
         Shape of one send:
 
-        1. Split on ``[MSG_BREAK]`` — a persona writing several short
-           bubbles reads as a person, not a form letter.
-        2. Per bubble: fold into a merged-forward card when it is long
-           enough to be a wall of text, else chunk at the message ceiling.
-        3. Only the first outgoing message carries the quote + @mention.
+        1. The emergency mute (groups only) — an operator decision, checked
+           before anything is computed or connected.
+        2. Strip markdown: QQ renders none of it.
+        3. The Tencent content policy, on the whole stripped body, groups and
+           DMs alike.  Fails closed.
+        4. Route the WHOLE reply.  A reply longer than ``forward_threshold``
+           OR split into more than ``max_bubbles_per_reply`` bubbles goes out
+           as ONE merged-forward card — one notification, opened on demand,
+           with the ``[MSG_BREAK]`` rhythm preserved as nodes.
+        5. Chat otherwise.  Bubbles within both limits go out as written,
+           each chunked at the message ceiling.  ``cap_bubbles`` is only the
+           degraded fallback when cards are disabled or a card is rejected.
+        6. Only the first outgoing message carries the quote + @mention.
         """
         metadata = metadata or {}
+        # Hermes' own status messages, hidden before anything else happens.
+        # First because a message that is not going out should not be parsed,
+        # moderated, split, or measured against the mute — and because the
+        # mute logs a warning per refusal, which would turn every hidden
+        # heartbeat into an alarm about a group nobody tried to post to.
+        if is_suppressible_system_message(
+            metadata, content
+        ) and system_messages_suppressed(self):
+            return suppressed_send_result(chat_id, content)
         try:
             is_group, target = parse_chat_id(chat_id)
         except ValueError as exc:
-            return SendResult(
-                success=False, error=str(exc), error_kind="not_found"
-            )
+            return SendResult(success=False, error=str(exc), error_kind="not_found")
         # The emergency mute, checked BEFORE the connection state: "muted" is
         # a decision, "not connected" is a transient the caller would retry,
         # and a muted send must not be retried into existence.  DMs are never
         # affected — the mute is about speaking in rooms full of people.
         if is_group and group_speech_muted(self):
             return muted_send_result(target)
+
+        # ── Outbound shaping and the content gate ───────────────────────────
+        # Order here is load-bearing: mute → strip_markdown → content policy →
+        # split_bubbles → chunk_text.
+        #
+        # QQ clients render no markdown, so an unstripped reply shows literal
+        # ``**bold**`` / ``- item`` / ``### heading`` to the person reading it.
+        # Eight adapters already call this helper (the *other* QQ platform,
+        # ``gateway/platforms/qqbot``, among them); this one did not.  Note
+        # that the ``supports_code_blocks = False`` class attribute below is
+        # NOT this — it is read only by ``gateway/run.py``'s progress output
+        # and never reaches this method.
+        content = strip_markdown(content or "")
+
+        # ── Lift the sticker markers out of the body ───────────────────────
+        # Between ``strip_markdown`` and the content policy, deliberately.
+        #
+        # After stripping, because a marker that arrived wrapped in markdown
+        # emphasis has to be unwrapped before it is recognisable.
+        #
+        # BEFORE the policy, because ``[STICKER:thumbs-up]`` is machine
+        # syntax the reader never sees.  The gate's whole job is to audit the
+        # sentence a human will read; auditing a string with control tokens
+        # still embedded in it means auditing something nobody receives, and
+        # the tokens could split a phrase the rule table is watching for
+        # (exactly the straddling problem the comment below describes for
+        # bubbles).  Stripping first also means a refused reply is refused on
+        # its real text, with the sticker going nowhere either — the marker
+        # is carried in a local, and nothing downstream of a refusal reads it.
+        content, sticker_slugs = sticker.extract_markers(content)
+
+        # The policy audits the text AFTER stripping, and audits it WHOLE.
+        #
+        # After stripping, because the stripped string is what actually leaves
+        # the process — auditing the pre-strip text would be auditing something
+        # nobody ever receives.  Whole, because ``split_bubbles`` and
+        # ``chunk_text`` below cut the body at markers and length boundaries
+        # that have nothing to do with meaning: a phrase the rule table catches
+        # can straddle such a cut, and per-bubble or per-chunk auditing would
+        # let both halves through individually.
+        #
+        # The source system audits at two different points on its two lanes
+        # (the proactive lane audits pre-normalization, the reply lane audits
+        # the post-normalization body).  Both lanes funnel through this one
+        # method here, so wiring the gate at this single choke point makes the
+        # two consistent.  That is a deliberate improvement over the source's
+        # inconsistency, not an accidental deviation from it.
+        #
+        # No ``is_group`` condition, unlike the mute above.  The mute is about
+        # speaking in a room full of people; the freeze risk this policy exists
+        # to contain is account-level, and Tencent's risk control does not care
+        # whether the sentence was typed into a group or a DM.
+        #
+        # TODO(media): the image/file send paths (``send_media`` and the
+        # inline-image branch) do not reach this method, so nothing moderates
+        # them.  The source system gates those with ``policy.moderate_media``;
+        # porting that is out of scope for this change and is tracked as a
+        # known gap.
+        policy_cfg = content_policy.resolve_config(None)
+        try:
+            decision = content_policy.moderate_text(content, policy_cfg).decision
+        except Exception:  # noqa: BLE001 — fail closed, never fail open
+            # An exploding classifier must not become an open gate: the whole
+            # point of this module is that it is the last thing standing
+            # between a bad sentence and a frozen account.
+            decision = content_policy.classifier_failure_decision(content)
+        if not decision.allowed:
+            return policy_blocked_send_result(target, is_group, decision)
+
+        # Both gates sit BEFORE the connection check for the reason the mute
+        # comment above gives: "not connected" is a retryable transient, and
+        # reporting it for text that will be refused anyway would have the
+        # caller retry a message that must never go out.  Decisions first,
+        # transients second.
         if self._client is None:
             return SendResult(
                 success=False,
@@ -1544,39 +2034,144 @@ class OneBotAdapter(BasePlatformAdapter):
         at_user_id = metadata.get("onebot_at_user_id") if is_group else None
         bubbles = split_bubbles(content or "")
         sent_ids: List[str] = []
-        first = True
-        for bubble in bubbles:
-            if self.forward_threshold > 0 and len(bubble) > self.forward_threshold:
-                ok, failure = await self._deliver_forward(
-                    is_group, target, bubble, at_user_id if first else None, reply_to if first else None
-                )
-                if ok:
-                    first = False
-                    continue
-                if failure is not None and failure.error_kind in (
-                    "forbidden",
-                    "not_found",
-                ):
-                    # The target is gone — chunking will not help.
-                    return failure
-                # Card rejected for any other reason: fall through to plain
-                # chunks so the content is never lost.
+
+        # ── Route the reply: one card, or a handful of bubbles ─────────────
+        #
+        # The choice is made ONCE, on the whole finished reply, before any
+        # splitting — because it is a question about what KIND of reply this
+        # is, and that is a property of the whole thing rather than of any
+        # fragment of it.
+        #
+        # D88: a whole reply is a card when it is too long OR too fragmented.
+        # A cap merge makes the final bubble into a bloated slab and loses the
+        # persona's intentional ``[MSG_BREAK]`` rhythm, while a forward card
+        # preserves every bubble as its own node and emits one notification.
+        # ``forward_threshold <= 0`` explicitly disables cards; only that
+        # degraded path, or a non-terminal forward rejection, reaches the
+        # cap merge below.
+        delivered_as_card = False
+        cards_enabled = self.forward_threshold > 0
+        too_long = len(content) > self.forward_threshold
+        too_many_bubbles = (
+            self.max_bubbles_per_reply > 0 and len(bubbles) > self.max_bubbles_per_reply
+        )
+        needs_card = cards_enabled and (too_long or too_many_bubbles)
+        needs_capped_fallback = not cards_enabled
+        lead_already_sent = False
+        if needs_card:
+            forward_result = await self._deliver_forward(
+                is_group, target, bubbles or [content], at_user_id, reply_to
+            )
+            lead_already_sent = forward_result.lead_sent
+            if forward_result.success:
+                delivered_as_card = True
+            elif (
+                forward_result.failure is not None
+                and forward_result.failure.error_kind in ("forbidden", "not_found")
+            ):
+                # The target is gone — chunking will not help.
+                return forward_result.failure
+            else:
+                # Card rejected for any other reason: preserve the answer on
+                # the bounded chat fallback rather than lose it.
                 logger.info("OneBot: forward card rejected — falling back to chunks")
-            for chunk in chunk_text(bubble, self.MAX_MESSAGE_LENGTH):
-                segments = self._lead_segments(
-                    is_group,
-                    at_user_id if first else None,
-                    reply_to if first else None,
-                )
-                segments.append(protocol.TextSegment(text=(" " if segments and is_group else "") + chunk))
+                needs_capped_fallback = True
+
+        if not delivered_as_card:
+            if needs_capped_fallback:
+                # Capped before the per-bubble loop, so protocol length
+                # splitting still applies to an overflow merged into one body.
+                bubbles = cap_bubbles(bubbles, self.max_bubbles_per_reply)
+
+            # ── The sticker the model asked for ───────────────────────────
+            # Resolved only from inside this branch, which settles three
+            # things at once:
+            #
+            # * only the CHAT lane can carry one.  Reaching here means the
+            #   card path was not taken, so "no sticker on a folded answer"
+            #   needs no condition of its own — a considered answer the
+            #   reader taps to expand is not a place for a cartoon tiger;
+            # * it is downstream of the content gate, and the marker was
+            #   already stripped upstream of it, so the policy audited
+            #   exactly the text a human ends up reading — no more (the
+            #   marker is machine syntax) and no less;
+            # * it is downstream of the routing decision above, which
+            #   measured character count and bubble count on the stripped
+            #   text.  A sticker therefore cannot tip a reply into a card,
+            #   and cannot change how many messages fire.
+            sticker_segment = self._sticker_segment(sticker_slugs)
+            # Materialised before the loop purely so "the last message" is
+            # knowable while the first one is being built.  ``chunk_text``
+            # already returns a list, so this changes no value.
+            planned = [chunk_text(b, self.MAX_MESSAGE_LENGTH) for b in bubbles]
+            last_bubble = len(planned) - 1
+            # A group card lead already carried the quote and @mention.  If the
+            # card itself is then rejected, the chat fallback starts after that
+            # lead instead of pinging and quoting the recipient a second time.
+            first = not lead_already_sent
+            for bubble_index, chunks in enumerate(planned):
+                for chunk_index, chunk in enumerate(chunks):
+                    segments = self._lead_segments(
+                        is_group,
+                        at_user_id if first else None,
+                        reply_to if first else None,
+                    )
+                    segments.append(
+                        protocol.TextSegment(
+                            text=(" " if segments and is_group else "") + chunk
+                        )
+                    )
+                    carries_sticker = (
+                        sticker_segment is not None
+                        and bubble_index == last_bubble
+                        and chunk_index == len(chunks) - 1
+                    )
+                    if carries_sticker:
+                        segments.append(sticker_segment)
+                    ok, mid, failure = await self._send_segments(
+                        is_group, target, segments
+                    )
+                    if (
+                        not ok
+                        and carries_sticker
+                        and failure is not None
+                        and failure.error_kind not in ("forbidden", "not_found")
+                    ):
+                        # A backend can reject an otherwise valid text message
+                        # only because its inline image handling is disabled or
+                        # flaky. Retry this final bubble once without the
+                        # optional image so a failed flourish never loses the
+                        # actual reply. Permanent target errors are not retried.
+                        plain_segments = [
+                            segment
+                            for segment in segments
+                            if not isinstance(segment, protocol.ImageSegment)
+                        ]
+                        ok, mid, failure = await self._send_segments(
+                            is_group, target, plain_segments
+                        )
+                    if not ok and failure is not None:
+                        return failure
+                    if mid:
+                        sent_ids.append(mid)
+                    first = False
+                if len(bubbles) > 1:
+                    await asyncio.sleep(BUBBLE_GAP_SECS)
+
+            if sticker_segment is not None and not planned:
+                # A reply that was NOTHING but a sticker marker.  The text is
+                # empty, so the loop above sent nothing and the image has no
+                # bubble to ride on — but the persona did choose to answer,
+                # and dropping it silently would look like the bot ignored
+                # the message.  One image, no empty text bubble beside it:
+                # QQ renders a zero-length message as a blank grey box.
+                segments = self._lead_segments(is_group, at_user_id, reply_to)
+                segments.append(sticker_segment)
                 ok, mid, failure = await self._send_segments(is_group, target, segments)
                 if not ok and failure is not None:
                     return failure
                 if mid:
                     sent_ids.append(mid)
-                first = False
-            if len(bubbles) > 1:
-                await asyncio.sleep(BUBBLE_GAP_SECS)
 
         if is_group:
             # Store the flattened bubbles, not the raw body: a literal
@@ -1600,50 +2195,74 @@ class OneBotAdapter(BasePlatformAdapter):
         self,
         is_group: bool,
         target: int,
-        body: str,
+        bodies: List[str],
         at_user_id: Optional[str],
         reply_to: Optional[str],
-    ) -> Tuple[bool, Optional[SendResult]]:
-        """Fold a long bubble into a merged-forward card.
+    ) -> _ForwardDeliveryResult:
+        """Fold a long reply into ONE merged-forward card.
+
+        *bodies* is one entry per persona bubble, and each becomes its own
+        node inside the card.  A card node renders as a separate line under
+        the sender's name, so the ``[MSG_BREAK]`` rhythm the persona wrote
+        survives INSIDE the card — the reader sees a conversation, not one
+        undifferentiated slab — while the recipient's client still fires a
+        single notification for the whole thing.  ``messages`` is a list on
+        both actions and ``action_to_wire`` serializes every node, so this
+        needs no protocol work.
 
         In a group the card cannot carry the @mention, so a short lead line
         goes out first — otherwise the person who asked never gets pinged.
+        The result records whether that separate message succeeded so a card
+        rejection can fall back to chat without repeating its lead segments.
         """
+        lead_sent = False
         if is_group and at_user_id:
             lead = self._lead_segments(True, at_user_id, reply_to)
             lead.append(protocol.TextSegment(text=f" {FORWARD_LEAD_TEXT}"))
             ok, _mid, failure = await self._send_segments(True, target, lead)
             if not ok:
-                return False, failure
-        node = protocol.ForwardNode(
-            name=self._bot_nickname or "Hermes",
-            uin=str(self.self_id or target),
-            content=[protocol.TextSegment(text=body)],
-        )
+                return _ForwardDeliveryResult(False, failure, lead_sent=False)
+            lead_sent = True
+        nodes = [
+            protocol.ForwardNode(
+                name=self._bot_nickname or "Hermes",
+                uin=str(self.self_id or target),
+                content=[protocol.TextSegment(text=body)],
+            )
+            for body in bodies
+        ]
         action: protocol.Action = (
-            protocol.SendGroupForwardMsg(group_id=target, messages=[node])
+            protocol.SendGroupForwardMsg(group_id=target, messages=nodes)
             if is_group
-            else protocol.SendPrivateForwardMsg(user_id=target, messages=[node])
+            else protocol.SendPrivateForwardMsg(user_id=target, messages=nodes)
         )
         try:
             resp = await self._call(action)
         except (asyncio.TimeoutError, TimeoutError):
-            return False, None
+            return _ForwardDeliveryResult(False, None, lead_sent)
         except OneBotTransportError as exc:
-            return False, SendResult(
-                success=False,
-                error=str(exc),
-                error_kind=classify_onebot_error(None, str(exc), exc),
-                retryable=True,
+            return _ForwardDeliveryResult(
+                False,
+                SendResult(
+                    success=False,
+                    error=str(exc),
+                    error_kind=classify_onebot_error(None, str(exc), exc),
+                    retryable=True,
+                ),
+                lead_sent,
             )
         if _response_ok(resp):
-            return True, None
+            return _ForwardDeliveryResult(True, None, lead_sent)
         detail = _response_error(resp)
-        return False, SendResult(
-            success=False,
-            error=f"OneBot rejected the forward card: {detail}",
-            error_kind=classify_onebot_error(resp.get("retcode"), detail),
-            raw_response=resp,
+        return _ForwardDeliveryResult(
+            False,
+            SendResult(
+                success=False,
+                error=f"OneBot rejected the forward card: {detail}",
+                error_kind=classify_onebot_error(resp.get("retcode"), detail),
+                raw_response=resp,
+            ),
+            lead_sent,
         )
 
     # ------------------------------------------------------------------
@@ -1702,7 +2321,9 @@ class OneBotAdapter(BasePlatformAdapter):
                     is_group, (metadata or {}).get("onebot_at_user_id"), reply_to
                 )
                 cap_segments.append(
-                    protocol.TextSegment(text=(" " if cap_segments and is_group else "") + caption)
+                    protocol.TextSegment(
+                        text=(" " if cap_segments and is_group else "") + caption
+                    )
                 )
                 await self._send_segments(is_group, target, cap_segments)
             ok, mid, failure = await self._send_segments(is_group, target, segments)
@@ -1758,7 +2379,12 @@ class OneBotAdapter(BasePlatformAdapter):
         **kwargs: Any,
     ) -> SendResult:
         return await self._send_attachment(
-            chat_id, image_path, caption, kind="image", reply_to=reply_to, metadata=metadata
+            chat_id,
+            image_path,
+            caption,
+            kind="image",
+            reply_to=reply_to,
+            metadata=metadata,
         )
 
     async def send_image(
@@ -1785,7 +2411,9 @@ class OneBotAdapter(BasePlatformAdapter):
         )
         if caption:
             segments.append(
-                protocol.TextSegment(text=(" " if segments and is_group else "") + caption)
+                protocol.TextSegment(
+                    text=(" " if segments and is_group else "") + caption
+                )
             )
         segments.append(protocol.ImageSegment(url=str(image_url)))
         ok, mid, failure = await self._send_segments(is_group, target, segments)
@@ -1803,7 +2431,12 @@ class OneBotAdapter(BasePlatformAdapter):
         **kwargs: Any,
     ) -> SendResult:
         return await self._send_attachment(
-            chat_id, audio_path, caption, kind="audio", reply_to=reply_to, metadata=metadata
+            chat_id,
+            audio_path,
+            caption,
+            kind="audio",
+            reply_to=reply_to,
+            metadata=metadata,
         )
 
     async def send_video(
@@ -1816,7 +2449,12 @@ class OneBotAdapter(BasePlatformAdapter):
         **kwargs: Any,
     ) -> SendResult:
         return await self._send_attachment(
-            chat_id, video_path, caption, kind="video", reply_to=reply_to, metadata=metadata
+            chat_id,
+            video_path,
+            caption,
+            kind="video",
+            reply_to=reply_to,
+            metadata=metadata,
         )
 
     async def send_document(
@@ -1937,7 +2575,11 @@ class OneBotAdapter(BasePlatformAdapter):
             gid = group["group_id"]
             name = str(group.get("group_name") or gid)
             self._group_names[int(gid)] = name
-            channels.append({"id": format_chat_id(True, gid), "name": name, "type": "group"})
+            channels.append({
+                "id": format_chat_id(True, gid),
+                "name": name,
+                "type": "group",
+            })
         try:
             resp = await self._call(protocol.RawAction("get_friend_list"), timeout=15.0)
         except Exception:  # noqa: BLE001 — groups alone are still useful
@@ -2062,8 +2704,10 @@ _PRIVATE_YAML_KEYS = (
     "rate_limit_group_per_min",
     "rate_limit_sender_per_min",
     "reply_with_mention",
+    "max_bubbles_per_reply",
     "forward_threshold",
     "wait_for_send_ack",
+    "suppress_system_messages",
     "max_concurrency",
     "health_probe_secs",
     "health_lost_secs",
@@ -2093,10 +2737,14 @@ _PRIVATE_YAML_KEYS = (
 )
 
 
-def _apply_yaml_config(yaml_cfg: Dict[str, Any], platform_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _apply_yaml_config(
+    yaml_cfg: Dict[str, Any], platform_cfg: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
     """Merge ``platforms.onebot.*`` YAML into ``PlatformConfig.extra``."""
     extras: Dict[str, Any] = {}
-    nested = platform_cfg.get("extra") if isinstance(platform_cfg.get("extra"), dict) else {}
+    nested = (
+        platform_cfg.get("extra") if isinstance(platform_cfg.get("extra"), dict) else {}
+    )
     for key in _PRIVATE_YAML_KEYS:
         if key in platform_cfg:
             extras.setdefault(key, platform_cfg[key])
@@ -2134,7 +2782,9 @@ async def _standalone_send(
     ws_url = (os.getenv("ONEBOT_WS_URL") or extra.get("ws_url") or "").strip()
     if not ws_url:
         return {"error": "OneBot standalone send: ONEBOT_WS_URL is required"}
-    token = (os.getenv("ONEBOT_ACCESS_TOKEN") or extra.get("access_token") or "").strip()
+    token = (
+        os.getenv("ONEBOT_ACCESS_TOKEN") or extra.get("access_token") or ""
+    ).strip()
     try:
         is_group, target = parse_chat_id(chat_id)
     except ValueError as exc:

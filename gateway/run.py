@@ -522,8 +522,8 @@ def _non_conversational_metadata(
     *,
     platform: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
+    """Mark Discord/OneBot lifecycle/status sends, leaving other platforms alone."""
+    if _gateway_platform_value(platform) not in ("discord", "onebot"):
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True
@@ -5155,8 +5155,22 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        # Every _emit_status("lifecycle"/"warn", ...) call funnels through
+        # here — memory-recall indicators, compression/retry chatter, idle
+        # status, etc. Mark the send non-conversational so OneBot's
+        # suppress_system_messages gate (plugins/platforms/onebot/adapter.py)
+        # can hide it; Discord uses the same flag only to keep it out of
+        # history reconstruction, so the message still shows there. Every
+        # other platform ignores the flag entirely (see
+        # _non_conversational_metadata).
         _fut = safe_schedule_threadsafe(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
+            _send_or_update_status_coro(
+                ctx._status_adapter,
+                ctx._status_chat_id,
+                event_type,
+                prepared_message,
+                _non_conversational_metadata(ctx._status_thread_metadata, platform=ctx.source.platform),
+            ),
             ctx._loop_for_step,
             logger=logger,
             log_message=f"status_callback ({event_type}) scheduling error",

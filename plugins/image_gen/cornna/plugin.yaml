@@ -1,0 +1,7 @@
+name: cornna
+version: 1.0.0
+description: "Cornna image generation backend — OpenAI-compatible /images/generations against a self-hosted endpoint (gpt-image-2 by default). Text-to-image, plus reference-anchored generation from character 立绘 via /responses or /images/edits."
+author: cornna
+kind: backend
+requires_env:
+  - CORNNA_IMAGE_API_KEY

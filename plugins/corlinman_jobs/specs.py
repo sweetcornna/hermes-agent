@@ -17,9 +17,9 @@ Three properties are load-bearing and are asserted by the test suite:
    off every schedule below).
 2. **Nothing is enabled.** :data:`JobSpec.install_enabled` is ``False`` for
    all of them and the installer pauses each job immediately after creating
-   it. ``hermes.daily_agenda`` additionally carries
-   ``source_enabled=False`` — it was already off in production, which is a
-   different fact from "off because we are mid-migration".
+   it. ``hermes.daily_agenda`` additionally carries ``source_enabled=False``:
+   it was already off in production, which is a different fact from "off
+   because we are mid-migration".
 3. **The schedules are staggered off the hour** (P1). The target host runs
    SQLite 3.40.1, too old for hermes's WAL guard, so the store falls back to
    DELETE mode where every writer serialises behind an fsync;
@@ -32,10 +32,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
-#: Every migrated job declares this zone, verbatim from A1 §2. The three
-#: in-code corlinman builtins used UTC; only ``persona.decay`` survives the
-#: migration and it is hourly, which is zone-invariant for whole-hour
-#: offsets — it is pinned to the same zone as everything else so the install
+#: Every migrated job declares this zone, verbatim from A1 §2. The in-code
+#: ``persona.decay`` builtin used UTC and is hourly (therefore invariant for
+#: whole-hour offsets), but is pinned here with everything else so the install
 #: has exactly one timezone contract to check.
 TIMEZONE = "Asia/Shanghai"
 
@@ -148,7 +147,7 @@ class JobSpec:
 
 
 # ---------------------------------------------------------------------------
-# The nine migrated jobs, in schedule order.
+# The nine D1-migrated jobs, in schedule order.
 # ---------------------------------------------------------------------------
 
 JOB_SPECS: tuple[JobSpec, ...] = (
@@ -401,6 +400,79 @@ JOB_SPECS: tuple[JobSpec, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Post-D1 Grantley maintenance jobs.
+# ---------------------------------------------------------------------------
+
+# ``persona.life_advance`` was a corlinman builtin with a default-off
+# scheduler registration, not one of the twelve entries in the production
+# scheduler-runtime export. Hermes now runs it natively and production has an
+# enabled instance. Keep its install contract here so an operator can rebuild
+# it explicitly, but do not fold it into D1's default 9+3 install surface.
+LIFE_ADVANCE_SPEC = JobSpec(
+    name="persona.life_advance",
+    source_job_id=None,
+    source_action_type="persona.life_advance",
+    source_cron="0 0 4 * * * *",
+    source_timezone="UTC",
+    source_enabled=False,
+    schedule="41 0 * * *",
+    stagger_reason=(
+        "The former default fired at 04:00 UTC only after explicit opt-in. "
+        "Hermes runs it at 00:41 Asia/Shanghai, 24 minutes after the hourly "
+        "persona.decay tick and 60 minutes after hermes.diary_summary."
+    ),
+    prompt=None,
+    script="corlinman_grantley_life_advance.py",
+    no_agent=True,
+    deliver="local",
+    params={},
+    notes=(
+        "Post-D1 Grantley-native maintenance task. It is excluded from the "
+        "default D1 installer plan because the source registration was "
+        "default-off, but `install --only persona.life_advance` can create a "
+        "paused replacement. Reinstalling D1 never changes an existing "
+        "enabled production life_advance cron."
+    ),
+)
+
+# A local asset follow-up to the persisted daily beat. This has no corlinman
+# source task and never posts or sends the rendered image.
+LIFE_ILLUSTRATE_SPEC = JobSpec(
+    name="persona.life_illustrate",
+    source_job_id=None,
+    source_action_type="grantley.life_illustrate",
+    source_cron="new Hermes-native supplemental task",
+    source_timezone=TIMEZONE,
+    source_enabled=False,
+    schedule="49 0 * * *",
+    stagger_reason=(
+        "Runs at 00:49 Asia/Shanghai, eight minutes after the explicit-only "
+        "persona.life_advance task at 00:41. It reads that persisted beat and "
+        "is otherwise alone in the hour."
+    ),
+    prompt=None,
+    script="corlinman_grantley_life_illustrate.py",
+    no_agent=True,
+    deliver="local",
+    params={},
+    notes=(
+        "Post-D1 Grantley-native, reference-anchored local asset task. It is "
+        "excluded from the default installer plan; `install --only "
+        "persona.life_illustrate` creates a paused task. It invokes Cornna "
+        "with Grantley's validated official reference and writes only "
+        "$HERMES_HOME/plugin-data/grantley/life-images/. It never publishes "
+        "to QQ/QZone/Telegram or delivers a message."
+    ),
+)
+
+#: Opt-in, non-D1 tasks selectable by name but excluded from a default plan.
+SUPPLEMENTAL_SPECS: tuple[JobSpec, ...] = (
+    LIFE_ADVANCE_SPEC,
+    LIFE_ILLUSTRATE_SPEC,
+)
+
+
 #: Names of the three migrated QQ group-digest monitors (D2), as a frozenset
 #: other modules can test membership against without importing MONITOR_SPECS.
 MONITOR_NAMES: frozenset[str] = frozenset({"qunjlu", "sanhu", "jlu"})
@@ -408,12 +480,11 @@ MONITOR_NAMES: frozenset[str] = frozenset({"qunjlu", "sanhu", "jlu"})
 
 # ---------------------------------------------------------------------------
 # The three QQ monitors (D2) — daily group-chat digests, a different
-# corlinman subsystem from the twelve scheduler jobs above (config lives in
+# corlinman subsystem from the twelve source scheduler jobs (config lives in
 # ``[[channels.qq.instances.default.monitors]]``, not
 # ``scheduler_runtime_jobs.json``; A1 §4). Kept in a separate tuple rather
-# than folded into JOB_SPECS: the "12 source jobs = 9 installed + 3 dropped"
-# accounting above is a real, tested count of a real, separate corlinman
-# list, and merging a different list into it would make that count lie.
+# than folded into JOB_SPECS: the "12 source jobs = 9 migrations + 3 dropped"
+# accounting below is a real, tested count of a real, separate corlinman list.
 # ``ALL_SPECS`` below is what the installer actually iterates.
 #
 # All three share four properties, verbatim from A1 §4 / the exported
@@ -655,6 +726,7 @@ DROPPED_JOBS: tuple[DroppedJob, ...] = (
 # Prompt wiring — kept out of the table above so the table stays readable.
 # ---------------------------------------------------------------------------
 
+
 def _with_prompts(specs: tuple[JobSpec, ...]) -> tuple[JobSpec, ...]:
     from dataclasses import replace
 
@@ -681,7 +753,9 @@ def _with_prompts(specs: tuple[JobSpec, ...]) -> tuple[JobSpec, ...]:
             out.append(
                 replace(
                     spec,
-                    prompt=prompts.qzone_daily_publish(str(spec.params["prompt_template"])),
+                    prompt=prompts.qzone_daily_publish(
+                        str(spec.params["prompt_template"])
+                    ),
                 )
             )
         elif spec.name == "hermes.qzone_reply":
@@ -701,15 +775,17 @@ def _with_prompts(specs: tuple[JobSpec, ...]) -> tuple[JobSpec, ...]:
 
 JOB_SPECS = _with_prompts(JOB_SPECS)
 
-#: Everything this plugin can plan/install/status: the nine scheduler jobs
+#: D1's default plan: the nine scheduler jobs
 #: (schedule order) followed by the three monitors. The single iterable the
-#: installer and preflight actually default to. Built here, after both
+#: installer and preflight default to. Built here, after both
 #: ``_with_prompts`` rebindings above, so it holds the prompt-wired specs —
 #: not the ``prompt=None`` placeholders those tuples started as.
 ALL_SPECS: tuple[JobSpec, ...] = JOB_SPECS + MONITOR_SPECS
 
-#: Name → spec, across both the nine scheduler jobs and the three monitors.
-SPECS_BY_NAME: dict[str, JobSpec] = {spec.name: spec for spec in ALL_SPECS}
+#: Name → spec across D1 and explicit-only supplemental jobs.
+SPECS_BY_NAME: dict[str, JobSpec] = {
+    spec.name: spec for spec in (*ALL_SPECS, *SUPPLEMENTAL_SPECS)
+}
 
 
 def spec_by_name(name: str) -> JobSpec:
@@ -726,11 +802,14 @@ __all__ = [
     "ALL_SPECS",
     "DROPPED_JOBS",
     "JOB_SPECS",
+    "LIFE_ADVANCE_SPEC",
+    "LIFE_ILLUSTRATE_SPEC",
     "MONITOR_NAMES",
     "MONITOR_SPECS",
     "PERSONA_ID",
     "QQ_ACCOUNT",
     "SPECS_BY_NAME",
+    "SUPPLEMENTAL_SPECS",
     "TELEGRAM_CHAT_ID",
     "TIMEZONE",
     "DroppedJob",

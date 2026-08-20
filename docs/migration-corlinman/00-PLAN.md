@@ -1788,3 +1788,318 @@ Orchestrator 独立复核，与其自述逐项吻合：
 `token` 全为空，该值本就是装饰性的（本次迁移第六个"配置写着 X、实际是 Y"）。
 但这是同一类错误第二次发生，说明"不要打印令牌"这条约束的表述不够强。
 **新规则：读取类任务一律禁止整体输出文件，只允许按字段白名单取值。**
+
+## §30 面板认证收敛与 SnowLuma 接管前置（2026-08-19）
+
+用户反馈：「太多登陆凭证了，怎么老是要登，到最后这个还登不过」。两个缺陷，都是我造成的。
+
+**D68 — 撤掉 nginx Basic 认证层。**
+我在 napcat / snowluma / vnc 三个 vhost 前面各加了一层 `auth_basic`。这是错的：
+三个面板都是单页应用，其内部 `fetch` / WebSocket 不携带 `Authorization` 头，被 nginx
+401 后浏览器无限重弹。已从三个 vhost 全部移除并 reload。移除后应用自身的鉴权仍然拦得住
+（SnowLuma `{"status":"failed","message":"Unauthorized"}`、NapCat `{"code":-1}`），
+不存在裸奔。备份：`/root/{snowluma,napcat}.cornna.xyz.conf.bak.20260819T182008Z`。
+教训：Basic 认证不能套在 SPA 前面；面板的认证归面板自己。
+
+**D69 — SnowLuma WebUI 口令改走官方 bootstrap 通道，不再手搓哈希。**
+「登不过」的根因：我上一轮直接改写 `webui.json` 的 `passwordHash`，把 `passwordSalt`
+的 **hex 字符串**当 salt 喂给了 scrypt，而 SnowLuma 的 `verify()` 用的是
+`Buffer.from(passwordSalt,"hex")` —— **解码后的字节**。参数本身没错
+（N=16384 r=8 p=1 keylen=64），错在 salt 编码，所以哈希必然对不上。
+改用 `SNOWLUMA_WEBUI_BOOTSTRAP_PASSWORD`：该通道仅在 `webui.json` 缺失/损坏时生效
+（`WebuiAuth.load()` 的优先级：有效文件 > env > 随机生成），故需先删文件再重建容器。
+已写入 `/opt/snowluma/docker-compose.yml`，备份 `.bak.20260819T182920Z`。
+日志确认 `webui credentials seeded from SNOWLUMA_WEBUI_BOOTSTRAP_PASSWORD`。
+实测：本地与经域名两条路径均 `{"success":true}`，错误口令回「密码错误」。
+登录路由是 `POST /api/login`（**不是** `/api/auth/login`——后者是未知路径的统一 401，
+我据此误判过一次）；字段只需 `password`，用户名可省。
+容器重建后 QQ 会话保留（命名卷），账号 1010679324 仍在线。
+
+**D70 — NapCat 不是 SnowLuma 的依赖，是待下线的存量。**
+容器真名 `corlinman-napcat`（`mlikiowa/napcat-docker`，已跑 4 周），是 corlinman 的桥。
+两者是同层替代品（都讲 OneBot v11）。实测证据：SnowLuma 独立登录着 1010679324，
+全程未触及 NapCat；`:3011` 已建立连接 0 个；`config.yaml:204` 的
+`ws_url: "ws://127.0.0.1:3001"` 仍指向 NapCat，且 corlinman-gateway 与 hermes
+**同时**挂在 3001 上（双主）。NapCat 之所以还在，只因切换尚未执行。
+
+**D71 — 用户协议不代签。**
+SnowLuma 在同意《用户协议与隐私政策》前拒绝全部管理 API
+（`{"consentRequired":true}`，version `dcb31a7b03a0b64d`），因此 OneBot 网络层未启动
+（容器内 3000/3001 无监听，`mode: snapshot`）。这是一份法律协议，不属于我可代为点击的
+范围，留给用户在面板内自行确认。这是 SnowLuma 接管的唯一前置。
+
+**接管路径（前置解除后三步）**：启用 wsServers（容器内 3001→宿主 3011）→
+`config.yaml` 的 `ws_url` 指向 3011 并观察归档 → 停止并删除 `corlinman-napcat`
+（该动作同时完成阶段 5.3「停 corlinman 的 QQ 侧」）。
+
+## §31 QQ 侧接管：现状核查与下线代价（2026-08-19）
+
+用户指令：「接入 hermes agent，下线 corlinman，并且要完全把 corlinman 一模一样的主动发言
+逻辑迁移过来」，随后追加「先关掉群组发言，我先私聊测试」。故本阶段**只开私聊**。
+
+**核查结论（均为实测）**：
+- 群组发言本就关死：`group_replies_enabled: false`，`proactive_enabled` 未设 ⇒ 默认 false（D31）。
+  本阶段将两者**显式写死**，不再依赖默认值。
+- 主动发言实现**已落地**：`plugins/platforms/onebot/proactive.py`（33KB / 约 797 行），
+  D40 修复在位（`proactive_groups` 非空但过滤后为空 ⇒ 保持沉默，不回退白名单）。
+- 人格接线**已通**：`adapter.py:1318` 与 `proactive.py:629` 均调用
+  `persona_binding.channel_prompt()`。config.yaml 中「⚠ INERT ON TWO COUNTS ...
+  no adapter calls resolve_channel_prompt」那段注释**已过时**，应删除。
+
+**D72 — 私聊前必须先启用 grantley，否则回复的是通用助手。**
+`plugins.enabled = ['corlinman_jobs']`，`grantley` 不在其中，`hermes plugins list` 报
+`not enabled`；且 `platforms.onebot.extra.persona_channel_map` 未设。人格接线虽通，但插件
+没加载、频道映射为空 ⇒ DM 会以无人格身份应答。这会让"私聊测试"得出错误结论。
+
+**D73 — corlinman 是两个服务。**
+`corlinman.service`（网关控制面，pid 2581308，占着 3001）与 `corlinman-agent.service`
+（执行面，User=corlinman-agent，WorkingDirectory=/opt/corlinman/execution-state）。
+私聊交接只需停前者；完整下线需两者都停。一律**只 stop**，保持可回滚。
+
+**D74 — 群历史读写路径必须在下线前对齐。**
+corlinman 实时库在 `/opt/corlinman/execution-state/qq_group_history.sqlite`（WAL，
+带 -wal/-shm）——**不在** `/opt/corlinman/data/` 下。hermes 自有库
+`/opt/hermes/data/plugin-data/corlinman_jobs/qq_group_history.sqlite` 13MB 且在活跃写入。
+监控任务经 `QQ_GROUP_HISTORY_DB`（`installer.py:162,183`）决定读向，该变量在 `.env` 中未设。
+若默认解析指向 corlinman 的库，则停机后三个监控会静默总结一个冻结文件——不报错，纯劣化。
+
+**D75 — 下线 corlinman 会连带失去联网搜索，这是真实能力回退。**
+`free-search-mcp`（`uvx free-search-mcp>=0.8.0`，pid 2581578）连同一组 headless Chrome
+是 corlinman 网关的**子进程**，随 `corlinman.service` 一并终止。
+后果具体：`plugins/grantley/assets/grantley.md` 的回答工作流写明「需要事实的问题 →
+必须先 web_search」，而 hermes 侧 web 工具集此前实测为静默空转（§27）。
+⇒ 下线后私聊里的事实性提问会劣化。**不阻塞本次私聊测试**，另行处理。
+
+## §32 主动发言对齐审计结论与 OneBot 出站接线（2026-08-19）
+
+审计（Opus，一次打回后修正）结论：**主动发言核心闸门链与 corlinman 行为等价，无阻断级差异。**
+15 项要素中 6 项逐行一致（时间窗半开区间与跨夜、单调时钟 min_gap、max_gap 缺省 ×4、
+概率闸、SKIP 正则、配额只探不耗且发成功才记账——已核对 `adapter.send()` 不重复 record），
+4 项为既有有意分歧（D31/D32/D34+D40/RAG 缺席，均在源码注释中声明）。
+源码位置更正：主动发言块在
+`/opt/corlinman/repo/python/packages/corlinman-channels/src/corlinman_channels/service.py`
+L753–L1305（此前记为 `service.py:774-1290`，偏差已订正）。
+
+### 打回与修正（记录我的评审过程，不是结论）
+初版称「hermes 全仓无腾讯内容策略等价物，需新写一道闸」——**与事实不符，已打回**。
+`plugins/qzone/policy.py` 是 corlinman `corlinman-content-policy` 包的**逐字节移植**
+（`moderate_text` 在 policy.py:340，`RULESET_VERSION = tencent-freeze-risk-2026-07-21.1`，
+模块 docstring 写明存在目的是防 QQ 账号 1010679324 被冻结）。
+漏检原因：搜索范围限于 `plugins/platforms/` 与主干，未扫 `plugins/qzone/`。
+修正后成本从「实现一个分类器」降为「接一次线」，且因逐字节移植，**语义等价天然成立**。
+
+### 修正版带来的三项新事实
+1. **两侧同源且配置解析等价**：corlinman `service.py:393-397` 的 `_tencent_text_decision`
+   就是包装同一个包的 `moderate_text`/`classifier_failure_decision`。两边都是
+   `enabled is not False`，只有字面 `False` 才关闭。
+2. **该闸在 corlinman 生产中是开启的**（`ReloadingTencentPolicyResolver` fail-closed：
+   路径为 None ⇒ True，读取异常 ⇒ True；生产 config.toml 无相关键）。
+   ⇒ 与主动发言"配了但从未生效"的情况**不同**，这是一项真实在跑的保护。
+3. **缺口是整个 OneBot 出站面，不是主动发言独有**：corlinman 四条 QQ lane 全部过闸
+   （回复 `service.py:4043` / 主动 `:1278` / 群监控 `:2127` / 入站 `:2737`）。
+   ⇒ 本项应独立立项，**优先级高于主动发言启用**——主动发言默认关闭，而反应式回复裸奔。
+
+**D76 — 内容闸不加 `is_group` 限定，群与私聊一律过闸。**
+静音闸是群限定的（`if is_group and group_speech_muted(self)`），内容闸不是：corlinman
+`service.py:4043` 覆盖全部 QQ 回复。冻结风险是**账号级**的，腾讯风控不区分群聊或私聊。
+用户当前正在做私聊测试，此选择直接影响测试期行为，故显式拍板：**私聊同样过闸**。
+
+**D77 — 接线点与拒绝语义。**
+接在 `adapter.py::send()` 内（非 `client.py`——后者是纯传输层；`client.py:21-24` 的原注释
+本就指向 adapter 的 send path）。顺序：
+`parse_chat_id → 静音闸 → strip_markdown → 内容闸 → split_bubbles → chunk_text`。
+审的是 **strip_markdown 之后的完整成品文本**：逐气泡/逐 chunk 审会让跨块表述漏网。
+（源侧自身不一致——主动发言审 normalize 前、回复审 normalize 后；在 `send()` 统一接线
+反而消除该不一致。）
+拒绝时 `success=False, retryable=False`，**`error_kind` 必须为 `"unknown"`**：
+`forbidden`/`not_found` 在 `gateway.dead_targets._DEAD_ERROR_KINDS` 中，会把一次内容拒绝
+变成**粘滞的死目标**（判例见 `adapter.py:275-282` 的 `muted_send_result`）。
+`raw_response` 带标记键 + `policy_error_payload` 的三字段（不含原文，可安全落日志）。
+
+**D78 — 出站 markdown 归一化。**
+`strip_markdown`（`gateway/platforms/helpers.py:196`）已被 8 个适配器使用，
+**含另一个 QQ 平台 `gateway/platforms/qqbot/adapter.py`**，唯 OneBot 未接。
+`adapter.py:639` 的 `supports_code_blocks = False` 不影响 `send()`（仅
+`gateway/run.py:4310` 的进度输出读取），不可误认为已有处理。
+
+### 待决 / 未覆盖
+- **媒体路径未确认**：OneBot 图片/文件不走 `send()` 文本路径，corlinman 侧用 `moderate_media`
+  （`service.py:7440/7554`，未分类媒体 deny-by-default）。本次不做，留 TODO 单独评估。
+- B-3 合并转发卡差异、B-4 提示词工具名、B-5 `is_skip` 更宽、B-6 日界随时区同移、
+  B-7 会话隔离耦合 `group_sessions_per_user`、B-8 身份闸更弱（标未确认）、
+  B-9 `proactive_groups` 字符串解析更健壮——均为次要，暂不处理，已登记。
+
+## §33 QQ 桥切换到 SnowLuma + 出站接线上线（2026-08-19）
+
+**D79 — 事故与根因：SnowLuma 登录把 NapCat 挤下线，是我造成的。**
+NapCat 日志 `08-19 17:12:45 [KickedOffLine] [下线通知] 您的账号已在另一台终端登录`
+（容器时钟，宿主时间 18:12）。QQ 同类型客户端互斥，后登踢先登。
+此前"两个桥可同时在线"的观测被推翻——那只是踢下线之前的窗口期。
+后果：hermes 连的是 NapCat(3001)，账号离线，私聊测试无法进行。
+且 `napcat.json` 无 `autoLoginAccount`、容器内无 QQ 登录态缓存 ⇒ **NapCat 恢复需扫码**。
+
+**D80 — 选择切到 SnowLuma 而非恢复 NapCat。**
+理由：SnowLuma 持有账号且在线（10 分钟收 251 条事件）；用户本就要求用 SnowLuma 替换
+NapCat；恢复 NapCat 需要用户扫码，而切换不需要任何用户动作。
+
+**D81 — SnowLuma 的 OneBot 绑在容器内 127.0.0.1，docker 映射到不了。**
+容器内 `ss -ltn` 显示 `127.0.0.1:3000` / `127.0.0.1:3001`，而 docker 端口映射
+（`127.0.0.1:3011->3001`）转发到容器 **eth0**，不是容器 loopback ⇒ 宿主敲 3011
+永远 `did not receive a valid HTTP response`。这不是"OneBot 没启动"（我一度这么判断）。
+经 `POST /api/config/1010679324` 把 `wsServers`/`httpServers` 的 `host` 改为 `0.0.0.0`
+后立即生效（`applied: true`，`detail: 监听中`）。
+宿主侧仍只监听 `127.0.0.1:3011`，未对外暴露。
+API 信封：GET 返回 `{"config": {...}}`，**POST 要裸结构**（发包 `{"config":...}` 会被
+拒为 `networks must be an object`）。
+容器内备份 `/app/data/config/onebot_1010679324.json.bak.before-bind0000`。
+
+**D82 — `.env` 覆盖 config.yaml，且 `.env` 不在我以为的路径。**
+真实路径是 `/opt/hermes/data/.env`（不是 `/opt/hermes/.env`——我先前查错路径，
+得出"没有 ONEBOT_ 变量"的错误结论）。其中 `ONEBOT_WS_URL` 覆盖 config.yaml 的
+`ws_url`，只改 config.yaml 无效，hermes 仍连 3001。两处都改后才切过去。
+备份 `config.yaml.bak.snowluma.*` / `.env.bak.snowluma.*`。
+
+**验收实证（重启后 pid 3350738）**：
+```
+OneBot adapter initialised: url=ws://127.0.0.1:3011 groups=MUTED whitelist=5 keywords=5
+OneBot: adapter connected (ws://127.0.0.1:3011)
+OneBot: proactive loop idle (disabled) instance=default
+OneBot: bot account is 1010679324 / QQ account is online
+```
+入站管道实证：19:01→20:27 群历史 written=125 dropped=0 failed=0。
+
+**D83 — 出站接线（D77/D78）已实现、测试、上线。评审通过。**
+`adapter.py::send()` 内顺序 `mute → strip_markdown → 内容闸 → split_bubbles → chunk_text`。
+内容闸无 `is_group` 限定（D76），失败 fail-closed，拒绝返回
+`error_kind="unknown"`（避开 `_DEAD_ERROR_KINDS`，防止一次内容拒绝变成粘滞死目标），
+`raw_response` 只带 `policy_error_payload` 的三个不含原文的审计字段。
+测试：`tests/gateway/test_onebot_content_gate.py` **53 passed**；
+`test_onebot_proactive.py` **81 passed** 无回归；onebot 全量 **553 passed / 2 skipped**。
+测试对"文案不撞 `classify_send_error`"的断言是**调真正的分类器**，非靠措辞自证。
+生产备份 `adapter.py.bak.contentgate.20260819T042643Z`；AppleDouble 残留 0。
+媒体路径（`send_media` / 内联图片）不经 `send()`，仍无审核，代码内已留 TODO。
+
+**遗留**：NapCat 容器仍在运行（用户拒绝停止）；`corlinman.service` 与
+`corlinman-agent.service` 均 inactive 且可 `start` 回滚；联网搜索随 corlinman 消失（D75）；
+私聊白名单仅 `2104743984`，其他号会被静默丢弃但 `gateway.log` 会记 `Unauthorized user`。
+
+## §34 全面放开：私聊开放 + 群内发言 + 主动发言（2026-08-19 20:38）
+
+用户指令：「开启所有人的聊天允许和我在 corlinman 中允许发言和主动发言的发言准许和主动发言准许」。
+
+**corlinman 原始值（只读核对 `/opt/corlinman/data/config.toml`）**：
+```
+group_replies_enabled = False          ← 紧急静音总闸
+proactive_enabled     = True           ← 设了，但被总闸掐死
+group_whitelist       = [1082225370, 183287894, 894800697, 149881991, 667528618]
+group_rate_limit      = 5 条 / 3 分钟
+reply.on_at_mention = True   reply.on_direct_message = True
+group_keywords        = 五个群各 ["格兰"]
+humanlike.persona_id  = grantley
+（无 allowed_users / allow_all_users 键 ⇒ 私聊对所有人开放）
+```
+
+**D84 — 私聊放开对齐 corlinman。**
+`.env` 中 `ONEBOT_ALLOWED_USERS` 注释保留备查，新增 `ONEBOT_ALLOW_ALL_USERS=true`。
+这是**回到 corlinman 的行为**（它本就无白名单），不是新增暴露面。
+⚠ 自查教训：首次核验 `ALLOW_ALL_USERS` 得到 `None`，我据此报"没生效且更糟"——
+**错在检查本身没设 `HERMES_HOME`，`load_hermes_dotenv()` 读了别的路径**。
+带上 `HERMES_HOME=/opt/hermes/data` 后为 `'true'`。核验运行时配置必须带 HERMES_HOME。
+
+**D85 — 掀开紧急静音总闸，这是 corlinman 从未发生过的行为。**
+`group_replies_enabled: false → true`。corlinman 生产该值为 false，它同时掐死群回复与
+主动发言（§14：七天日志 `grep -ic proactive` = 0）。改为 true 后两者才真正上线。
+用户已被明确告知该点后仍要求开启，故执行。回滚 = 把这一行改回 false。
+
+**D86 — 主动发言启用，参数按源默认显式写出。**
+`proactive_enabled: true`；`min_gap 45` / `max_gap` 不设(⇒ ×4 = 180) / `daily_max 4` /
+活跃 `[9, 23)` / `probability 1.0` / `context 30` / `timezone "Asia/Shanghai"`（D32，
+日计数归零点同步为北京午夜，见 B-6）；`proactive_groups` 不设 ⇒ 回退白名单（同 corlinman）。
+
+**验收（运行时自报，pid 3357130）**：
+```
+OneBot adapter initialised: url=ws://127.0.0.1:3011 groups=enabled whitelist=5 keywords=5 policy=mention_or_keyword
+OneBot: proactive loop started groups=['1082225370','149881991','183287894','667528618','894800697']
+```
+（此前三次重启均为 `groups=MUTED` / `proactive loop idle (disabled)`，对照清晰。）
+Traceback 数 0。
+
+**同时生效的两道保护**（§32/D83，先于本次放开上线）：出站 `strip_markdown`；
+腾讯内容策略闸（无 `is_group` 限定，群与私聊同过，fail-closed，
+拒绝用 `error_kind="unknown"` 避免粘滞死目标）。放开发言前这两道已在位，顺序是对的。
+
+**需要用户知晓的实情**：
+- **980927602（"高认知且渴望存续的好人群"，SnowLuma 日志显示是当前最活跃的群）不在白名单里**，
+  机器人不会在那里发言。加它属于超出用户所述范围，未加。
+- 主动发言首帖落点：睡眠取 `uniform(45, 180)` 分钟，且须落在北京时间 `[9, 23)` 内。
+- 媒体路径仍无内容审核（§32 遗留，代码内有 TODO）。
+- 联网搜索仍缺失（D75），事实性提问会劣化。
+
+## §35 出站三件套上线 + 生图后端 + QQ 空间暂停（2026-08-19）
+
+用户四项要求：回答精简（不要臃肿末条）/ 复杂问题卡片化 / 沿用表情包 / QQ 渠道隐去系统消息。
+另：「先别发 qq 空间」+ 提供生图端点与 9 张表情素材。
+
+**D87 — QQ 空间三个任务已暂停，一次公开动作都没发生。**
+`hermes.qzone_{reply,friends,daily}` 全部 `paused`，且 `last=None` 证明从未执行；
+`post_log` 仍是迁移基线 19 条。用户要先看生图风格再决定。
+
+**D88 — 臃肿末条的根因是我的规则设计错误。**
+`cap_bubbles` 把第 3~N 条合并进第 3 条 ⇒ 末条变一坨。改为：
+整条超 `forward_threshold` ⇒ 卡片；**气泡数超上限 ⇒ 也整条进卡片**（新增分支）；
+否则原样发短气泡、不合并。`cap_bubbles` 降级为退路（`forward_threshold<=0` 或卡片被拒时）。
+「几条短消息 或 一张卡片」，中间态被消除。
+卡片内保留 `[MSG_BREAK]` 分段为多个 forward node（协议原生支持，`messages` 本就是 List）。
+卡片路径**不受 `chunk_text` 约束**（forward node 不走 `send_msg`），已写测试钉死。
+
+**D89 — 系统消息隐去：方案 A′（只加一个平台，不是删判断）。**
+直接删掉 `_non_conversational_metadata` 的平台判断会**跑挂两个既有测试**
+（`test_restart_notification` Telegram / `test_run_progress_topics` Slack，都用精确 dict 断言钉着
+"其它平台不变"）。故改为 `not in ("discord", "onebot")` —— 仍是一行，零波及面，
+其它平台的 metadata 仍按**同一对象**返回。这是本次唯一的主干改动。
+默认 `true`。两类豁免：`⚕ Update needs your input:`（阻塞等回答，藏了会永久卡住）与
+`⚠️ Session database …`（数据正在丢失）。被丢弃的消息仍写 info 日志。
+拒绝返回 `error_kind="unknown"`（避开 `_DEAD_ERROR_KINDS`）。
+**我让子智能体评估的"审批消息要不要豁免"是个伪问题**：`_approval_notify_sync`
+（`run.py:6032`）把 metadata **直接透传**、从不调用该标记函数，所以
+`⚠️ Dangerous command requires approval` 结构上到不了闸门。已有测试钉住此事实。
+
+**D90 — 表情包：自定义图 + 模型自选，不是 QQ 原生表情。**
+用户提供 9 张格兰特利表情图，已归位 `plugins/grantley/assets/stickers/`
+（`heart-hug` / `fired-up` / `unimpressed` / `flustered` / `thumbs-up` / `shrug` /
+`angry` / `laughing` / `thinking`，语义标签由我逐张看图确定）。
+机制：概率 `0.18` 决定**是否把菜单摆到模型面前**（不是发图概率，模型看到也常不用 ⇒ 实际更低）；
+模型用内联标记 `[STICKER:<slug>]` 表达；适配器在
+**`strip_markdown` 之后、腾讯内容闸之前**摘除标记，附加到最后一条气泡的最后一个 chunk。
+卡片路径不附加；不参与分流判定；正文为空时只发图。
+目录即白名单，`../../etc/passwd` 这类 slug 直接拒绝。
+**必须 `base64://` 不能 `file://`**：SnowLuma 在容器内，读不到宿主 `/opt/hermes/repo`
+（D81 记载端口映射走容器 eth0，跨 namespace）。既有 `_send_attachment` 本就这么做，
+字面路径只是 >8MiB 的降级分支；9 张图各 23–29KB，永远走 base64。
+菜单注入点在 `channel_prompt()` **之外**——`_channel_prompt` 按 (persona, channel, group, day)
+**做了日缓存**，把骰子塞进去会让概率冻结成"当天全有或全无"。
+
+**D91 — 生图后端 `cornna` 已上线，但无角色锚定。**
+`plugins/image_gen/cornna/`（541 行 + 48 测试），`image_gen.provider: cornna`，
+密钥 `CORNNA_IMAGE_API_KEY`（**与文本的 `CORNNA_API_KEY` 是两把不同的 key**，
+sha256 前缀 `515b0593…` vs `0fa2b2d5…`，不得合并）。生产实测 `就绪 = True`。
+端到端接缝有测试实证：provider 返回值直接喂 `qzone/publish.py::_load_image_reference` 拿到 bytes。
+**遗留**：`_generate_image` 的注释写明 corlinman 用 `image_with_refs`（参考图锚定），
+hermes 未移植。实测三张样图证实后果——纯提示词路径下角色会漂（sample-1 琥珀眼 /
+sample-2 蓝眼），而拿表情包当参考图走 `/v1/images/edits` 的 sample-3 与表情包同一角色。
+**该端点支持 `/v1/images/edits`（我实测通过）**，但 provider 因未验证而主动拒绝
+image-to-image。要拿到一致性必须补参考图支持。三张样图仅用于本地验收，既非运行时
+资产，也不随代码提交归档。
+
+**D92 — 我的调度失误：两路 agent 同时改同一个 `adapter.py`。**
+表情包那路的中间态（调用了自己还没写完的 `sticker.probability_from_extra`）
+把测试打成 270 failed，我一度误判为抑制那路的问题。教训：**同一文件只能有一路在改**。
+
+**验收（重启后 pid 3407065）**：onebot 全量 **724 passed / 2 skipped**
+（新基线 658 + 表情 66；我此前引用的 609 是旧快照）；
+生产运行时实测 9 张表情可用、概率 0.18、base64 编码 OK（`base64:///9j`，38KB）；
+`_non_conversational_metadata` 对 onebot 打标记而 telegram 原样返回；
+`groups=enabled`、`proactive loop started`；Traceback 0。
+子智能体另拆掉一颗定时炸弹：`test_onebot_persona_binding.py` 的 9 处
+`channel_prompt(...) is None` 断言在 0.18 概率下会**每 5 次挂 1 次**，
+已加 autouse fixture 钉成 0；连跑 3 次稳定。

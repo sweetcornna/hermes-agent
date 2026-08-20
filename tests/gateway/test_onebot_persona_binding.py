@@ -150,6 +150,24 @@ def _no_ambient_persona_config(monkeypatch):
     monkeypatch.setattr(PB, "_plugin_settings", {})
 
 
+@pytest.fixture(autouse=True)
+def _no_stickers(monkeypatch):
+    """Take the sticker menu out of every assertion in this file.
+
+    ``channel_prompt`` composes two independent things: the per-channel
+    persona frame these tests are about, and the probabilistic sticker menu
+    (``test_onebot_stickers.py``).  Left at its default the menu appears on
+    ~18% of calls, which would make every ``is None`` assertion below fail
+    roughly one run in five — the tests would still be *testing* binding
+    resolution, just unreliably.
+
+    Declared after ``_clean_env`` so it wins: that fixture strips every
+    ``ONEBOT_`` variable, and this one puts back the single value these tests
+    need pinned.
+    """
+    monkeypatch.setenv("ONEBOT_STICKER_PROBABILITY", "0")
+
+
 
 
 class TestBindingResolution:
@@ -199,6 +217,21 @@ class TestBindingResolution:
             {PB.EXTRA_KEY: typo}, chat_id=GROUP, is_group=True
         )
         assert prompt and "群聊" in prompt and "私聊" not in prompt
+
+    def test_a_bound_channel_carries_the_brevity_reminder(self):
+        """The bubble-count fix's upstream half: ask the model for 1-3."""
+        prompt = PB.channel_prompt(
+            {PB.EXTRA_KEY: CHANNELS}, chat_id=GROUP, is_group=True
+        )
+        assert PB._BREVITY_REMINDER in prompt
+
+    def test_an_unbound_channel_gets_no_reminder_either(self):
+        """The reminder rides the bound frame — it is not a separate, always-on
+        addition (that would break the "no binding, no frame" contract the
+        tests around this one pin)."""
+        assert PB.channel_prompt(
+            {PB.EXTRA_KEY: CHANNELS}, chat_id=999999, is_group=True
+        ) is None
 
     def test_it_is_byte_stable_within_a_day(self):
         """``channel_binding``'s cache contract: ephemeral text may vary

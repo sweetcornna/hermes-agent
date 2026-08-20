@@ -5,10 +5,13 @@ The installer does three things and refuses to do a fourth:
 1. **Copies** ``scripts/corlinman_jobs_lib.py`` verbatim into
    ``$HERMES_HOME/scripts/`` — hermes only runs cron scripts that resolve
    inside that directory (``cron/scheduler.py::_run_job_script``).
-2. **Generates** one small entry script per job that needs one: an import of
-   that library plus a single call to the matching ``main_*`` with the job's
-   parameter bag baked in as literals. The generated text is a pure function
-   of :mod:`plugins.corlinman_jobs.specs`, so re-running the installer either
+2. **Generates** one small entry script per job that needs one: normally an
+   import of that library plus a single call to the matching ``main_*`` with
+   the job's parameter bag baked in as literals. ``persona.decay`` is the
+   narrow exception: its generated script invokes Grantley's supported CLI
+   through ``runpy`` and resolves that deployed plugin at runtime from
+   ``HERMES_HOME``. The generated text is a pure function of
+   :mod:`plugins.corlinman_jobs.specs`, so re-running the installer either
    produces byte-identical files or a diff someone asked for.
 3. **Creates** each job through ``cron.jobs.create_job`` and immediately
    pauses it.
@@ -53,7 +56,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from . import preflight
 from .preflight import Check
-from .specs import ALL_SPECS, MONITOR_NAMES, PERSONA_ID, JobSpec
+from .specs import ALL_SPECS, MONITOR_NAMES, PERSONA_ID, SUPPLEMENTAL_SPECS, JobSpec
 
 #: The shared job-side library, copied verbatim.
 LIB_FILENAME = "corlinman_jobs_lib.py"
@@ -140,20 +143,14 @@ def manifest_path() -> Path:
 
 
 def grantley_decay_script() -> Path:
-    """Absolute path to ``grantley_job.py``, deployed copy preferred.
+    """Expected runtime location of Grantley's cron entry point.
 
-    ``persona.decay`` runs plugins/grantley's decay in place rather than
-    copying it: that script resolves its package by walking up from its own
-    ``__file__``, so a copy in ``$HERMES_HOME/scripts/`` would import
-    nothing. The deployed copy under ``$HERMES_HOME/plugins/grantley/`` is
-    preferred because that is the one ``plugins/memory`` actually loads as
-    the memory provider — running decay against the repo copy while the
-    provider serves the deployed one would decay a different database.
+    Generated scripts do not bake this path: resolving it here is for
+    diagnostics and tests only. At execution time ``persona.decay`` uses the
+    active ``HERMES_HOME`` so an upgrade cannot retain a developer checkout
+    path or mutate a retired database.
     """
-    deployed = hermes_home() / "plugins" / "grantley" / "scripts" / "grantley_job.py"
-    if deployed.is_file():
-        return deployed
-    return repo_root() / "plugins" / "grantley" / "scripts" / "grantley_job.py"
+    return hermes_home() / "plugins" / "grantley" / "scripts" / "grantley_job.py"
 
 
 #: Env var override for the three monitors' shared, read-only data source.
@@ -196,8 +193,10 @@ def script_call(spec: JobSpec) -> tuple[str, dict[str, Any], bool]:
 
     This is the single place the verbatim corlinman parameter bag in
     :mod:`~plugins.corlinman_jobs.specs` is translated into a call into
-    :mod:`corlinman_jobs_lib`. Keeping it in one function means a parameter
-    can only be misread once.
+    :mod:`corlinman_jobs_lib`, or for ``persona.decay`` into the
+    installer-rendered ``runpy`` invocation of Grantley's CLI. The latter
+    resolves the plugin path at runtime from ``HERMES_HOME`` so it cannot
+    retain a local checkout path after deployment.
 
     Raises ``KeyError`` for a job that declares a ``script`` this table does
     not know about — better than generating a script that fails at 07:07.
@@ -261,7 +260,6 @@ def script_call(spec: JobSpec) -> tuple[str, dict[str, Any], bool]:
         return (
             "main_grantley_decay",
             {
-                "script_path": str(grantley_decay_script()),
                 "persona_id": PERSONA_ID,
             },
             # grantley_job.py prints its result payload as JSON on stdout. For
@@ -271,6 +269,18 @@ def script_call(spec: JobSpec) -> tuple[str, dict[str, Any], bool]:
             # the tick silent on success (hermes treats empty stdout as
             # "nothing to report") while a non-zero exit still fails the job
             # loudly and carries the payload into the error report.
+            True,
+        )
+    if spec.name == "persona.life_advance":
+        return (
+            "main_grantley_life_advance",
+            {"persona_id": PERSONA_ID},
+            True,
+        )
+    if spec.name == "persona.life_illustrate":
+        return (
+            "main_grantley_life_illustrate",
+            {"persona_id": PERSONA_ID},
             True,
         )
     if spec.name in MONITOR_NAMES:
@@ -314,9 +324,7 @@ def _py_literal(value: Any, indent: int = 4) -> str:
 def render_entry_script(spec: JobSpec) -> str:
     """The full text of one job's generated entry script."""
     function, kwargs, silent = script_call(spec)
-    args = "".join(
-        f"    {key}={_py_literal(kwargs[key])},\n" for key in sorted(kwargs)
-    )
+    args = "".join(f"    {key}={_py_literal(kwargs[key])},\n" for key in sorted(kwargs))
     header = (
         "#!/usr/bin/env python3\n"
         f'"""{spec.name} — {GENERATED_MARKER}.\n'
@@ -325,16 +333,51 @@ def render_entry_script(spec: JobSpec) -> str:
         "local edits are detected and refused rather than overwritten.\n"
         f'"""\n\n'
     )
-    if not silent:
+    if function in {
+        "main_grantley_decay",
+        "main_grantley_life_advance",
+        "main_grantley_life_illustrate",
+    }:
+        # The deployed plugin owns the database. Resolve it at execution time
+        # so this entry script cannot retain a developer checkout path across
+        # upgrades. The CLI's global --persona flag precedes its subcommand.
+        subcommand = {
+            "main_grantley_decay": "decay",
+            "main_grantley_life_advance": "advance",
+            "main_grantley_life_illustrate": "illustrate",
+        }[function]
         return (
             header
-            + f"from {LIB_FILENAME[:-3]} import {function}\n"
+            + "import contextlib\n"
+            + "import os\n"
+            + "import runpy\n"
+            + "import sys\n\n"
+            + "from pathlib import Path\n\n"
+            + "_home = os.environ.get('HERMES_HOME')\n"
+            + "if not _home:\n"
+            + "    raise SystemExit('HERMES_HOME is required for Grantley maintenance')\n"
+            + "_script_path = str(Path(_home) / 'plugins' / 'grantley' / 'scripts' / 'grantley_job.py')\n"
+            + "if not Path(_script_path).is_file():\n"
+            + "    raise SystemExit(f'Grantley cron entry point is missing: {_script_path}')\n"
+            + "_saved_argv = sys.argv\n"
+            + "sys.argv = [_script_path, '--persona', "
+            + f"{_py_literal(kwargs['persona_id'])}, {_py_literal(subcommand)}]\n"
+            + "try:\n"
+            + "    with contextlib.redirect_stdout(sys.stderr):\n"
+            + "        runpy.run_path(_script_path, run_name='__main__')\n"
+            + "except SystemExit as _exc:\n"
+            + "    raise SystemExit(_exc.code or 0)\n"
+            + "finally:\n"
+            + "    sys.argv = _saved_argv\n"
+        )
+    if not silent:
+        return (
+            header + f"from {LIB_FILENAME[:-3]} import {function}\n"
             "\n"
             f"raise SystemExit({function}(\n{args}))\n"
         )
     return (
-        header
-        + "import contextlib\n"
+        header + "import contextlib\n"
         "import sys\n"
         "\n"
         f"from {LIB_FILENAME[:-3]} import {function}\n"
@@ -536,7 +579,9 @@ def job_actions(specs: Sequence[JobSpec] = ALL_SPECS) -> tuple[JobAction, ...]:
         job = existing.get(spec.name)
         if job is None:
             out.append(
-                JobAction(spec.name, "create", "not present; will be created paused", spec)
+                JobAction(
+                    spec.name, "create", "not present; will be created paused", spec
+                )
             )
             continue
         state = "paused" if not job.get("enabled") else "ENABLED"
@@ -594,13 +639,14 @@ def select_specs(only: Optional[Sequence[str]] = None) -> tuple[JobSpec, ...]:
     if not only:
         return ALL_SPECS
     wanted = list(only)
-    known = {spec.name: spec for spec in ALL_SPECS}
+    available = (*ALL_SPECS, *SUPPLEMENTAL_SPECS)
+    known = {spec.name: spec for spec in available}
     missing = [name for name in wanted if name not in known]
     if missing:
         raise KeyError(
             f"unknown job(s): {', '.join(missing)}; known: {', '.join(sorted(known))}"
         )
-    return tuple(spec for spec in ALL_SPECS if spec.name in set(wanted))
+    return tuple(spec for spec in available if spec.name in set(wanted))
 
 
 @dataclass(frozen=True)
@@ -627,7 +673,9 @@ class Plan:
 
     @property
     def would_write(self) -> tuple[FileAction, ...]:
-        return tuple(a for a in self.files if a.action in {"create", "update", "conflict"})
+        return tuple(
+            a for a in self.files if a.action in {"create", "update", "conflict"}
+        )
 
     @property
     def would_create(self) -> tuple[JobAction, ...]:
@@ -818,7 +866,9 @@ def install(
         plan=current,
         ok=not unpaused,
         error=(
-            "created but NOT paused: " + ", ".join(unpaused) + " — pause them by hand now"
+            "created but NOT paused: "
+            + ", ".join(unpaused)
+            + " — pause them by hand now"
             if unpaused
             else ""
         ),
@@ -829,7 +879,9 @@ def install(
     )
 
 
-def _write_manifest(hashes: Mapping[str, str], created: Sequence[tuple[str, str]]) -> None:
+def _write_manifest(
+    hashes: Mapping[str, str], created: Sequence[tuple[str, str]]
+) -> None:
     """Record what we wrote, so the next run can tell our files from edits."""
     previous = read_manifest()
     jobs = previous.get("jobs")
@@ -928,7 +980,9 @@ def corlinman_jobs_command(args: argparse.Namespace) -> int:
             if not result.ok:
                 print(f"install failed: {result.error}", file=sys.stderr)
                 return 1
-            print(f"wrote {len(result.written)} file(s): {', '.join(result.written) or '-'}")
+            print(
+                f"wrote {len(result.written)} file(s): {', '.join(result.written) or '-'}"
+            )
             for name, job_id in result.created:
                 print(f"created (paused) {name} → {job_id}")
             for name in result.skipped:

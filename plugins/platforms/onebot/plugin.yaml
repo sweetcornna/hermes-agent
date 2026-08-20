@@ -113,9 +113,37 @@ optional_env:
     description: "Prefix group replies with @sender (default: true). Only the first chunk is ever prefixed."
     prompt: "@mention the sender in group replies? (true/false)"
     password: false
+  - name: ONEBOT_MAX_BUBBLES_PER_REPLY
+    description: "Maximum [MSG_BREAK] bubbles before the whole reply becomes a merged-forward card when cards are enabled (default 3). The card preserves every bubble as a node. 0 or negative disables this count cap, so bubble count is not evaluated for card routing. With cards disabled or rejected, overflow is merged into the last chat bubble."
+    prompt: "Max chat bubbles per reply"
+    password: false
   - name: ONEBOT_FORWARD_THRESHOLD
-    description: "Fold a reply bubble longer than this many characters into a merged-forward card (default 1000; 0 disables)"
+    description: "When positive, send the WHOLE reply as one merged-forward card when its length exceeds this value or its [MSG_BREAK] bubble count exceeds a positive ONEBOT_MAX_BUBBLES_PER_REPLY (default 1000). The card preserves every bubble as a node. 0 disables cards; the chat fallback merges overflow, as does a non-terminal card rejection."
     prompt: "Merged-forward fold threshold (chars)"
+    password: false
+  - name: ONEBOT_STICKER_PROBABILITY
+    description: >-
+      Chance (0..1, default 0.18) that one turn is OFFERED the persona's own
+      sticker set. This does not decide whether a sticker is sent — it decides
+      whether the "## 可用表情" list is injected into that turn's persona frame
+      at all; the model then chooses a sticker, or none, by writing
+      ``[STICKER:<slug>]`` on its own line. So the visible rate is lower than
+      this number, because the model declines many of the turns where it
+      could. Stickers ride along on the LAST chat bubble and never fire an
+      extra notification, and a long reply folded into a merged-forward card
+      never carries one. 0 disables the feature outright: the menu is never
+      offered, and a marker the model emits anyway is stripped and ignored.
+    prompt: "Sticker offer probability (0-1, default 0.18)"
+    password: false
+  - name: ONEBOT_STICKER_DIR
+    description: >-
+      Directory holding the sticker images named by the catalogue in
+      plugins/platforms/onebot/sticker.py. Defaults to the persona plugin's
+      bundled set, resolved relative to the installed package rather than the
+      working directory (so it lands on /opt/hermes/repo/plugins/grantley/assets/stickers
+      in the deployed tree). Entries whose file is absent are dropped from the
+      offered menu, so a partial directory degrades to the stickers it has.
+    prompt: "Sticker image directory (blank for the bundled set)"
     password: false
   - name: ONEBOT_WAIT_FOR_SEND_ACK
     description: "Wait for the backend's echo-correlated send response so failures are classified and message ids are reported (default: true)"
@@ -124,6 +152,21 @@ optional_env:
   - name: ONEBOT_TOKEN_IN_QUERY
     description: "Also pass the access token as ?access_token= alongside the Authorization header (default: true). Set false for a backend that rejects a token in both places."
     prompt: "Send the token in the query string too? (true/false)"
+    password: false
+  - name: ONEBOT_SUPPRESS_SYSTEM_MESSAGES
+    description: >-
+      Hide hermes' own status/lifecycle messages on QQ (default: true). These
+      are the sends the gateway marks non-conversational — the self-improvement
+      review notice, "Working — N min" heartbeats, gateway-restart and
+      hermes-update notifications, background-process output — which land as
+      ordinary chat bubbles on QQ and break the persona. Every hidden message
+      is still written to the gateway log at info level. Two categories are
+      delivered even when this is on, because silence would cost more than the
+      bubble: the "Update needs your input" prompt (hermes update blocks on the
+      answer) and the "Session database ..." alarm (data is not being
+      persisted). Dangerous-command approval requests are unaffected — they are
+      never marked non-conversational. Set false to see everything.
+    prompt: "Hide hermes system messages on QQ? (true/false, default true)"
     password: false
   - name: ONEBOT_MAX_CONCURRENCY
     description: "Maximum concurrent agent turns for this platform (default 2 — tuned for a 2 vCPU / 2 GB host)"

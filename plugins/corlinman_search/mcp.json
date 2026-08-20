@@ -1,0 +1,29 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "search": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--isolated",
+        "--with",
+        "free-search-mcp>=0.8.0,<1",
+        "python",
+        "${PLUGIN_ROOT}/server.py"
+      ],
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "SEARCH_MCP_CACHE_DIR": "${PLUGIN_DATA}/cache",
+        "SEARCH_MCP_CACHE_MAX_MB": "64",
+        "SEARCH_MCP_FETCH_STRATEGY": "http",
+        "SEARCH_MCP_REQUEST_TIMEOUT": "8",
+        "SEARCH_MCP_RESCUE_TIMEOUT": "6",
+        "SEARCH_MCP_RATE_LIMIT_PER_MINUTE": "30",
+        "SEARCH_MCP_ALLOW_PRIVATE_HOSTS": "false",
+        "SEARCH_MCP_DOWNLOAD_ENABLED": "false",
+        "SEARCH_MCP_LOG_LEVEL": "WARNING"
+      }
+    }
+  }
+}

@@ -240,7 +240,8 @@ form in `extra` is re-read live, like every other key here.
 | Key | Default | Meaning |
 |---|---|---|
 | `ONEBOT_REPLY_WITH_MENTION` | `true` | Prefix group replies with `@sender`. Only the **first** chunk is ever prefixed — repeating it would ping the user once per chunk, which QQ renders as spam. |
-| `ONEBOT_FORWARD_THRESHOLD` | `1000` | Fold a reply bubble longer than this into a merged-forward ("聊天记录") card. `0` disables. In groups a short lead line carrying the @mention is posted first, because a card cannot carry one. |
+| `ONEBOT_FORWARD_THRESHOLD` | `1000` | When positive, fold the WHOLE reply into a merged-forward ("聊天记录") card if its total length exceeds this value or its `[MSG_BREAK]` count exceeds a positive `ONEBOT_MAX_BUBBLES_PER_REPLY`. Each bubble remains a card node. `0` disables cards. In groups a short lead line carries the @mention because a card cannot carry one. |
+| `ONEBOT_MAX_BUBBLES_PER_REPLY` | `3` | Maximum `[MSG_BREAK]` bubbles before a card when cards are enabled. `0`/negative disables the count cap, so count alone cannot route. With cards disabled or a non-terminal card rejection, overflow is merged into the last chat bubble. |
 | `ONEBOT_WAIT_FOR_SEND_ACK` | `true` | Wait for the echo-correlated response so failures are classified and message ids reported. A backend that never echoes is treated as an optimistic success rather than a false failure. |
 | `ONEBOT_TYPING_INDICATOR` | `true` | NapCat's "对方正在输入…" in DMs. QQ groups never render one, so nothing is sent there. |
 | `ONEBOT_MAX_CONCURRENCY` | `2` | Concurrent agent turns. Tuned for a 2 vCPU / 2 GB host; the upstream implementation used 8. |

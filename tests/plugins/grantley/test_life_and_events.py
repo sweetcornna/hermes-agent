@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
 import ast
 import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -62,6 +64,63 @@ def test_unknown_persona_falls_back_to_generic_not_grantleys_world():
     assert "艾尔戈" not in lib["companion"]
 
 
+def _block_hermes_time_import(monkeypatch):
+    """Exercise life.py's deployed-plugin fallback, not the repo helper."""
+    original_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "hermes_time":
+            raise ImportError("simulated deployed plugin without hermes_time")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+
+
+def test_now_dt_deployed_fallback_prefers_hermes_timezone_env(monkeypatch):
+    from hermes_cli import config as config_module
+
+    _block_hermes_time_import(monkeypatch)
+    monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Tokyo")
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: pytest.fail("config loader must not run when HERMES_TIMEZONE is set"),
+    )
+
+    assert life.now_dt().tzinfo == ZoneInfo("Asia/Tokyo")
+
+
+def test_now_dt_deployed_fallback_uses_public_readonly_loader(monkeypatch):
+    from hermes_cli import config as config_module
+
+    _block_hermes_time_import(monkeypatch)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"timezone": "Asia/Shanghai"},
+    )
+
+    assert life.now_dt().tzinfo == ZoneInfo("Asia/Shanghai")
+
+
+def test_now_dt_deployed_fallback_uses_local_time_when_config_is_unavailable(
+    monkeypatch,
+):
+    from hermes_cli import config as config_module
+
+    _block_hermes_time_import(monkeypatch)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: (_ for _ in ()).throw(OSError("unavailable")),
+    )
+
+    expected_offset = datetime.now(timezone.utc).astimezone().utcoffset()
+    assert life.now_dt().utcoffset() == expected_offset
+
+
 def test_seed_slug_guard_blocks_traversal():
     assert not life.valid_persona_slug("../../etc/passwd")
     assert not life.valid_persona_slug("grantley/../x")
@@ -110,7 +169,9 @@ def test_a_different_day_draws_a_different_beat():
             sorted(
                 life.draw_life_beat(
                     lib,
-                    life.daily_rng("grantley", datetime(2026, 8, d, tzinfo=timezone.utc)),
+                    life.daily_rng(
+                        "grantley", datetime(2026, 8, d, tzinfo=timezone.utc)
+                    ),
                 ).items(),
                 key=lambda kv: kv[0],
             )
@@ -162,7 +223,9 @@ def test_grantley_can_actually_leave_the_academy():
     data and this set would be ``{"at_academy"}`` forever.
     """
     lib = life.resolve_seed_library("grantley")
-    states = {life.draw_life_beat(lib, random.Random(s))["life_state"] for s in range(60)}
+    states = {
+        life.draw_life_beat(lib, random.Random(s))["life_state"] for s in range(60)
+    }
     assert states == {"at_academy", "on_mission", "traveling"}
 
 
@@ -175,7 +238,9 @@ def test_solo_companion_yields_an_empty_companion_list():
 def test_both_categories_are_reachable_when_both_pools_exist():
     """D18: the category draw is uniform, not a strict priority walk."""
     lib = {"travel_destination": ["海港小镇"], "mission_scenario": ["替朋友跑腿"]}
-    states = {life.draw_life_beat(lib, random.Random(s))["life_state"] for s in range(30)}
+    states = {
+        life.draw_life_beat(lib, random.Random(s))["life_state"] for s in range(30)
+    }
     assert states == {"traveling", "on_mission"}
 
 
@@ -215,23 +280,21 @@ def test_empty_seed_library_degrades_to_the_generic_default():
 #: Import roots that would give a module the ability to reach a model.
 #: ``agent`` and ``model_tools`` are hermes' own inference surfaces; the rest
 #: are provider SDKs and the HTTP clients one would reach a model through.
-_MODEL_CAPABLE_ROOTS = frozenset(
-    {
-        "agent",
-        "anthropic",
-        "cli",
-        "google",
-        "httpx",
-        "litellm",
-        "mistralai",
-        "model_tools",
-        "openai",
-        "providers",
-        "requests",
-        "run_agent",
-        "urllib",
-    }
-)
+_MODEL_CAPABLE_ROOTS = frozenset({
+    "agent",
+    "anthropic",
+    "cli",
+    "google",
+    "httpx",
+    "litellm",
+    "mistralai",
+    "model_tools",
+    "openai",
+    "providers",
+    "requests",
+    "run_agent",
+    "urllib",
+})
 
 
 def _absolute_import_roots(path: Path) -> set[str]:
@@ -288,7 +351,9 @@ def test_life_advance_makes_no_llm_call(store):
     # The whole reachable graph, not just jobs.py itself.
     assert seen == {"jobs.py", "life.py", "decay.py", "store.py", "state.py"}
     offenders = reachable_roots & _MODEL_CAPABLE_ROOTS
-    assert not offenders, f"life-advance graph can reach a model via {sorted(offenders)}"
+    assert not offenders, (
+        f"life-advance graph can reach a model via {sorted(offenders)}"
+    )
 
     result = run_life_advance(store, "grantley")
     assert result["ok"] is True
@@ -348,9 +413,12 @@ def test_change_scene_for_generic_staleness():
 def test_signals_are_total_on_garbage_input():
     assert life.compute_life_signals(None, life.now_dt()) == {}
     assert life.compute_life_signals({"current": "nope"}, life.now_dt()) == {}
-    assert life.compute_life_signals(
-        {"current": {"since": "not-a-date"}, "history": "nope"}, life.now_dt()
-    ) == {}
+    assert (
+        life.compute_life_signals(
+            {"current": {"since": "not-a-date"}, "history": "nope"}, life.now_dt()
+        )
+        == {}
+    )
 
 
 # ── append-only event log + decay ──────────────────────────────────────────
@@ -375,7 +443,9 @@ def test_future_timestamps_never_exceed_weight_one():
 
 def test_retrieval_ranks_recent_over_stale(store):
     now = 1_000_000.0
-    store.append_event("grantley", "很久以前的事", salience=1.0, created_at=now - 60 * DAY)
+    store.append_event(
+        "grantley", "很久以前的事", salience=1.0, created_at=now - 60 * DAY
+    )
     store.append_event("grantley", "昨天的事", salience=1.0, created_at=now - 1 * DAY)
     out = store.retrieve("grantley", now=now, top_n=2)
     assert [e.text for e in out] == ["昨天的事", "很久以前的事"]
@@ -386,7 +456,10 @@ def test_high_salience_can_outrank_recency(store):
     now = 1_000_000.0
     store.append_event("grantley", "琐事", salience=0.1, created_at=now)
     store.append_event(
-        "grantley", "重要的事", salience=1.0, created_at=now - DEFAULT_HALF_LIFE_DAYS * DAY
+        "grantley",
+        "重要的事",
+        salience=1.0,
+        created_at=now - DEFAULT_HALF_LIFE_DAYS * DAY,
     )
     out = store.retrieve("grantley", now=now, top_n=2)
     assert out[0].text == "重要的事"
@@ -403,7 +476,9 @@ def test_events_below_min_weight_are_dropped(store):
 def test_changing_half_life_changes_recall_without_touching_rows(store):
     now = 1_000_000.0
     store.append_event("grantley", "一个月前", salience=1.0, created_at=now - 30 * DAY)
-    assert store.retrieve("grantley", now=now, half_life_days=1.0, min_weight=0.05) == []
+    assert (
+        store.retrieve("grantley", now=now, half_life_days=1.0, min_weight=0.05) == []
+    )
     assert len(store.retrieve("grantley", now=now, half_life_days=365.0)) == 1
     assert store.count_events("grantley") == 1
 
@@ -478,6 +553,217 @@ def test_repeating_an_identical_beat_does_not_pad_history(store):
     history = store.get_state("grantley").state_json["life"]["history"]
     # Only the initial default→beat transition, not a second identical one.
     assert len(history) == 1
+
+
+# ── run_life_advance idempotency (A3 G4 duplicate-write fix) ───────────────
+
+
+def test_same_day_twice_writes_only_one_event(store):
+    """Two calls within the same configured-tz calendar day: only the first
+    actually writes; the second is a reported skip, not a silent no-op."""
+    morning = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
+    evening = datetime(2026, 8, 18, 23, 55, tzinfo=timezone.utc)
+
+    first = run_life_advance(store, "grantley", when=morning)
+    second = run_life_advance(store, "grantley", when=evening)
+
+    assert first["ok"] is True
+    assert first["skipped"] is False
+    assert first["already_advanced"] is False
+
+    assert second["ok"] is True
+    assert second["skipped"] is True
+    assert second["already_advanced"] is True
+    # Same deterministic (persona_id, day) seed either way.
+    assert second["beat"] == first["beat"]
+
+    assert store.count_events("grantley") == 1
+
+
+def test_crossing_a_calendar_day_writes_a_second_event(store):
+    """The next configured-tz calendar day is a fresh write, not a skip."""
+    day1 = datetime(2026, 8, 18, 23, 55, tzinfo=timezone.utc)
+    day2 = datetime(2026, 8, 19, 0, 5, tzinfo=timezone.utc)
+
+    first = run_life_advance(store, "grantley", when=day1)
+    second = run_life_advance(store, "grantley", when=day2)
+
+    assert first["skipped"] is False
+    assert second["skipped"] is False
+    assert store.count_events("grantley") == 2
+
+    events = store.recent_events("grantley")
+    assert len({e.id for e in events}) == 2
+    assert {e.kind for e in events} == {"auto_beat"}
+
+
+def test_idempotency_boundary_is_midnight_in_the_moments_own_tz_not_hosts(store):
+    """The day boundary follows *moment*'s own tzinfo — i.e. whatever
+    ``life.now_dt()`` resolves the *configured* timezone to be — never a
+    re-derivation in the host's local zone.
+
+    20:00 and 23:55 Asia/Shanghai on 2026-08-18 are the same Shanghai
+    calendar day, but converted into Asia/Tokyo (UTC+9 vs Shanghai's
+    UTC+8) they straddle midnight into two different Tokyo days. A host
+    running in Tokyo time that (wrongly) re-derived "today" from its own
+    local clock instead of trusting the datetime's own tzinfo would see
+    these as two different days and duplicate the write.
+    """
+    moment_a = datetime(2026, 8, 18, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    moment_b = datetime(2026, 8, 18, 23, 55, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    # Sanity: these really do straddle Tokyo's midnight while sharing one
+    # Shanghai calendar day — otherwise this test would not exercise the
+    # timezone-boundary case it claims to.
+    assert moment_a.date() == moment_b.date()
+    tokyo = ZoneInfo("Asia/Tokyo")
+    assert moment_a.astimezone(tokyo).date() != moment_b.astimezone(tokyo).date()
+
+    first = run_life_advance(store, "grantley", when=moment_a)
+    second = run_life_advance(store, "grantley", when=moment_b)
+
+    assert first["skipped"] is False
+    assert second["skipped"] is True
+    assert store.count_events("grantley") == 1
+
+
+def test_default_when_takes_the_day_from_life_now_dt(store, monkeypatch):
+    """With no explicit ``when``, the day boundary (and the beat seed) come
+    from :func:`life.now_dt` — Hermes's configured-timezone clock — and
+    nothing else. Patching ``life.now_dt`` alone is enough to control both
+    calls, which is the whole point: there is no second, independent clock
+    read hiding anywhere in the idempotency check.
+    """
+    moments = iter([
+        datetime(2026, 8, 18, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        datetime(2026, 8, 18, 22, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    ])
+    monkeypatch.setattr(life, "now_dt", lambda: next(moments))
+
+    first = run_life_advance(store, "grantley")
+    second = run_life_advance(store, "grantley")
+
+    assert first["skipped"] is False
+    assert second["skipped"] is True
+    assert store.count_events("grantley") == 1
+
+
+def test_skip_logs_an_info_line_not_a_silent_no_op(store, caplog):
+    day = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    run_life_advance(store, "grantley", when=day)
+
+    with caplog.at_level("INFO", logger="plugins.grantley.jobs"):
+        result = run_life_advance(store, "grantley", when=day)
+
+    assert result["skipped"] is True
+    assert any(
+        "grantley" in record.getMessage() and "skip" in record.getMessage().lower()
+        for record in caplog.records
+    )
+
+
+def test_skip_does_not_touch_diary_or_recent_topics(store):
+    """A skipped call is a true no-op on state, not just on the event log."""
+    day = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    run_life_advance(store, "grantley", when=day)
+    before = store.get_state("grantley")
+
+    result = run_life_advance(store, "grantley", when=day)
+    after = store.get_state("grantley")
+
+    assert result["skipped"] is True
+    assert before.state_json["diary"] == after.state_json["diary"]
+    assert before.recent_topics == after.recent_topics
+    assert before.state_json["life"] == after.state_json["life"]
+
+
+def test_life_advance_rolls_back_state_when_event_append_fails(store):
+    """The daily state and idempotency event commit together or not at all."""
+
+    def deny_life_event_insert(action, table, *_args):
+        if action == sqlite3.SQLITE_INSERT and table == "life_events":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    store._conn.set_authorizer(deny_life_event_insert)
+    with pytest.raises(sqlite3.DatabaseError):
+        run_life_advance(
+            store,
+            "grantley",
+            when=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        )
+    store._conn.set_authorizer(None)
+
+    assert store.get_state("grantley") is None
+    assert store.count_events("grantley") == 0
+
+
+# ── store-level idempotency + cleanup primitives ────────────────────────────
+
+
+def test_has_event_in_range_scopes_by_persona_kind_and_bounds(store):
+    store.append_event("grantley", "今日节拍", kind="auto_beat", created_at=1_000.0)
+    store.append_event("grantley", "一条日记", kind="diary", created_at=1_000.0)
+
+    assert store.has_event_in_range("grantley", 0.0, 2_000.0, kind="auto_beat") is True
+    assert (
+        store.has_event_in_range("grantley", 0.0, 2_000.0, kind="state_change") is False
+    )
+    assert (
+        store.has_event_in_range("grantley", 2_000.0, 3_000.0, kind="auto_beat")
+        is False
+    )
+    assert store.has_event_in_range("lycaon", 0.0, 2_000.0, kind="auto_beat") is False
+    # No kind filter: matches any kind in range.
+    assert store.has_event_in_range("grantley", 0.0, 2_000.0) is True
+
+
+def test_dedupe_daily_events_keeps_the_earliest_row_per_day_dry_run_first(store):
+    """Simulates the exact production scenario: a pre-fix double-run left
+    two identical same-day rows. ``dedupe_daily_events`` reports the plan
+    without touching anything until ``dry_run=False`` is passed explicitly,
+    and then keeps the earliest row of each duplicate group."""
+    tz = timezone.utc
+    day1 = datetime(2026, 8, 18, tzinfo=tz).timestamp()
+    day2 = datetime(2026, 8, 19, tzinfo=tz).timestamp()
+
+    id_first = store.append_event(
+        "grantley", "第一次写入", kind="auto_beat", created_at=day1 + 100
+    )
+    id_dup = store.append_event(
+        "grantley", "重复写入", kind="auto_beat", created_at=day1 + 200
+    )
+    id_other_day = store.append_event(
+        "grantley", "第二天", kind="auto_beat", created_at=day2 + 100
+    )
+
+    dry = store.dedupe_daily_events(tz=tz, dry_run=True)
+    assert dry["duplicate_groups"] == 1
+    assert dry["rows_would_delete"] == 1
+    assert dry["rows_deleted"] == 0
+    # dry_run must not touch the table.
+    assert store.count_events("grantley") == 3
+
+    applied = store.dedupe_daily_events(tz=tz, dry_run=False)
+    assert applied["rows_deleted"] == 1
+    assert applied["deleted_ids"] == [id_dup]
+
+    remaining = {e.id for e in store.recent_events("grantley")}
+    assert remaining == {id_first, id_other_day}
+
+
+def test_dedupe_daily_events_defaults_to_dry_run(store):
+    """Calling with no ``dry_run`` argument must never delete anything —
+    an operator invoking this without reading the signature first should
+    get a safe preview, not a destructive default."""
+    day = datetime(2026, 8, 18, tzinfo=timezone.utc).timestamp()
+    store.append_event("grantley", "a", kind="auto_beat", created_at=day)
+    store.append_event("grantley", "b", kind="auto_beat", created_at=day + 10)
+
+    report = store.dedupe_daily_events(tz=timezone.utc)
+    assert report["dry_run"] is True
+    assert report["rows_deleted"] == 0
+    assert store.count_events("grantley") == 2
 
 
 def test_decay_job_advances_both_clocks(store):
@@ -556,14 +842,18 @@ def test_channel_prompt_names_the_channel_owner():
     binding = PersonaChannelBinding(
         chat_id="183287894", channel_owner_id="2104743984", is_group=True
     )
-    text = resolve_channel_prompt(binding, on=datetime(2026, 8, 18, tzinfo=timezone.utc))
+    text = resolve_channel_prompt(
+        binding, on=datetime(2026, 8, 18, tzinfo=timezone.utc)
+    )
     assert "2104743984" in text
     assert "群聊" in text
 
 
 def test_dm_binding_reads_as_a_direct_message():
     binding = PersonaChannelBinding(chat_id="536132102", is_group=False)
-    text = resolve_channel_prompt(binding, on=datetime(2026, 8, 18, tzinfo=timezone.utc))
+    text = resolve_channel_prompt(
+        binding, on=datetime(2026, 8, 18, tzinfo=timezone.utc)
+    )
     assert "私聊" in text
     assert "群主" not in text
 
@@ -578,13 +868,11 @@ def test_snapshot_contains_no_decaying_value():
 
 
 def test_bindings_from_config_parses_and_skips_junk():
-    parsed = bindings_from_config(
-        {
-            "183287894": {"channel_owner": "2104743984", "group": True, "name": "群"},
-            "536132102": {"group": False},
-            "bad": "not-a-mapping",
-        }
-    )
+    parsed = bindings_from_config({
+        "183287894": {"channel_owner": "2104743984", "group": True, "name": "群"},
+        "536132102": {"group": False},
+        "bad": "not-a-mapping",
+    })
     assert parsed["183287894"].channel_owner_id == "2104743984"
     assert parsed["183287894"].is_group is True
     assert parsed["536132102"].channel_owner_id is None

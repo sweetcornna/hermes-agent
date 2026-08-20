@@ -41,6 +41,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, tzinfo
 from typing import Any, Iterable, Sequence
 
 from .state import PersonaState, dedup_cap
@@ -157,13 +158,10 @@ class GrantleyStore:
         existing = self.get_state(persona_id)
         return existing if existing is not None else PersonaState(persona_id=persona_id)
 
-    def upsert_state(self, state: PersonaState, now_ms: int | None = None) -> PersonaState:
-        """Write *state*, dedup+capping topics and stamping the clocks.
-
-        ``updated_at_ms == 0`` means "stamp now". ``topics_aged_at_ms == 0``
-        initialises the topic clock to the same instant, so a brand-new row
-        starts both clocks together instead of aging from the epoch.
-        """
+    def _upsert_state_uncommitted(
+        self, state: PersonaState, now_ms: int | None = None
+    ) -> PersonaState:
+        """Write *state* without committing and return the normalized row."""
         stamp = int(time.time() * 1000) if now_ms is None else int(now_ms)
         topics = dedup_cap(list(state.recent_topics))
         updated = state.updated_at_ms or stamp
@@ -190,7 +188,6 @@ class GrantleyStore:
                 json.dumps(state.state_json, ensure_ascii=False),
             ),
         )
-        self._conn.commit()
         return PersonaState(
             persona_id=state.persona_id,
             mood=state.mood,
@@ -200,6 +197,19 @@ class GrantleyStore:
             topics_aged_at_ms=aged,
             state_json=state.state_json,
         )
+
+    def upsert_state(
+        self, state: PersonaState, now_ms: int | None = None
+    ) -> PersonaState:
+        """Write *state*, dedup+capping topics and stamping the clocks.
+
+        ``updated_at_ms == 0`` means "stamp now". ``topics_aged_at_ms == 0``
+        initialises the topic clock to the same instant, so a brand-new row
+        starts both clocks together instead of aging from the epoch.
+        """
+        saved = self._upsert_state_uncommitted(state, now_ms=now_ms)
+        self._conn.commit()
+        return saved
 
     def list_personas(self) -> list[str]:
         rows = self._conn.execute(
@@ -230,6 +240,52 @@ class GrantleyStore:
         )
         self._conn.commit()
         return int(cur.lastrowid or 0)
+
+    def record_life_advance(
+        self,
+        state: PersonaState,
+        *,
+        day_start_ts: float,
+        day_end_ts: float,
+        text: str,
+        salience: float,
+        kind: str,
+        created_at: float,
+    ) -> tuple[PersonaState, bool]:
+        """Atomically persist a daily life advance unless that day exists.
+
+        The duplicate check runs inside the same SQLite transaction as both
+        the state update and the event append. This preserves the event log
+        as the idempotency source of truth and rolls the state back if the
+        append fails.
+        """
+        body = str(text).strip()
+        if not body:
+            raise ValueError("life event text cannot be empty")
+
+        with self._conn:
+            exists = self._conn.execute(
+                "SELECT 1 FROM life_events "
+                "WHERE persona_id = ? AND created_at >= ? AND created_at < ? "
+                "AND kind = ? LIMIT 1",
+                (state.persona_id, float(day_start_ts), float(day_end_ts), str(kind)),
+            ).fetchone()
+            if exists is not None:
+                return state, False
+
+            saved = self._upsert_state_uncommitted(state)
+            self._conn.execute(
+                "INSERT INTO life_events (persona_id, created_at, salience, text, kind) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    state.persona_id,
+                    float(created_at),
+                    max(0.0, float(salience)),
+                    body,
+                    str(kind),
+                ),
+            )
+        return saved, True
 
     def append_events(
         self, persona_id: str, events: Iterable[tuple[str, float, str]]
@@ -334,6 +390,152 @@ class GrantleyStore:
         )
         self._conn.commit()
         return int(cur.rowcount or 0)
+
+    def has_event_in_range(
+        self,
+        persona_id: str,
+        start_ts: float,
+        end_ts: float,
+        *,
+        kind: str | None = None,
+    ) -> bool:
+        """True iff a row exists for *persona_id* with ``created_at`` in
+        ``[start_ts, end_ts)``.
+
+        Powers same-calendar-day idempotency checks
+        (:func:`plugins.grantley.jobs.run_life_advance`) without loading rows
+        into Python. This method is deliberately timezone-agnostic — it only
+        ever compares against the already-stored epoch column — so the
+        caller is the one place that decides what "a day" means (in
+        practice, one calendar day in Hermes's *configured* timezone via
+        :func:`plugins.grantley.life.now_dt`, never the host's local zone).
+        """
+        sql = (
+            "SELECT 1 FROM life_events "
+            "WHERE persona_id = ? AND created_at >= ? AND created_at < ?"
+        )
+        params: list[Any] = [persona_id, float(start_ts), float(end_ts)]
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " LIMIT 1"
+        return self._conn.execute(sql, params).fetchone() is not None
+
+    def event_in_range(
+        self,
+        persona_id: str,
+        start_ts: float,
+        end_ts: float,
+        *,
+        kind: str | None = None,
+    ) -> LifeEvent | None:
+        """Return the earliest event in ``[start_ts, end_ts)``, if any.
+
+        The date boundary deliberately remains a caller concern. The daily
+        illustration job uses the same configured-timezone epoch bounds as
+        ``run_life_advance`` and needs the event id for its idempotency
+        sidecar, not merely a yes/no answer.
+        """
+        sql = (
+            "SELECT * FROM life_events "
+            "WHERE persona_id = ? AND created_at >= ? AND created_at < ?"
+        )
+        params: list[Any] = [persona_id, float(start_ts), float(end_ts)]
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " ORDER BY created_at ASC, id ASC LIMIT 1"
+        row = self._conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        return LifeEvent(
+            id=int(row["id"]),
+            persona_id=str(row["persona_id"]),
+            created_at=float(row["created_at"]),
+            salience=float(row["salience"]),
+            text=str(row["text"]),
+            kind=str(row["kind"]),
+        )
+
+    def dedupe_daily_events(
+        self,
+        *,
+        persona_id: str | None = None,
+        kind: str = "auto_beat",
+        tz: tzinfo,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Delete duplicate *kind* rows sharing a calendar day, keeping the
+        earliest one in each group.
+
+        **Cleanup for rows written before this idempotency guard existed** —
+        :func:`~plugins.grantley.jobs.run_life_advance` itself never calls
+        this; once :meth:`has_event_in_range` is wired in, a duplicate row
+        cannot be created going forward. This is an operator-triggered,
+        one-off repair for whatever a pre-fix double-run already wrote.
+
+        Groups every row of *kind* (optionally narrowed to one
+        *persona_id*) by ``(persona_id, calendar day in tz)``. Within each
+        group of more than one row, the row with the smallest
+        ``(created_at, id)`` — i.e. the first one actually written that day
+        — is kept; every later row in the same group is deleted. *tz* is
+        required and must be passed explicitly by the caller (typically
+        ``life.now_dt().tzinfo``, the configured zone) — this method takes
+        no implicit clock.
+
+        Defaults to ``dry_run=True``: it reports the plan (rows scanned,
+        duplicate groups found, rows that *would* be deleted and their ids)
+        without touching the table. Pass ``dry_run=False`` to actually
+        delete. Never called automatically by any job in this module.
+        """
+        sql = "SELECT id, persona_id, created_at FROM life_events WHERE kind = ?"
+        params: list[Any] = [kind]
+        if persona_id is not None:
+            sql += " AND persona_id = ?"
+            params.append(persona_id)
+        sql += " ORDER BY persona_id ASC, created_at ASC, id ASC"
+        rows = self._conn.execute(sql, params).fetchall()
+
+        groups: dict[tuple[str, str], list[int]] = {}
+        for row in rows:
+            day_key = (
+                datetime
+                .fromtimestamp(float(row["created_at"]), tz=tz)
+                .date()
+                .isoformat()
+            )
+            groups.setdefault((str(row["persona_id"]), day_key), []).append(
+                int(row["id"])
+            )
+
+        kept_ids: list[int] = []
+        delete_ids: list[int] = []
+        duplicate_groups = 0
+        for ids in groups.values():
+            kept_ids.append(ids[0])
+            if len(ids) > 1:
+                duplicate_groups += 1
+                delete_ids.extend(ids[1:])
+
+        if delete_ids and not dry_run:
+            self._conn.executemany(
+                "DELETE FROM life_events WHERE id = ?", [(i,) for i in delete_ids]
+            )
+            self._conn.commit()
+
+        return {
+            "ok": True,
+            "kind": kind,
+            "persona_id": persona_id,
+            "dry_run": dry_run,
+            "rows_scanned": len(rows),
+            "groups_scanned": len(groups),
+            "duplicate_groups": duplicate_groups,
+            "rows_kept": len(kept_ids),
+            "rows_deleted": 0 if dry_run else len(delete_ids),
+            "rows_would_delete": len(delete_ids) if dry_run else 0,
+            "deleted_ids": [] if dry_run else delete_ids,
+        }
 
 
 def _decode_json_list(raw: Any) -> list[str]:

@@ -25,10 +25,13 @@ Callers who genuinely want fresh randomness (the model-facing
 from __future__ import annotations
 
 import hashlib
+import os
 import random
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 #: Bump when the on-``state_json`` layout changes incompatibly.
 SCHEMA_VERSION: int = 1
@@ -153,8 +156,57 @@ EVENT_SEED_POOLS: dict[str, dict[str, str]] = {
 
 
 def now_dt() -> datetime:
-    """Local-time-aware "now" — the anchor for :func:`compute_life_signals`."""
-    return datetime.now(timezone.utc).astimezone()
+    """Wall-clock "now" in Hermes's *configured* timezone.
+
+    The anchor for :func:`compute_life_signals` and, more importantly, for
+    every calendar-day boundary this module derives from it: the daily
+    beat's deterministic seed (:func:`daily_rng`), the per-channel frozen
+    snapshot's date (:mod:`plugins.grantley.channel_binding`), and the
+    ``since`` / ``ts`` stamps written into the life document and diary.
+
+    Delegates to :mod:`hermes_time`, the repo's single source of truth for
+    "what timezone is Hermes configured for" — ``HERMES_TIMEZONE``, then
+    the ``timezone:`` key in ``config.yaml`` — the exact resolution order
+    ``cron/scheduler.py`` already relies on. Using the host's local zone
+    instead (the previous behaviour here) is wrong whenever the host and
+    the configured zone differ, which they do in production
+    (host ``Asia/Tokyo`` vs. configured ``Asia/Shanghai``): a day would
+    turn over an hour early for every date-boundary decision in this
+    module.
+
+    A deployed plugin is intentionally independent of a checkout path, so
+    when ``hermes_time`` is unavailable it reads ``HERMES_TIMEZONE`` and then
+    Hermes's public read-only config loader. Only a malformed or fully absent
+    runtime configuration falls back to the host zone.
+    """
+    try:
+        import hermes_time
+    except ImportError:
+        repo_root = str(Path(__file__).resolve().parent.parent.parent)
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
+        try:
+            import hermes_time
+        except ImportError:
+            tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
+            if not tz_name:
+                try:
+                    from hermes_cli.config import load_config_readonly
+
+                    config = load_config_readonly()
+                    candidate = (
+                        config.get("timezone") if isinstance(config, dict) else None
+                    )
+                    tz_name = candidate.strip() if isinstance(candidate, str) else ""
+                except Exception:
+                    pass
+            if tz_name:
+                try:
+                    return datetime.now(ZoneInfo(tz_name))
+                except (KeyError, ValueError):
+                    pass
+            return datetime.now(timezone.utc).astimezone()
+    return hermes_time.now()
 
 
 def now_iso(when: datetime | None = None) -> str:

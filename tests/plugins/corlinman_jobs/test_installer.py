@@ -11,8 +11,11 @@ The properties under test are the ones an operator's safety depends on:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import sqlite3
+import sys
 from dataclasses import replace
 
 import pytest
@@ -23,7 +26,7 @@ from plugins.corlinman_jobs.specs import ALL_SPECS, JOB_SPECS, TIMEZONE, spec_by
 
 #: Jobs that need no QQ session at all — the subset installable on a bare
 #: profile with none of onebot/qzone_state/qq_group_history configured.
-#: Scoped to the original nine scheduler jobs on purpose: qunjlu (a
+#: Scoped to all scheduler JobSpecs on purpose: qunjlu (a
 #: monitor) needs no onebot connectivity (deliver=local) but does need
 #: qq_group_history, so it does not belong in "needs nothing QQ-shaped".
 NON_QQ = tuple(s.name for s in JOB_SPECS if not installer.needs_qq(s))
@@ -66,7 +69,7 @@ def _make_qq_history_db(path):
 @pytest.fixture
 def ready(monkeypatch, tmp_path):
     """A profile where every preflight check passes, QQ included — all
-    twelve jobs (nine scheduler jobs + three monitors) installable."""
+    twelve D1 jobs (nine scheduler jobs + three monitors) installable."""
     root = tmp_path / "qzone-state"
     (root / "qzone_post_log").mkdir(parents=True)
     (root / "qzone_post_log" / "grantley.json").write_text(
@@ -128,6 +131,9 @@ class TestGeneratedScripts:
                 continue
             text = installer.render_entry_script(spec)
             function, _, _ = installer.script_call(spec)
+            if function == "main_grantley_decay":
+                assert "runpy.run_path(_script_path, run_name='__main__')" in text
+                continue
             assert f"from corlinman_jobs_lib import {function}" in text
 
     def test_parameters_are_baked_in(self):
@@ -161,34 +167,75 @@ class TestGeneratedScripts:
         assert (installer.repo_root() / "plugins" / "qzone" / "state.py").is_file()
         assert kwargs["repo_root"] == str(installer.repo_root())
 
-    def test_decay_runs_grantleys_own_script_and_stays_silent(self):
-        """An hourly maintenance tick has no product; stdout must stay empty."""
-        function, kwargs, silent = installer.script_call(spec_by_name("persona.decay"))
-        assert function == "main_grantley_decay"
-        assert kwargs["script_path"].endswith("grantley_job.py")
+    @pytest.mark.parametrize("exit_code", [0, 7])
+    @pytest.mark.parametrize(
+        ("name", "function", "subcommand"),
+        [
+            ("persona.decay", "main_grantley_decay", "decay"),
+            ("persona.life_advance", "main_grantley_life_advance", "advance"),
+            (
+                "persona.life_illustrate",
+                "main_grantley_life_illustrate",
+                "illustrate",
+            ),
+        ],
+    )
+    def test_grantley_maintenance_wrapper_uses_runtime_path_and_restores_argv(
+        self, monkeypatch, tmp_path, exit_code, name, function, subcommand
+    ):
+        """Both maintenance jobs resolve the deployed plugin at execution time."""
+        deployed = tmp_path / "plugins" / "grantley" / "scripts"
+        deployed.mkdir(parents=True)
+        fake_grantley = deployed / "grantley_job.py"
+        fake_grantley.write_text(
+            "import sys\n"
+            "print('argv=' + repr(sys.argv))\n"
+            "print('fake stdout')\n"
+            "print('fake stderr', file=sys.stderr)\n"
+            f"raise SystemExit({exit_code})\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        spec = spec_by_name(name)
+        actual_function, kwargs, silent = installer.script_call(spec)
+        assert actual_function == function
+        assert kwargs["persona_id"] == "grantley"
         assert silent is True
-        text = installer.render_entry_script(spec_by_name("persona.decay"))
-        assert "redirect_stdout(sys.stderr)" in text
+        rendered = installer.render_entry_script(spec)
+        assert str(installer.repo_root()) not in rendered
+        assert "redirect_stdout(sys.stderr)" in rendered
+        before = sys.argv
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with pytest.raises(SystemExit) as excinfo:
+                exec(rendered, {"__name__": "__main__"})
+
+        assert excinfo.value.code == exit_code
+        assert sys.argv is before
+        assert stdout.getvalue() == ""
+        assert (
+            f"argv={[str(fake_grantley), '--persona', 'grantley', subcommand]!r}"
+            in stderr.getvalue()
+        )
+        assert "fake stdout" in stderr.getvalue()
+        assert "fake stderr" in stderr.getvalue()
 
     def test_no_other_script_silences_its_output(self):
         for spec in ALL_SPECS:
             if spec.script and spec.name != "persona.decay":
                 assert installer.script_call(spec)[2] is False
 
-    def test_decay_prefers_a_deployed_grantley_over_the_repo_copy(self, tmp_path):
-        deployed = (
-            installer.hermes_home() / "plugins" / "grantley" / "scripts"
-        )
-        deployed.mkdir(parents=True)
-        (deployed / "grantley_job.py").write_text("# deployed\n", encoding="utf-8")
-        assert installer.grantley_decay_script() == deployed / "grantley_job.py"
-
-    def test_decay_falls_back_to_the_repo_copy(self):
+    def test_decay_diagnostic_path_stays_under_the_active_profile(self):
         resolved = installer.grantley_decay_script()
         assert resolved == (
-            installer.repo_root() / "plugins" / "grantley" / "scripts" / "grantley_job.py"
+            installer.hermes_home()
+            / "plugins"
+            / "grantley"
+            / "scripts"
+            / "grantley_job.py"
         )
-        assert resolved.is_file()
 
     def test_a_scripted_job_the_table_does_not_know_is_a_hard_error(self):
         rogue = replace(spec_by_name("persona.decay"), name="hermes.invented")
@@ -245,6 +292,28 @@ class TestDryRun:
         assert {a.name for a in plan.jobs} == {s.name for s in ALL_SPECS}
         assert {a.action for a in plan.jobs} == {"create"}
         assert {a.action for a in plan.files} == {"create"}
+
+    def test_explicit_plan_keeps_life_advance_outside_the_default_d1_surface(self):
+        default = installer.plan()
+        assert "persona.life_advance" not in {action.name for action in default.jobs}
+        assert "persona.life_illustrate" not in {action.name for action in default.jobs}
+
+        plan = installer.plan(only=["persona.life_advance"])
+        assert [action.name for action in plan.jobs] == ["persona.life_advance"]
+        assert {action.filename for action in plan.files} == {
+            installer.LIB_FILENAME,
+            "corlinman_grantley_life_advance.py",
+        }
+        assert not installer.scripts_dir().exists()
+
+        illustration = installer.plan(only=["persona.life_illustrate"])
+        assert [action.name for action in illustration.jobs] == [
+            "persona.life_illustrate"
+        ]
+        assert {action.filename for action in illustration.files} == {
+            installer.LIB_FILENAME,
+            "corlinman_grantley_life_illustrate.py",
+        }
 
     def test_plan_is_blocked_on_a_bare_profile(self):
         plan = installer.plan()
@@ -313,9 +382,7 @@ class TestInstallRefusals:
             replace(s, install_enabled=True) if s.name == "persona.decay" else s
             for s in JOB_SPECS
         )
-        monkeypatch.setattr(
-            installer, "select_specs", lambda only=None: poisoned
-        )
+        monkeypatch.setattr(installer, "select_specs", lambda only=None: poisoned)
         result = installer.install()
         assert not result.ok
         assert "install_enabled=True" in result.error
@@ -419,6 +486,41 @@ class TestInstallProducts:
 
 
 class TestIdempotency:
+    def test_default_d1_reinstall_preserves_an_enabled_life_advance(self, ready):
+        """A production supplemental cron remains outside D1 reconciliation."""
+        from cron.jobs import resume_job
+
+        assert installer.install(only=["persona.life_advance"]).ok
+        job = _jobs()["persona.life_advance"]
+        assert resume_job(job["id"])
+        assert _jobs()["persona.life_advance"]["enabled"] is True
+
+        result = installer.install()
+
+        assert result.ok
+        assert "persona.life_advance" not in {
+            action.name for action in result.plan.jobs
+        }
+        assert _jobs()["persona.life_advance"]["id"] == job["id"]
+        assert _jobs()["persona.life_advance"]["enabled"] is True
+
+    def test_default_d1_reinstall_preserves_an_enabled_life_illustrate(self, ready):
+        """The local-asset supplemental cron is also outside D1 reconciliation."""
+        from cron.jobs import resume_job
+
+        assert installer.install(only=["persona.life_illustrate"]).ok
+        job = _jobs()["persona.life_illustrate"]
+        assert resume_job(job["id"])
+
+        result = installer.install()
+
+        assert result.ok
+        assert "persona.life_illustrate" not in {
+            action.name for action in result.plan.jobs
+        }
+        assert _jobs()["persona.life_illustrate"]["id"] == job["id"]
+        assert _jobs()["persona.life_illustrate"]["enabled"] is True
+
     def test_a_second_install_creates_no_duplicate_jobs(self, ready):
         assert installer.install().ok
         first = _jobs()
@@ -446,7 +548,9 @@ class TestIdempotency:
         assert installer.install().ok
         job = _jobs()["hermes.competition_daily"]
         update_job(job["id"], {"deliver": "local"})
-        action = {a.name: a for a in installer.job_actions()}["hermes.competition_daily"]
+        action = {a.name: a for a in installer.job_actions()}[
+            "hermes.competition_daily"
+        ]
         assert "differs from the spec in deliver" in action.reason
 
     def test_reinstalling_never_re_enables_an_operator_enabled_job(self, ready):

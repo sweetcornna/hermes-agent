@@ -42,13 +42,64 @@ never at an empty frame injected into the system message: grantley not
 installed, no ``channels`` config, an unknown chat id, a corrupt entry.  The
 persona still works — it just loses the per-channel owner framing, exactly as
 ``channel_binding``'s own contract says.
+
+Second occupant: the sticker menu
+---------------------------------
+:func:`channel_prompt` returns the *whole* ephemeral frame for a turn, and
+since ``plugins/grantley/assets/stickers`` landed there is a second thing that
+belongs in it — the probabilistic ``## 可用表情`` list (see :mod:`.sticker`).
+It is composed here because this is already the one function both lanes call
+for per-turn framing; a second hook would have to be wired into both of them
+and kept in agreement, which is the exact duplication this module exists to
+avoid.
+
+Two consequences worth stating, because both are load-bearing and neither is
+obvious from the call site:
+
+* the menu is appended OUTSIDE ``_channel_prompt``'s day cache.  That cache is
+  legitimate only because its contents are a pure function of
+  ``(binding, date)``; a per-turn dice roll folded into it would be frozen for
+  the day, which is not what a probability means;
+* the menu is offered even when the channel has NO binding, so this function
+  no longer returns ``None`` merely because a chat id is unbound.  Stickers
+  belong to the account rather than to a channel's owner framing, and gating
+  them on ``channels:`` would confine the feature to configured channels for
+  no reason a reader could later reconstruct.
+
+Third occupant: the bubble-count reminder
+------------------------------------------
+The persona document already asks for brevity in prose ("短句默认。日常
+2-3 句"), and the model does not reliably obey prose — daily chit-chat kept
+landing in far more than a handful of ``[MSG_BREAK]`` bubbles, which the
+transport (``adapter.cap_bubbles`` / the card-routing decision in
+``adapter.send``) then had to bound after the fact, either by merging into a
+bloated last bubble or — before that was fixed too — by hiding an ordinary
+short reply inside a "聊天记录" card meant for genuinely long answers.
+:data:`_BREVITY_REMINDER` is the upstream half of that fix: it is fixed text,
+never a dice roll, folded directly into :func:`_channel_prompt`'s resolved
+prompt BEFORE it is cached — unlike the sticker menu, there is nothing here
+that would freeze a probability for the day, so it is safe inside the
+``(persona, channel, group, day)`` cache rather than needing the sticker
+menu's outside-the-cache treatment.
+
+It only reaches a channel that already has a binding (folded into ``base``,
+never appended when ``base`` is ``None``), so an unbound channel keeps the
+exact degrade contract described above: no binding, no frame, full stop
+(modulo the sticker menu, which is orthogonal by design).  The reminder is
+about bubble cadence, not about who the persona is talking to, so this is a
+narrower reach than the sticker menu's "every channel" — deliberately: the
+channels that have a binding are the ones this deployment actually talks
+through as itself, and that is where the flooding was observed.
 """
 
 from __future__ import annotations
 
 import logging
+import random
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Tuple
+
+from . import sticker
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +128,19 @@ _SETTINGS_KEY = "channels"
 _CANDIDATE_PACKAGES = ("plugins.grantley", "_hermes_user_memory.grantley")
 
 _MISSING = object()
+
+#: Fixed reminder folded into a BOUND channel's resolved prompt — see "Third
+#: occupant" above for why this lives here rather than beside the sticker
+#: menu.  No ``{{persona.*}}`` placeholder and nothing probabilistic, so it
+#: is exactly as safe to cache for the day as the rest of ``_channel_prompt``'s
+#: output.
+_BREVITY_REMINDER = (
+    "## 消息节奏\n"
+    "\n"
+    "日常闲聊回复请控制在 1-3 条 [MSG_BREAK] 气泡以内，说完就停，不要为了凑气泡数"
+    "硬拆句子。只有对方问的是真正复杂、需要展开讲解的问题时才可以多说——这种情况下"
+    "正常展开就好，不受这个条数限制。"
+)
 
 #: Lazily-resolved ``channel_binding`` module (or ``None`` once we know there
 #: is none).  ``_MISSING`` means "not looked yet".
@@ -193,6 +257,7 @@ def channel_prompt(
     chat_id: Any,
     is_group: bool,
     on: Optional[date] = None,
+    rng: Optional[random.Random] = None,
 ) -> Optional[str]:
     """The ephemeral per-channel persona frame for one chat, or ``None``.
 
@@ -203,12 +268,32 @@ def channel_prompt(
     *is_group* comes from the live event, and wins over the binding's own
     ``group:`` flag when the two disagree.  A config typo must not tell the
     persona it is in a DM while it is posting to a group; the wire knows.
+
+    The sticker menu is appended HERE rather than inside ``_channel_prompt``,
+    and the placement is load-bearing.  ``_channel_prompt`` is memoised on
+    ``(persona, channel, group, day)`` because its own output is documented
+    as a daily frozen snapshot; folding a per-turn dice roll into that would
+    freeze the roll for the day too — stickers available all day or not at
+    all, which is not what a probability means.  Composed outside the cache,
+    the frame stays a daily constant and the menu stays a per-turn decision.
     """
     try:
-        return _channel_prompt(extra, chat_id=chat_id, is_group=is_group, on=on)
+        base = _channel_prompt(extra, chat_id=chat_id, is_group=is_group, on=on)
     except Exception:  # noqa: BLE001 — outermost guard; see the module docstring
         logger.warning("OneBot: per-channel persona frame failed", exc_info=True)
-        return None
+        base = None
+    try:
+        menu = sticker.offer_menu(extra, rng)
+    except Exception:  # noqa: BLE001 — a flourish must never cost the frame
+        logger.warning("OneBot: sticker menu failed", exc_info=True)
+        menu = None
+    if not menu:
+        return base
+    # Offered even when this channel has no persona binding at all: the
+    # stickers belong to the account, not to a channel's owner framing, and
+    # returning ``None`` here would silently confine the feature to
+    # configured channels for no reason anyone could find later.
+    return f"{base}\n\n{menu}" if base else menu
 
 
 def _channel_prompt(
@@ -255,6 +340,15 @@ def _channel_prompt(
     except Exception:  # noqa: BLE001 — a decorative frame never costs a message
         logger.warning("OneBot: per-channel persona frame failed", exc_info=True)
         prompt = None
+
+    # Folded in only when there IS a resolved frame: an unbound channel (or
+    # one whose resolver failed) must keep returning ``None`` verbatim — the
+    # degrade contract above — rather than starting to emit a bubble-count
+    # reminder with nothing else around it.  Fixed text, no placeholder, so
+    # appending it before the cache write below is safe: every reader of this
+    # cache entry for the rest of the day sees the same reminder attached.
+    if prompt:
+        prompt = f"{prompt}\n\n{_BREVITY_REMINDER}"
 
     # Prune yesterday before inserting today, so the cache is bounded by the
     # number of live channels rather than by uptime.

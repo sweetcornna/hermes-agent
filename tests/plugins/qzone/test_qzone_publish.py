@@ -84,6 +84,184 @@ def _run(args, **kw):
 
 
 # ---------------------------------------------------------------------------
+# Generated images — character references
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateImageCharacterReferences:
+    @pytest.fixture
+    def _generation_stubs(self, tmp_path, monkeypatch):
+        from hermes_cli import config
+        from plugins.image_gen import cornna
+        from tools import image_generation_tool
+
+        image_path = tmp_path / "generated.png"
+        image_path.write_bytes(_PNG)
+        calls = []
+
+        monkeypatch.setattr(config, "load_config", lambda: {})
+        monkeypatch.setattr(cornna, "available_characters", lambda: [])
+        monkeypatch.setattr(
+            image_generation_tool, "check_image_generation_requirements", lambda: True
+        )
+
+        def _generate(args):
+            calls.append(args)
+            return {"image": str(image_path)}
+
+        monkeypatch.setattr(image_generation_tool, "_handle_image_generate", _generate)
+        return calls, config, cornna, monkeypatch
+
+    def test_reference_characters_empty_uses_plain_generation(self, _generation_stubs):
+        calls, config, _cornna, monkeypatch = _generation_stubs
+        monkeypatch.setattr(
+            config, "load_config", lambda: {"qzone": {"reference_characters": []}}
+        )
+
+        image, filename = publish._generate_image("配图", "square")
+
+        assert image == _PNG
+        assert filename == "generated.png"
+        assert calls == [{"prompt": "配图", "aspect_ratio": "square"}]
+
+    def test_reference_characters_missing_on_disk_uses_plain_generation(
+        self, _generation_stubs, caplog
+    ):
+        calls, config, cornna, monkeypatch = _generation_stubs
+        monkeypatch.setattr(
+            config, "load_config", lambda: {"qzone": {"reference_characters": ["grantley"]}}
+        )
+        monkeypatch.setattr(cornna, "available_characters", lambda: [])
+
+        with caplog.at_level("INFO"):
+            publish._generate_image("配图", "square")
+
+        assert calls == [{"prompt": "配图", "aspect_ratio": "square"}]
+        assert "grantley" in caplog.text
+
+    def test_reference_characters_partially_available_are_passed(
+        self, _generation_stubs, caplog
+    ):
+        calls, config, cornna, monkeypatch = _generation_stubs
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda: {"qzone": {"reference_characters": ["grantley", "bating"]}},
+        )
+        monkeypatch.setattr(cornna, "available_characters", lambda: ["grantley"])
+
+        with caplog.at_level("INFO"):
+            publish._generate_image("配图", "square")
+
+        assert calls == [{
+            "prompt": "配图",
+            "aspect_ratio": "square",
+            "reference_image_urls": ["character:grantley"],
+        }]
+        assert "bating" in caplog.text
+
+    def test_reference_characters_over_recommended_are_truncated(
+        self, _generation_stubs, caplog
+    ):
+        calls, config, cornna, monkeypatch = _generation_stubs
+        configured = ["algo", "grantley", "bating", "paul"]
+        monkeypatch.setattr(
+            config, "load_config", lambda: {"qzone": {"reference_characters": configured}}
+        )
+        monkeypatch.setattr(cornna, "available_characters", lambda: configured)
+
+        publish._generate_image("配图", "square")
+
+        assert calls == [{
+            "prompt": "配图",
+            "aspect_ratio": "square",
+            "reference_image_urls": ["character:algo", "character:grantley", "character:bating"],
+        }]
+        assert "too many reference images" in caplog.text
+
+    def test_reference_generation_failure_retries_without_references(
+        self, _generation_stubs, caplog
+    ):
+        calls, config, cornna, monkeypatch = _generation_stubs
+        monkeypatch.setattr(
+            config, "load_config", lambda: {"qzone": {"reference_characters": ["grantley"]}}
+        )
+        monkeypatch.setattr(cornna, "available_characters", lambda: ["grantley"])
+
+        from tools import image_generation_tool
+
+        plain_generate = image_generation_tool._handle_image_generate
+
+        def _retrying_generate(args):
+            if args.get("reference_image_urls"):
+                calls.append(args)
+                raise RuntimeError("reference image disappeared")
+            return plain_generate(args)
+
+        monkeypatch.setattr(image_generation_tool, "_handle_image_generate", _retrying_generate)
+
+        with caplog.at_level("WARNING"):
+            image, filename = publish._generate_image("配图", "square")
+
+        assert image == _PNG
+        assert filename == "generated.png"
+        assert calls == [
+            {
+                "prompt": "配图",
+                "aspect_ratio": "square",
+                "reference_image_urls": ["character:grantley"],
+            },
+            {"prompt": "配图", "aspect_ratio": "square"},
+        ]
+        assert "retrying without references" in caplog.text
+
+    def test_plain_generation_failure_after_reference_retry_propagates(
+        self, _generation_stubs
+    ):
+        calls, config, cornna, monkeypatch = _generation_stubs
+        monkeypatch.setattr(
+            config, "load_config", lambda: {"qzone": {"reference_characters": ["grantley"]}}
+        )
+        monkeypatch.setattr(cornna, "available_characters", lambda: ["grantley"])
+
+        from tools import image_generation_tool
+
+        def _generate(args):
+            calls.append(args)
+            raise RuntimeError("backend unavailable")
+
+        monkeypatch.setattr(image_generation_tool, "_handle_image_generate", _generate)
+
+        with pytest.raises(RuntimeError, match="backend unavailable"):
+            publish._generate_image("配图", "square")
+
+        assert calls == [
+            {
+                "prompt": "配图",
+                "aspect_ratio": "square",
+                "reference_image_urls": ["character:grantley"],
+            },
+            {"prompt": "配图", "aspect_ratio": "square"},
+        ]
+
+    def test_non_local_terminal_backend_skips_character_references(
+        self, _generation_stubs, caplog
+    ):
+        calls, config, cornna, monkeypatch = _generation_stubs
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setattr(
+            config, "load_config", lambda: {"qzone": {"reference_characters": ["grantley"]}}
+        )
+        monkeypatch.setattr(cornna, "available_characters", lambda: ["grantley"])
+
+        with caplog.at_level("INFO"):
+            publish._generate_image("配图", "square")
+
+        assert calls == [{"prompt": "配图", "aspect_ratio": "square"}]
+        assert "does not support character: references" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Pure wire format
 # ---------------------------------------------------------------------------
 
