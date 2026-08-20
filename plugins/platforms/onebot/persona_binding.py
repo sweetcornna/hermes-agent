@@ -66,30 +66,6 @@ obvious from the call site:
   them on ``channels:`` would confine the feature to configured channels for
   no reason a reader could later reconstruct.
 
-Third occupant: the bubble-count reminder
-------------------------------------------
-The persona document already asks for brevity in prose ("短句默认。日常
-2-3 句"), and the model does not reliably obey prose — daily chit-chat kept
-landing in far more than a handful of ``[MSG_BREAK]`` bubbles, which the
-transport (``adapter.cap_bubbles`` / the card-routing decision in
-``adapter.send``) then had to bound after the fact, either by merging into a
-bloated last bubble or — before that was fixed too — by hiding an ordinary
-short reply inside a "聊天记录" card meant for genuinely long answers.
-:data:`_BREVITY_REMINDER` is the upstream half of that fix: it is fixed text,
-never a dice roll, folded directly into :func:`_channel_prompt`'s resolved
-prompt BEFORE it is cached — unlike the sticker menu, there is nothing here
-that would freeze a probability for the day, so it is safe inside the
-``(persona, channel, group, day)`` cache rather than needing the sticker
-menu's outside-the-cache treatment.
-
-It only reaches a channel that already has a binding (folded into ``base``,
-never appended when ``base`` is ``None``), so an unbound channel keeps the
-exact degrade contract described above: no binding, no frame, full stop
-(modulo the sticker menu, which is orthogonal by design).  The reminder is
-about bubble cadence, not about who the persona is talking to, so this is a
-narrower reach than the sticker menu's "every channel" — deliberately: the
-channels that have a binding are the ones this deployment actually talks
-through as itself, and that is where the flooding was observed.
 """
 
 from __future__ import annotations
@@ -128,19 +104,6 @@ _SETTINGS_KEY = "channels"
 _CANDIDATE_PACKAGES = ("plugins.grantley", "_hermes_user_memory.grantley")
 
 _MISSING = object()
-
-#: Fixed reminder folded into a BOUND channel's resolved prompt — see "Third
-#: occupant" above for why this lives here rather than beside the sticker
-#: menu.  No ``{{persona.*}}`` placeholder and nothing probabilistic, so it
-#: is exactly as safe to cache for the day as the rest of ``_channel_prompt``'s
-#: output.
-_BREVITY_REMINDER = (
-    "## 消息节奏\n"
-    "\n"
-    "日常闲聊回复请控制在 1-3 条 [MSG_BREAK] 气泡以内，说完就停，不要为了凑气泡数"
-    "硬拆句子。只有对方问的是真正复杂、需要展开讲解的问题时才可以多说——这种情况下"
-    "正常展开就好，不受这个条数限制。"
-)
 
 #: Lazily-resolved ``channel_binding`` module (or ``None`` once we know there
 #: is none).  ``_MISSING`` means "not looked yet".
@@ -340,15 +303,6 @@ def _channel_prompt(
     except Exception:  # noqa: BLE001 — a decorative frame never costs a message
         logger.warning("OneBot: per-channel persona frame failed", exc_info=True)
         prompt = None
-
-    # Folded in only when there IS a resolved frame: an unbound channel (or
-    # one whose resolver failed) must keep returning ``None`` verbatim — the
-    # degrade contract above — rather than starting to emit a bubble-count
-    # reminder with nothing else around it.  Fixed text, no placeholder, so
-    # appending it before the cache write below is safe: every reader of this
-    # cache entry for the rest of the day sees the same reminder attached.
-    if prompt:
-        prompt = f"{prompt}\n\n{_BREVITY_REMINDER}"
 
     # Prune yesterday before inserting today, so the cache is bounded by the
     # number of live channels rather than by uptime.

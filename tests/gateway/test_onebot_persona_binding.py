@@ -218,20 +218,14 @@ class TestBindingResolution:
         )
         assert prompt and "群聊" in prompt and "私聊" not in prompt
 
-    def test_a_bound_channel_carries_the_brevity_reminder(self):
-        """The bubble-count fix's upstream half: ask the model for 1-3."""
+    def test_a_bound_channel_has_context_but_no_response_shaping_duplicate(self):
+        """Cadence belongs to the stable persona policy, not this adapter frame."""
         prompt = PB.channel_prompt(
             {PB.EXTRA_KEY: CHANNELS}, chat_id=GROUP, is_group=True
         )
-        assert PB._BREVITY_REMINDER in prompt
-
-    def test_an_unbound_channel_gets_no_reminder_either(self):
-        """The reminder rides the bound frame — it is not a separate, always-on
-        addition (that would break the "no binding, no frame" contract the
-        tests around this one pin)."""
-        assert PB.channel_prompt(
-            {PB.EXTRA_KEY: CHANNELS}, chat_id=999999, is_group=True
-        ) is None
+        assert prompt and OWNER in prompt and "群聊" in prompt
+        assert "[MSG_BREAK]" not in prompt
+        assert not hasattr(PB, "_BREVITY_REMINDER")
 
     def test_it_is_byte_stable_within_a_day(self):
         """``channel_binding``'s cache contract: ephemeral text may vary

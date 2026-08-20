@@ -3179,6 +3179,44 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
+    def test_failed_tool_result_allows_a_verified_alternative_attempt(self, agent):
+        """A failed real tool result stays in the native loop for the next attempt."""
+        self._setup_agent(agent)
+        first_call = _mock_tool_call(
+            name="web_search", arguments='{"q":"primary source"}', call_id="c1"
+        )
+        second_call = _mock_tool_call(
+            name="web_search", arguments='{"q":"official documentation"}', call_id="c2"
+        )
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[first_call]),
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[second_call]),
+            _mock_response(content="Verified result", finish_reason="stop"),
+        ]
+        attempts = []
+
+        def fake_handle_function_call(name, args, *_args, **_kwargs):
+            attempts.append((name, args))
+            if args["q"] == "primary source":
+                return "Error: source unavailable"
+            return '{"verified": true, "source": "official documentation"}'
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=fake_handle_function_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Find and verify the official answer")
+
+        assert attempts == [
+            ("web_search", {"q": "primary source"}),
+            ("web_search", {"q": "official documentation"}),
+        ]
+        assert result["final_response"] == "Verified result"
+        assert result["completed"] is True
+        assert result["api_calls"] == 3
+
     def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
         """Reasoning-only responses no longer trigger compression — prefill then accepted."""
         self._setup_agent(agent)

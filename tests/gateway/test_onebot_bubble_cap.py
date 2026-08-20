@@ -459,6 +459,26 @@ class TestLongRepliesBecomeOneCard:
         assert nodes == [body]
         assert not nodes[0].startswith("(")
 
+    @pytest.mark.asyncio
+    async def test_long_code_text_survives_one_dm_card_after_markdown_normalization(
+        self,
+    ):
+        code = "print('ok')\n" * 100
+        body = f"```python\n{code}```"
+        expected = code.strip()
+        assert len(expected) > A.FORWARD_TEXT_THRESHOLD
+
+        ad = make_adapter()
+        res = await ad.send(str(DM_PEER), body)
+
+        assert res.success is True
+        assert len(ad._client.actions) == 1
+        assert isinstance(ad._client.actions[0], P.SendPrivateForwardMsg)
+        delivered = "".join(card_node_texts(ad))
+        assert delivered == expected
+        assert "```" not in delivered
+        assert SEP not in delivered
+
 
 class TestTooManyBubblesBecomeCards:
     """Bubble COUNT overflow preserves every bubble in one forward card."""

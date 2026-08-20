@@ -51,10 +51,12 @@ from plugins.grantley.state import PersonaState
 #      cut had deliberately left untouched (see the 建议1/建议5 "C6 处置"
 #      notes) were also cleaned up in this pass, under the Orchestrator's
 #      explicit follow-up authorization.
-# This hash is the baseline after *both* rounds — it still guards against
-# *accidental* drift, just not against these two intentional, documented
-# rewrites.
-SOURCE_PROMPT_SHA256 = "a3c567391247d3ba0075070d0f8cf1439b921d4323e78478af06fc152d99c067"
+# This hash is the baseline after both canon passes and the response-policy
+# update that makes real Hermes task execution and verification outrank casual
+# persona styling. It still guards against accidental drift.
+SOURCE_PROMPT_SHA256 = (
+    "113fa82e7bef377b20b9d8a98bafec86ef3365dd75e6c29223c236f07e3f7c49"
+)
 
 # Originally the sha256 of corlinman's
 # python/packages/corlinman-agent/src/corlinman_agent/persona/life_seeds/grantley.yaml
@@ -123,6 +125,26 @@ def test_stable_half_carries_no_placeholder():
     doc = load_persona_document()
     assert "{{persona." not in doc.stable
     doc.assert_cache_safe()  # must not raise
+
+
+def test_stable_prompt_prioritizes_native_task_execution_over_persona_style():
+    stable = load_persona_document().stable
+
+    assert (
+        "真实任务必须按 Hermes 的既有流程使用可用工具、实际执行、验证并交付真实结果"
+        in stable
+    )
+    assert "角色只影响\n最终措辞" in stable
+    assert "工具失败时走 Hermes 既有恢复" in stable
+    assert "不按关键词" in stable
+
+
+def test_stable_prompt_limits_only_casual_message_splitting():
+    stable = load_persona_document().stable
+
+    assert "闲聊短句默认：一条消息为主，自然的话最多 2-3 条 [MSG_BREAK]" in stable
+    assert "不要为了模仿打字硬拆相邻句子" in stable
+    assert "4 条以上 [MSG_BREAK] 或长输出也允许，交给原生 OneBot 转发卡片处理" in stable
 
 
 def test_split_refuses_a_document_without_the_volatile_heading():
