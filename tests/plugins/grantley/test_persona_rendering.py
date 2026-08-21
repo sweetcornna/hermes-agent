@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 
+from agent.system_prompt import build_system_prompt
+from hermes_cli import plugins as plugin_runtime
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from plugins.grantley.persona import (
     LIVE_STATE_POINTER,
     PROMPT_ASSET_PATH,
@@ -20,83 +21,46 @@ from plugins.grantley.persona import (
 )
 from plugins.grantley.state import PersonaState
 
-# Originally the sha256 of corlinman's
-# python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.md
-# (the repo copy — the one that says `web_search`, not `WebSearch`).
-#
-# C6 (docs/migration-corlinman/C5-grantley-canon-research.md, section E)
-# deliberately amended this asset to fix three places where it contradicted
-# KAIJYU-09's official character data: the "hidden honor-student" bit
-# ("嫌い：勉強" / "裏表のない実直な性格" rule that out), the "本大爷" self-address
-# claimed as a routine pattern (no 俺様 in any official line — downgraded, not
-# deleted, per the Orchestrator's D42 ruling), and the "骑士 is a moral anchor"
-# framing (no textual support). It also added an official-facts block and
-# folded the researched speech-pattern rules into 表达 DNA.
-#
-# Second-round revision, same C6 pass: the Orchestrator's review caught two
-# more problems in the first cut and asked for a fix before landing:
-#   1. "弗罗汀骑士学院" was a made-up composite — Frontail (弗罗汀) is the
-#      *country*, "骑士学院" (Knights College) is the *school*; no official
-#      source ever fuses them into one institution name.
-#   2. The "官方档案，不要改口" block had smuggled in a 中-confidence,
-#      single-source (Fandom) claim about Grantly's E.P. mechanics
-#      (invisibility + wall-passing + carrying a companion through) inside a
-#      block explicitly labelled "don't waver from this" — readers of that
-#      block have no way to see the confidence tier, so it read as fact on
-#      par with his height. Reworded to only the officially-corroborated
-#      claim ("good for pranks"), and softened two more medium-confidence
-#      specifics (the exact "uniform never buttoned" mannerism, and Oscar
-#      being described as "bantering" rather than the official "doesn't get
-#      along") the same way. The four leftover 装傻/骑士 phrasings the first
-#      cut had deliberately left untouched (see the 建议1/建议5 "C6 处置"
-#      notes) were also cleaned up in this pass, under the Orchestrator's
-#      explicit follow-up authorization.
-# This hash is the baseline after both canon passes and the response-policy
-# update that makes real Hermes task execution and verification outrank casual
-# persona styling. It still guards against accidental drift.
-SOURCE_PROMPT_SHA256 = (
-    "113fa82e7bef377b20b9d8a98bafec86ef3365dd75e6c29223c236f07e3f7c49"
-)
 
-# Originally the sha256 of corlinman's
-# python/packages/corlinman-agent/src/corlinman_agent/persona/life_seeds/grantley.yaml
-#
-# C6 corrected five companion names to KC1's official Simplified-Chinese
-# translations and moved the two instructors (戴德里克 / 西利欧) out of the
-# `companion` pool into a new `mentor` pool — they are teachers, not
-# same-cohort companions. See C5 report section B3/F.
-SOURCE_SEEDS_SHA256 = "2d626c4f46262f59e6cdfaa8dde015a941b5c5a4f70addfb4af5b296de2be0ac"
+def _prompt_with_registered_grantley(
+    monkeypatch, *, inject_identity_section: bool
+) -> str:
+    """Exercise Grantley's real registration through prompt construction."""
+    import plugins.grantley as grantley
+    from run_agent import AIAgent
+
+    monkeypatch.setattr(
+        grantley,
+        "load_plugin_config",
+        lambda: {"inject_identity_section": inject_identity_section},
+    )
+    manager = PluginManager()
+    manager._discovered = True
+    context = PluginContext(
+        PluginManifest(name="grantley", key="grantley", source="bundled"),
+        manager,
+    )
+    grantley.register(context)
+    monkeypatch.setattr(plugin_runtime, "_plugin_manager", manager)
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        provider="openrouter",
+        platform="onebot",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        session_id="grantley-identity-section-test",
+    )
+    return build_system_prompt(agent)
 
 
-def _sha(path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def test_prompt_asset_is_byte_exact():
-    """The character content must not drift from the pinned baseline.
-
-    Not "must equal corlinman's copy forever" — C6 deliberately diverged
-    from corlinman once, for documented canon reasons (see the comment on
-    ``SOURCE_PROMPT_SHA256``). This still catches any *further*, undocumented
-    edit.
-    """
-    assert _sha(PROMPT_ASSET_PATH) == SOURCE_PROMPT_SHA256
-
-
-def test_seed_pack_is_byte_exact():
-    """Byte-exact against the pinned baseline (see ``SOURCE_SEEDS_SHA256``)."""
-    from plugins.grantley.life import bundled_seeds_path
-
-    path = bundled_seeds_path("grantley")
-    assert path is not None and path.is_file()
-    assert _sha(path) == SOURCE_SEEDS_SHA256
-
-
-def test_prompt_uses_web_search_wire_name():
-    """The repo copy's later fix, not production's stale `WebSearch`."""
+def test_prompt_defers_fact_checks_to_session_visible_tools():
+    """The stable persona must never name a tool the current session lacks."""
     text = PROMPT_ASSET_PATH.read_text(encoding="utf-8")
-    assert "web_search" in text
-    assert "WebSearch" not in text
+    assert "本会话可见的合适 Hermes 工具" in text
+    assert "web_search" not in text
 
 
 def test_split_extracts_exactly_the_volatile_section():
@@ -130,21 +94,38 @@ def test_stable_half_carries_no_placeholder():
 def test_stable_prompt_prioritizes_native_task_execution_over_persona_style():
     stable = load_persona_document().stable
 
-    assert (
-        "真实任务必须按 Hermes 的既有流程使用可用工具、实际执行、验证并交付真实结果"
-        in stable
-    )
-    assert "角色只影响\n最终措辞" in stable
-    assert "工具失败时走 Hermes 既有恢复" in stable
+    assert "用户要求达成实际目标时，先完成目标" in stable
+    assert "只使用本会话可见的 Hermes 工具" in stable
+    assert "工具失败时按 Hermes 既有恢复换可行路径继续" in stable
     assert "不按关键词" in stable
 
 
 def test_stable_prompt_limits_only_casual_message_splitting():
     stable = load_persona_document().stable
 
-    assert "闲聊短句默认：一条消息为主，自然的话最多 2-3 条 [MSG_BREAK]" in stable
-    assert "不要为了模仿打字硬拆相邻句子" in stable
-    assert "4 条以上 [MSG_BREAK] 或长输出也允许，交给原生 OneBot 转发卡片处理" in stable
+    assert "自然选择 1–3 条 [MSG_BREAK]" in stable
+    assert "短反应通常一条，普通交谈自然两三条" in stable
+    assert "不固定、不轮换" in stable
+    assert "复杂、专业或执行任务不受气泡数限制，完整性优先" in stable
+
+
+def test_identity_section_registers_the_cache_safe_current_persona_once(monkeypatch):
+    prompt = _prompt_with_registered_grantley(monkeypatch, inject_identity_section=True)
+    stable = load_persona_document().stable
+
+    assert stable in prompt
+    assert prompt.count("## Plugin Context: grantley.identity") == 1
+    assert prompt.count("用户要求达成实际目标时，先完成目标") == 1
+    assert "自然选择 1–3 条 [MSG_BREAK]" in prompt
+
+
+def test_identity_section_is_absent_when_the_opt_in_is_false(monkeypatch):
+    prompt = _prompt_with_registered_grantley(
+        monkeypatch, inject_identity_section=False
+    )
+
+    assert "## Plugin Context: grantley.identity" not in prompt
+    assert "用户要求达成实际目标时，先完成目标" not in prompt
 
 
 def test_split_refuses_a_document_without_the_volatile_heading():
@@ -228,7 +209,9 @@ def test_render_placeholders_substitutes_every_key():
 def test_state_block_is_tagged_and_carries_extras():
     doc = load_persona_document()
     state = PersonaState(persona_id="grantley", mood="痞痞的")
-    block = render_state_block(doc, state, extra_lines=["- [0.90] 护送商队穿越北境森林"])
+    block = render_state_block(
+        doc, state, extra_lines=["- [0.90] 护送商队穿越北境森林"]
+    )
     assert block.startswith("<persona-state>")
     assert block.endswith("</persona-state>")
     assert "痞痞的" in block

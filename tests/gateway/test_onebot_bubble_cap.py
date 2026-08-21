@@ -258,8 +258,9 @@ class TestChatLaneSendsBubblesVerbatim:
         assert cards(ad) == [], "a two-line chat reply must not become a card"
 
     @pytest.mark.asyncio
-    async def test_exactly_at_the_limit_goes_out_verbatim(self):
-        parts = ["一", "二", "三"]
+    @pytest.mark.parametrize("count", range(1, 4))
+    async def test_one_through_three_bubbles_go_out_verbatim(self, count):
+        parts = [f"第{i}句" for i in range(1, count + 1)]
         ad = make_adapter()
         await ad.send(str(DM_PEER), SEP.join(parts))
         assert wire_messages(ad) == parts

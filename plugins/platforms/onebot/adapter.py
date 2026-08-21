@@ -123,9 +123,9 @@ BUBBLE_GAP_SECS = 0.3
 #: How many separate chat bubbles one reply may occupy.  Several short bubbles
 #: read as a person typing; eight in a row read as a bot flooding the window,
 #: and QQ users experience that as spam regardless of what the text says.  The
-#: default matches what the persona file already asks for in prose ("短句默认。
-#: 日常 2-3 句") — the model does not reliably obey that, so the transport
-#: enforces it.  ``<= 0`` disables the cap (escape hatch).
+#: default matches the persona's natural daily-chat range (one to three
+#: bubbles). The model does not reliably obey that, so the transport enforces
+#: it. ``<= 0`` disables the cap (escape hatch).
 DEFAULT_MAX_BUBBLES_PER_REPLY = 3
 
 #: Inline attachments are shipped as ``base64://`` because the backend
