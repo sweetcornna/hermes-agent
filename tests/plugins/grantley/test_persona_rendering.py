@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from agent.system_prompt import build_system_prompt
@@ -20,6 +22,18 @@ from plugins.grantley.persona import (
     split_persona_document,
 )
 from plugins.grantley.state import PersonaState
+
+# Pinned after the approved canon corrections and task-first reply-policy update.
+SOURCE_PROMPT_SHA256 = (
+    "22ba6a368f8b4a08d60d182ce1b44a350c6560437067990373407a21b81d3687"
+)
+
+# Pinned after the approved companion-name and mentor-pool canon corrections.
+SOURCE_SEEDS_SHA256 = "2d626c4f46262f59e6cdfaa8dde015a941b5c5a4f70addfb4af5b296de2be0ac"
+
+
+def _sha(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _prompt_with_registered_grantley(
@@ -54,6 +68,20 @@ def _prompt_with_registered_grantley(
         session_id="grantley-identity-section-test",
     )
     return build_system_prompt(agent)
+
+
+def test_prompt_asset_is_byte_exact():
+    """Catch undocumented edits to the approved persona baseline."""
+    assert _sha(PROMPT_ASSET_PATH) == SOURCE_PROMPT_SHA256
+
+
+def test_seed_pack_is_byte_exact():
+    """Catch undocumented edits to the approved bundled life seed."""
+    from plugins.grantley.life import bundled_seeds_path
+
+    path = bundled_seeds_path("grantley")
+    assert path is not None and path.is_file()
+    assert _sha(path) == SOURCE_SEEDS_SHA256
 
 
 def test_prompt_defers_fact_checks_to_session_visible_tools():
@@ -107,6 +135,17 @@ def test_stable_prompt_limits_only_casual_message_splitting():
     assert "短反应通常一条，普通交谈自然两三条" in stable
     assert "不固定、不轮换" in stable
     assert "复杂、专业或执行任务不受气泡数限制，完整性优先" in stable
+
+
+def test_stable_prompt_has_no_conflicting_one_to_five_casual_rule():
+    stable = load_persona_document().stable
+
+    for conflicting_range in ("1–5", "1-5", "一到五"):
+        assert conflicting_range not in stable
+
+
+def test_stable_prompt_stays_within_identity_section_budget():
+    assert len(load_persona_document().stable) <= 4000
 
 
 def test_identity_section_registers_the_cache_safe_current_persona_once(monkeypatch):
