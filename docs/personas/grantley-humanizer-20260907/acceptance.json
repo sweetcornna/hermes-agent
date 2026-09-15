@@ -1,0 +1,19 @@
+{
+  "passed": true,
+  "created_at": "2026-09-07T02:37:24.361812+00:00",
+  "persona_sha256": "279adcee99ca5e2f3010ad3503239e71bc98f6ac925022af4d46b4a66df1ae68",
+  "stable_characters": 3131,
+  "model": "gpt-6-astra",
+  "holdout_wins": 4,
+  "holdout_ties": 2,
+  "holdout_count": 6,
+  "regression_passed": 24,
+  "integration_tests_passed": 270,
+  "real_tool_smoke_passed": true,
+  "sample_counts": {
+    "regression": 48,
+    "dev": 72,
+    "holdout": 72
+  },
+  "judging": "Mean voice+natural scores across both blind presentation orders; same model, agent audit; no independent human review"
+}

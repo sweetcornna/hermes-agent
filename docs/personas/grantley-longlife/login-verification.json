@@ -1,0 +1,12 @@
+{
+  "verified_at_utc": "2026-09-06T14:05:55Z",
+  "qq_client_ui": "logged_in",
+  "native_online": true,
+  "get_status": {"status": "ok", "retcode": 0, "online": true, "good": true},
+  "get_login_info": {"status": "ok", "retcode": 0, "user_id": 2952532060},
+  "hermes_gateway": "running",
+  "onebot": "connected",
+  "onebot_error_code": null,
+  "qq_test_messages_sent": 0,
+  "model_429_retested": false
+}

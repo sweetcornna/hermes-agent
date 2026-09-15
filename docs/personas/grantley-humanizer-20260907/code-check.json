@@ -1,0 +1,125 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "id": "R23",
+      "variant": "before",
+      "assertions": 1260,
+      "passed": true
+    },
+    {
+      "id": "R23",
+      "variant": "after",
+      "assertions": 1260,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "before",
+      "replicate": 3,
+      "turn": 1,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "before",
+      "replicate": 3,
+      "turn": 2,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "before",
+      "replicate": 1,
+      "turn": 1,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "before",
+      "replicate": 1,
+      "turn": 2,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "after",
+      "replicate": 2,
+      "turn": 1,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "after",
+      "replicate": 2,
+      "turn": 2,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "after",
+      "replicate": 1,
+      "turn": 1,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "after",
+      "replicate": 1,
+      "turn": 2,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "after",
+      "replicate": 3,
+      "turn": 1,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "after",
+      "replicate": 3,
+      "turn": 2,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "before",
+      "replicate": 2,
+      "turn": 1,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    },
+    {
+      "id": "F04",
+      "variant": "before",
+      "replicate": 2,
+      "turn": 2,
+      "original_preserved": true,
+      "new_sorted_list": true,
+      "passed": true
+    }
+  ]
+}

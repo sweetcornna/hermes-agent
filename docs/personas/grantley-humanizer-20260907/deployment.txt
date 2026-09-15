@@ -1,0 +1,2 @@
+{"phase": "waiting_for_idle", "active_agents": 0}
+{"deployed": true, "started_at": "2026-09-07T02:38:08.372400432Z", "gateway": "running", "onebot": "connected", "config_unchanged": true, "qq_runtime_unchanged": true, "backup": "/opt/hermes-cloud/data/.deployments/grantley-humanizer-20260907/backup", "persona_sha256": "279adcee99ca5e2f3010ad3503239e71bc98f6ac925022af4d46b4a66df1ae68", "no_test_messages_sent": true}

@@ -1,0 +1,18 @@
+{
+  "files": [
+    {
+      "path": "/opt/hermes-cloud/repo/plugins/grantley/channel_binding.py",
+      "sha256": "2b5bbc1ba96c3cf57009923754475d417a4b8fcacec6f065ba2be35d8a873032"
+    },
+    {
+      "path": "/opt/hermes-cloud/data/plugins/grantley/channel_binding.py",
+      "sha256": "2b5bbc1ba96c3cf57009923754475d417a4b8fcacec6f065ba2be35d8a873032"
+    }
+  ],
+  "config_sha256": "f58fa00c750ed55014486f0100dc868b372e03595398a97bbc100d0b862bca83",
+  "image": "sha256:8bce426d1e93c851cd676dc1807b822a7094d7f753139d7b9467e50dbfd79366",
+  "user": "991:988",
+  "state": "running",
+  "after_sha256": "8d3458b9680148c2a2d886a7836f5d4b56b20c2cbb15d2fc17443e755ed1ab3f",
+  "persona_sha256": "279adcee99ca5e2f3010ad3503239e71bc98f6ac925022af4d46b4a66df1ae68"
+}

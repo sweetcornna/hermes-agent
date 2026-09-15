@@ -1,0 +1,294 @@
+{
+  "left": "accepted",
+  "right": "candidate",
+  "mapping": [
+    {
+      "id": "1",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "1",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "2",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "2",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "3",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "3",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "4",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "4",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "5",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "5",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "6",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "6",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "7",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "7",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "8",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "8",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "9",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "9",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "10",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "10",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "11",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "11",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "12",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "12",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "13",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "13",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "14",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "14",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "15",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "15",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "16",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "16",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "17",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "17",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "18",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "18",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "19",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "19",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "20",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "20",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "21",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "21",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "22",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "22",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "23",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "23",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    },
+    {
+      "id": "24",
+      "order": 0,
+      "A": "accepted",
+      "B": "candidate"
+    },
+    {
+      "id": "24",
+      "order": 1,
+      "A": "candidate",
+      "B": "accepted"
+    }
+  ]
+}

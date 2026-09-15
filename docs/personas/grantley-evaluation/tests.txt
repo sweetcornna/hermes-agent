@@ -1,0 +1,29 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 7 test files (~159 tests) under ['tests/plugins/grantley', 'tests/gateway/test_onebot_persona_binding.py']; running with -j 30
+[  6.9% |    11/~159 | ✓12 | ✗ 0] ✓ tests/plugins/grantley/test_life_illustration.py (12✓, 0.9s)
+[ 15.1% |    24/~159 | ✓25 | ✗ 0] ✓ tests/plugins/grantley/test_cache_safety.py (13✓, 0.9s)
+[ 27.0% |    43/~159 | ✓44 | ✗ 0] ✓ tests/plugins/grantley/test_decay.py (19✓, 1.0s)
+[ 40.3% |    64/~159 | ✓65 | ✗ 0] ✓ tests/gateway/test_onebot_persona_binding.py (21✓, 1.1s)
+[ 76.1% |   121/~159 | ✓122 | ✗  0] ✓ tests/plugins/grantley/test_life_and_events.py (57✓, 1.5s)
+[ 88.7% |   141/~159 | ✓177 | ✗  0] ✓ tests/plugins/grantley/test_autocompact.py (55✓, 3.7s)
+[100.0% |   159/~159 | ✓197 | ✗  0] ✓ tests/plugins/grantley/test_persona_rendering.py (20✓, 3.8s)
+
+=== Summary: 7 files, 197 tests passed, 0 failed (100% complete) in 3.8s (30 workers) ===
+  Durations cached to test_durations.json (7 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   7
+  Total subprocess CPU-wall: 12.9s  (runner wall: 3.8s, parallelism: 30x)
+  P50: 1.12s  P90: 3.79s  P95: 3.79s  P99: 3.79s  Max: 3.79s
+  <1s: 3 files (43%)  <2s: 5 files (71%)
+  Top 10 slowest:
+      3.79s  tests/plugins/grantley/test_persona_rendering.py
+      3.69s  tests/plugins/grantley/test_autocompact.py
+      1.49s  tests/plugins/grantley/test_life_and_events.py
+      1.12s  tests/gateway/test_onebot_persona_binding.py
+      0.99s  tests/plugins/grantley/test_decay.py
+      0.90s  tests/plugins/grantley/test_cache_safety.py
+      0.90s  tests/plugins/grantley/test_life_illustration.py

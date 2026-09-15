@@ -1,0 +1,20 @@
+# Active long-life agent work
+
+User explicitly chose: native image reading; persistent context every reply; automatic rolling compaction at 256000 tokens, recent raw tail 32000 tokens; each group shares one session, DMs remain isolated. Existing group history must remain available during switch. Deployment already authorized.
+
+Completed before this task: KC2 persona deployed to cornna-cn / hermes-cloud, host repo /opt/hermes-cloud/repo and data /opt/hermes-cloud/data. Four persona files mirrored to repo and installed plugin (8 targets), backed up under data/.deployments/grantley-kc2-20260906T125614Z/backup. Container restarted successfully. Config already gemini-3.8-flash-high; actual API returned base model gemini-3.8-flash. All 3 text smoke cases worked. QQ auth_required existed before/after, Telegram connected. Do not restart QQ/NapCat or send messages for tests.
+
+Findings:
+- Production core/context/onebot files byte-identical to local working tree (already includes Grantley rolling compaction). Existing tests/plugins/grantley/test_autocompact.py has 55 cases, tested successfully earlier with scripts/run_tests.sh.
+- Production effective image mode=text, vision metadata=None for custom alias; real native build_native_content_parts + API correctly read fixture ZX49-K7 / left red circle / right blue rectangle. Output in vision-api.json.
+- Runtime context length currently resolves 1048576. Existing Grantley autocompact threshold=.75, absolute=None, tail=16000. Set absolute=256000, tail=32000; keep ratio .75 as safety cap.
+- Gateway default reset mode=none, group_sessions_per_user=true, thread_sessions_per_user=false. Set groups shared per user choice.
+- providers.cornna.models currently list of 3 strings; hermes_cli/config.py supports dict-of-model-metadata. Convert losslessly to dict and set only gemini-3.8-flash-high.supports_vision=true; agent.image_input_mode=auto. Avoid global model.supports_vision override leaking to other /model routes.
+- OneBot inbound supports image URLs => cache_image_from_url => media_urls => native routing. URL-less images currently dropped intentionally unless resolved; don't add speculative recovery without actual need.
+- Production state.db has 107 onebot sessions; 5 active groups with ~30/284/653/479/206 total messages, per-speaker main namespace, some old xiaohuihui namespace. Preserve DMs and other personas. sessions/sessions.json maps keys e.g agent:main:onebot:group:g183287894:<speaker>. New shared key drops speaker. Need safe continuity migration, not overwrite existing frozen contexts.
+
+Completed 2026-09-06: production config updated, groups migrated during stopped-gateway maintenance, backups retained, container restarted at13:32:53 UTC. 69 existing lanes/1331 messages imported into5 shared group sessions; original sessions/messages unchanged. DMs retain their existing keys and all DMs now use the global256000/32000 rolling policy. Real production config/AIAgent verifies native image mode and identical group/bound-DM/unbound-DM policy, reset none. 179 tests pass. Details and deliverable index in README.md.
+
+External verification gaps: QQ auth_required existed before/after deployment. Two real smoke runs each completed2 genuine model compactions with SQLite reopen/fact retention, but subsequent main-model answers failed with providerHTTP429 after the built-in3 attempts. Native image direct API succeeded; online main-loop image/recalled-answer acceptance remains unverified. No QQ messages sent. No further immediate quota retries planned.
+
+Tools: ssh aliases cornna-cn (actual production), corlinman-prod (stale old service/data; don't deploy there). Docker container uid 991 gid 988. Use safe shell quoting via Python subprocess argv + shlex.quote; nested raw single quotes failed. Production AGENTS matches local sha679103...; Python tests must use scripts/run_tests.sh. No subagents authorized. Avoid printing credentials/config wholesale. API credentials stay within container, use config providers.cornna base_url and CORNNA_API_KEY from .env without logging.

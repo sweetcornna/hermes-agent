@@ -1,0 +1,33 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 9 test files (~142 tests) under ['tests/plugins/grantley/test_autocompact.py', 'tests/agent/test_image_routing.py', 'tests/agent/test_custom_providers_vision.py', 'tests/gateway/test_image_input_routing_runtime.py', 'tests/gateway/test_native_image_buffer_isolation.py', 'tests/gateway/test_queued_native_image_session_key.py', 'tests/run_agent/test_run_agent_multimodal_prologue.py', 'tests/agent/test_compressor_image_tokens.py', 'tests/gateway/test_session.py']; running with -j 4
+[  3.5% |     5/~142 | ✓5 | ✗0] ✓ tests/agent/test_custom_providers_vision.py (5✓, 0.5s)
+[  6.3% |     9/~142 | ✓9 | ✗0] ✓ tests/agent/test_compressor_image_tokens.py (4✓, 0.5s)
+[  7.7% |    11/~142 | ✓11 | ✗ 0] ✓ tests/gateway/test_image_input_routing_runtime.py (2✓, 0.5s)
+[ 34.5% |    49/~142 | ✓49 | ✗ 0] ✓ tests/agent/test_image_routing.py (38✓, 0.8s)
+[ 36.6% |    52/~142 | ✓52 | ✗ 0] ✓ tests/gateway/test_native_image_buffer_isolation.py (3✓, 0.5s)
+[ 37.3% |    53/~142 | ✓53 | ✗ 0] ✓ tests/gateway/test_queued_native_image_session_key.py (1✓, 0.7s)
+[ 40.1% |    57/~142 | ✓57 | ✗ 0] ✓ tests/run_agent/test_run_agent_multimodal_prologue.py (4✓, 0.8s)
+[ 85.9% |   122/~142 | ✓122 | ✗  0] ✓ tests/gateway/test_session.py (65✓, 2.0s)
+[100.0% |   142/~142 | ✓177 | ✗  0] ✓ tests/plugins/grantley/test_autocompact.py (55✓, 3.5s)
+
+=== Summary: 9 files, 177 tests passed, 0 failed (100% complete) in 4.2s (4 workers) ===
+  Durations cached to test_durations.json (9 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   9
+  Total subprocess CPU-wall: 9.8s  (runner wall: 4.2s, parallelism: 4x)
+  P50: 0.69s  P90: 3.45s  P95: 3.45s  P99: 3.45s  Max: 3.45s
+  <1s: 7 files (78%)  <2s: 8 files (89%)
+  Top 10 slowest:
+      3.45s  tests/plugins/grantley/test_autocompact.py
+      1.98s  tests/gateway/test_session.py
+      0.82s  tests/run_agent/test_run_agent_multimodal_prologue.py
+      0.79s  tests/agent/test_image_routing.py
+      0.69s  tests/gateway/test_queued_native_image_session_key.py
+      0.55s  tests/gateway/test_image_input_routing_runtime.py
+      0.53s  tests/agent/test_compressor_image_tokens.py
+      0.52s  tests/agent/test_custom_providers_vision.py
+      0.48s  tests/gateway/test_native_image_buffer_isolation.py

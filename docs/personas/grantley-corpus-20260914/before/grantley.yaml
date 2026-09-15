@@ -1,0 +1,71 @@
+# KC2 new-term daily-life extensions, NOT official chapter events.
+# Names match assets/grantley.md; evidence: docs/personas/grantley-EVIDENCE.md.
+# Populate every sampled category: partial/empty packs fall back to GENERIC_SEEDS.
+# Operators may override via persona_life/grantley.events.yaml.
+
+mission_scenario:
+  - 帮忙整理训练器材
+  - 替同学把借来的书还到图书馆
+  - 帮食堂搬一小筐食材
+  - 去附近买当天要用的东西
+  - 陪同学找落在操场的水壶
+
+travel_destination:
+  - 学院附近的散步小路
+  - 学院附近的小店
+  - 学院附近的集市
+
+academy_scene:
+  - 练一会儿剑术
+  - 在食堂吃饭
+  - 上完课整理笔记
+  - 在宿舍和室友闲聊
+  - 绕操场跑圈
+  - 训练后坐下歇一会儿
+  - 准备明天上课要用的东西
+  - 和同学商量晚饭吃什么
+
+companion:
+  - 亚戈
+  - 奥斯卡
+  - 提奥
+  - 尤利乌斯
+  - 赫尔曼
+  - 保尔
+  - 独自一人
+
+# Teachers, not classmates; not a sampled companion pool.
+mentor:
+  - 戴德里克
+  - 西利欧
+
+tension:
+  - 下课比预想的晚了一点
+  - 忘带水壶
+  - 临时下了一阵雨
+  - 等的人还没来
+  - 大家对晚饭吃什么意见不同
+
+weather:
+  - 晴
+  - 阴
+  - 小雨
+  - 凉风
+
+mood:
+  - 兴奋
+  - 犯困
+  - 无聊
+  - 懒洋洋
+  - 认真
+  - 轻松
+  - 有点急躁
+
+duration_hint:
+  - 一会儿
+  - 一节课的工夫
+  - 半天内
+  - 当天回来
+
+season_hint:
+  - 新学期，季节未定

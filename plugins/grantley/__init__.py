@@ -1,4 +1,4 @@
-"""格兰特利·贝尔 (Grantley Bell) — a long-lived character persona for hermes.
+"""格兰特利·贝尔 (Grantly Bell) — a long-lived character persona for hermes.
 
 Ported from the corlinman system. See
 ``docs/migration-corlinman/C1-grantley-port-notes.md`` for what was ported,
@@ -17,7 +17,7 @@ Layout::
     ├── tools.py                 persona_life_* model-facing tools
     ├── jobs.py                  no-LLM decay + life-advance jobs
     ├── channel_binding.py       per-channel persona (OneBot integration point)
-    ├── assets/                  byte-exact ported character content
+    ├── assets/                  evidence-backed character content
     └── scripts/grantley_job.py  cron entry point (no_agent)
 
 Activation. This is a memory provider, so it is selected by name through
@@ -33,11 +33,11 @@ intra-package import is relative so the package works under both the
 in-repo ``plugins.grantley`` name and the deployed
 ``_hermes_user_memory.grantley`` name.
 
-The persona's *stable* identity does not come from here — it belongs in the
-profile's ``SOUL.md``, written by ``scripts/grantley_job.py install-profile``.
-Putting identity in a runtime-registered block would be harmless today and a
-cache hazard the moment someone made it dynamic; keeping the two layers
-physically apart is the point.
+When the plugin manages the persona's *stable* identity, it comes from the
+lane-specific ``grantley.identity`` prompt section. A production profile that
+also serves CLI, Telegram, or unrelated OneBot channels must keep its default
+``SOUL.md`` neutral; a Grantley-wide ``SOUL.md`` is profile-global and cannot
+be lane-gated by this plugin.
 """
 
 from __future__ import annotations
@@ -91,16 +91,44 @@ def register(ctx) -> None:
     provider = GrantleyMemoryProvider(config=config)
     ctx.register_memory_provider(provider)
 
-    if config.get("inject_identity_section"):
-        try:
-            from .persona import load_persona_document
+    def _register_lane_section(section_id: str, loader) -> None:
+        """Register one frozen, lane-gated prompt section.
 
-            ctx.register_system_prompt_section(
-                "grantley.identity",
-                load_persona_document().stable,
-            )
+        Both sections share a single gate (``is_grantley_onebot_lane``) so a
+        non-Grantley lane cannot receive either half, and both are captured
+        once at registration: the content is a pure function of the asset, so
+        it belongs in the cached prefix, not in the per-turn sidecar.
+        """
+        try:
+            from .channel_binding import is_grantley_onebot_lane
+
+            content = loader()
+
+            def _bound(session_info) -> str:
+                if not is_grantley_onebot_lane(
+                    platform=session_info.get("platform"),
+                    chat_id=session_info.get("chat_id"),
+                    chat_type=session_info.get("chat_type"),
+                    channels=config.get("channels"),
+                ):
+                    return ""
+                return content
+
+            ctx.register_system_prompt_section(section_id, _bound)
         except Exception as exc:  # noqa: BLE001 - never block provider load
-            logger.warning("grantley: identity section not registered (%s)", exc)
+            logger.warning("grantley: %s section not registered (%s)", section_id, exc)
+
+    if config.get("inject_identity_section"):
+        from .persona import load_persona_document
+
+        _register_lane_section(
+            "grantley.identity", lambda: load_persona_document().stable
+        )
+
+    if config.get("inject_voice_section"):
+        from .persona import load_voice_document
+
+        _register_lane_section("grantley.voice", load_voice_document)
 
 
 #: Back-compat alias for the pre-E0 private name.

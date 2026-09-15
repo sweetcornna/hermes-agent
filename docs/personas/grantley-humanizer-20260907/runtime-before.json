@@ -1,0 +1,22 @@
+{
+  "image": "sha256:8bce426d1e93c851cd676dc1807b822a7094d7f753139d7b9467e50dbfd79366",
+  "user": "991:988",
+  "mounts": [
+    {
+      "Source": "/opt/hermes-cloud/home",
+      "Destination": "/opt/hermes/home",
+      "RW": true
+    },
+    {
+      "Source": "/opt/hermes-cloud/repo",
+      "Destination": "/opt/hermes/repo",
+      "RW": true
+    },
+    {
+      "Source": "/opt/hermes-cloud/data",
+      "Destination": "/opt/hermes/data",
+      "RW": true
+    }
+  ],
+  "started_at": "2026-09-07T01:10:14.914786705Z"
+}

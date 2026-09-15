@@ -35,8 +35,20 @@ from plugins.grantley.store import GrantleyStore
 @pytest.fixture
 def provider() -> GrantleyMemoryProvider:
     conn = sqlite3.connect(":memory:", check_same_thread=False)
-    prov = GrantleyMemoryProvider(connection=conn)
-    prov.initialize("test-session")
+    prov = GrantleyMemoryProvider(
+        connection=conn,
+        config={
+            "channels": {
+                "183287894": {"persona": "grantley", "group": True}
+            }
+        },
+    )
+    prov.initialize(
+        "test-session",
+        platform="onebot",
+        chat_id="183287894",
+        chat_type="group",
+    )
     return prov
 
 

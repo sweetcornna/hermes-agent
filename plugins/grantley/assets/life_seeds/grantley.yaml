@@ -1,111 +1,71 @@
-# Event-seed pack for the built-in `grantley` persona.
-# Ported verbatim from hermes-agent/tools/grantly_life_tool.py (_DEFAULT_SEEDS).
-# Grantley (格兰特利·贝尔) lives at the Knights College (骑士学院); these cues
-# feed `persona_life_event_seed` so missions / travels / academy scenes stay
-# fresh. Operators can override per persona via
-# <DATA_DIR>/persona_life/grantley.events.yaml.
+# KC2 new-term daily-life extensions, NOT official chapter events.
+# Names match assets/grantley.md; evidence: docs/personas/grantley-EVIDENCE.md.
+# Populate every sampled category: partial/empty packs fall back to GENERIC_SEEDS.
+# Operators may override via persona_life/grantley.events.yaml.
 
 mission_scenario:
-  - 护送商队穿越北境森林
-  - 调查山村的孩子失踪案
-  - 陪学院教授去古战场取样
-  - 替骑士团捎信去港口
-  - 协助镇压走私团伙
-  - 替商会找回被劫的家传剑
-  - 驱除山道上的野兽
-  - 守夜监视一处可疑古迹
-  - 替村子里的老人寻找走失的猎犬
-  - 押送一名嫌犯回首都
+  - 帮忙整理训练器材
+  - 替同学把借来的书还到图书馆
+  - 帮食堂搬一小筐食材
+  - 去附近买当天要用的东西
+  - 陪同学找落在操场的水壶
 
 travel_destination:
-  - 海港小镇
-  - 北境森林边缘的猎人村
-  - 首都市集
-  - 古战场废墟
-  - 深山温泉
-  - 雪原边境哨所
-  - 湖心岛上的灯塔
-  - 南方葡萄园
-  - 断崖修道院
-  - 废弃矿洞口的小集市
+  - 学院附近的散步小路
+  - 学院附近的小店
+  - 学院附近的集市
 
 academy_scene:
-  - 剑术场训练
-  - 食堂蹭夜宵
-  - 图书馆混过自习
-  - 宿舍走廊跟人吵架
-  - 马厩刷马
-  - 操场跑圈
-  - 屋顶上吹风
-  - 教务处门口被点名
-  - 澡堂排队
-  - 练习场旁边偷懒
+  - 练一会儿剑术
+  - 在食堂吃饭
+  - 上完课整理笔记
+  - 在宿舍和室友闲聊
+  - 绕操场跑圈
+  - 训练后坐下歇一会儿
+  - 准备明天上课要用的东西
+  - 和同学商量晚饭吃什么
 
 companion:
-  - 艾尔戈
+  - 亚戈
   - 奥斯卡
   - 提奥
   - 尤利乌斯
   - 赫尔曼
   - 保尔
   - 独自一人
-  - 一只跟着的流浪狗
 
-# 教官/校长，不是同期同伴 —— 不放进 companion 池。
-# 名单核查见 docs/migration-corlinman/C5-grantley-canon-research.md §B3/§F。
+# Teachers, not classmates; not a sampled companion pool.
 mentor:
   - 戴德里克
   - 西利欧
 
 tension:
-  - 传闻有野兽出没
-  - 天气说变就变
-  - 队伍里有人情绪不对
-  - 目标比想象的难找
-  - 时间比预想的紧
-  - 突然下大雾
-  - 一切顺利得反常
-  - 中途收到学院的紧急信
-  - 路上遇到熟人
-  - 钱包丢了
+  - 下课比预想的晚了一点
+  - 忘带水壶
+  - 临时下了一阵雨
+  - 等的人还没来
+  - 大家对晚饭吃什么意见不同
 
 weather:
   - 晴
   - 阴
   - 小雨
-  - 暴雨
-  - 大雾
-  - 雪
-  - 闷热
   - 凉风
-  - 夜风
-  - 正午烈日
 
 mood:
   - 兴奋
   - 犯困
-  - 心情复杂
-  - 痞痞的
-  - 嘴硬
-  - 想家
   - 无聊
-  - 警觉
   - 懒洋洋
   - 认真
+  - 轻松
+  - 有点急躁
 
 duration_hint:
-  - 半天
-  - 一整天
-  - 两三天
-  - 三天到一周
-  - 一周左右
-  - 可能要十天
-  - 看情况
+  - 一会儿
+  - 一节课的工夫
+  - 半天内
+  - 当天回来
 
 season_hint:
-  - 初春
-  - 盛夏
-  - 初秋
-  - 深秋
-  - 初冬
-  - 雪季
+  - 新学期，季节未定

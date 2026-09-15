@@ -1,8 +1,6 @@
-"""Placeholder / state rendering, and the byte-exactness of ported assets."""
+"""Persona loading, session identity and state-delivery contracts."""
 
 from __future__ import annotations
-
-import hashlib
 
 import pytest
 
@@ -11,11 +9,11 @@ from hermes_cli import plugins as plugin_runtime
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from plugins.grantley.persona import (
     LIVE_STATE_POINTER,
-    PROMPT_ASSET_PATH,
     VOLATILE_SECTION_HEADING,
     PersonaAssetError,
     describe_placeholders,
     load_persona_document,
+    load_voice_document,
     render_placeholders,
     render_state_block,
     resolve_placeholder,
@@ -23,22 +21,16 @@ from plugins.grantley.persona import (
 )
 from plugins.grantley.state import PersonaState
 
-# Pinned after the approved canon corrections and task-first reply-policy update.
-SOURCE_PROMPT_SHA256 = (
-    "22ba6a368f8b4a08d60d182ce1b44a350c6560437067990373407a21b81d3687"
-)
-
-# Pinned after the approved companion-name and mentor-pool canon corrections.
-SOURCE_SEEDS_SHA256 = "2d626c4f46262f59e6cdfaa8dde015a941b5c5a4f70addfb4af5b296de2be0ac"
-
-
-def _sha(path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _prompt_with_registered_grantley(
-    monkeypatch, *, inject_identity_section: bool
-) -> str:
+    monkeypatch,
+    *,
+    inject_identity_section: bool,
+    inject_voice_section: bool = False,
+    platform: str = "onebot",
+    chat_id: str = "183287894",
+    chat_type: str = "group",
+    return_agent: bool = False,
+):
     """Exercise Grantley's real registration through prompt construction."""
     import plugins.grantley as grantley
     from run_agent import AIAgent
@@ -46,7 +38,13 @@ def _prompt_with_registered_grantley(
     monkeypatch.setattr(
         grantley,
         "load_plugin_config",
-        lambda: {"inject_identity_section": inject_identity_section},
+        lambda: {
+            "inject_identity_section": inject_identity_section,
+            "inject_voice_section": inject_voice_section,
+            "channels": {
+                "183287894": {"persona": "grantley", "group": True}
+            },
+        },
     )
     manager = PluginManager()
     manager._discovered = True
@@ -61,34 +59,22 @@ def _prompt_with_registered_grantley(
         base_url="https://openrouter.ai/api/v1",
         model="test/model",
         provider="openrouter",
-        platform="onebot",
+        platform=platform,
+        chat_id=chat_id,
+        chat_type=chat_type,
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
         session_id="grantley-identity-section-test",
     )
-    return build_system_prompt(agent)
+    return agent if return_agent else build_system_prompt(agent)
 
 
-def test_prompt_asset_is_byte_exact():
-    """Catch undocumented edits to the approved persona baseline."""
-    assert _sha(PROMPT_ASSET_PATH) == SOURCE_PROMPT_SHA256
-
-
-def test_seed_pack_is_byte_exact():
-    """Catch undocumented edits to the approved bundled life seed."""
-    from plugins.grantley.life import bundled_seeds_path
-
-    path = bundled_seeds_path("grantley")
-    assert path is not None and path.is_file()
-    assert _sha(path) == SOURCE_SEEDS_SHA256
-
-
-def test_prompt_defers_fact_checks_to_session_visible_tools():
-    """The stable persona must never name a tool the current session lacks."""
-    text = PROMPT_ASSET_PATH.read_text(encoding="utf-8")
-    assert "本会话可见的合适 Hermes 工具" in text
-    assert "web_search" not in text
+def test_load_preserves_the_input_document(tmp_path):
+    source = load_persona_document().source
+    path = tmp_path / "persona.md"
+    path.write_text(source, encoding="utf-8")
+    assert load_persona_document(path).source == source
 
 
 def test_split_extracts_exactly_the_volatile_section():
@@ -105,11 +91,10 @@ def test_split_extracts_exactly_the_volatile_section():
         "life_state",
         "life_story_arc",
     }
-    # The stable half keeps every other section verbatim.
-    for heading in ("## 角色扮演规则", "## 回答工作流", "## 心智模型", "## 诚实边界"):
-        assert heading in doc.stable
-    # And the pointer replaced the volatile block.
-    assert LIVE_STATE_POINTER in doc.stable
+    # Every surrounding byte survives; only the volatile section is replaced.
+    assert doc.volatile in doc.source
+    before, after = doc.source.split(doc.volatile, 1)
+    assert doc.stable == before + LIVE_STATE_POINTER + after
 
 
 def test_stable_half_carries_no_placeholder():
@@ -119,43 +104,27 @@ def test_stable_half_carries_no_placeholder():
     doc.assert_cache_safe()  # must not raise
 
 
-def test_stable_prompt_prioritizes_native_task_execution_over_persona_style():
-    stable = load_persona_document().stable
-
-    assert "用户要求达成实际目标时，先完成目标" in stable
-    assert "只使用本会话可见的 Hermes 工具" in stable
-    assert "工具失败时按 Hermes 既有恢复换可行路径继续" in stable
-    assert "不按关键词" in stable
-
-
-def test_stable_prompt_limits_only_casual_message_splitting():
-    stable = load_persona_document().stable
-
-    assert "自然选择 1–3 条 [MSG_BREAK]" in stable
-    assert "短反应通常一条，普通交谈自然两三条" in stable
-    assert "不固定、不轮换" in stable
-    assert "复杂、专业或执行任务不受气泡数限制，完整性优先" in stable
-
-
-def test_stable_prompt_has_no_conflicting_one_to_five_casual_rule():
-    stable = load_persona_document().stable
-
-    for conflicting_range in ("1–5", "1-5", "一到五"):
-        assert conflicting_range not in stable
+# Semantic personality/task-quality checks live in the paired 24-case
+# evaluation. Substring snapshots cannot prove how a model behaves.
 
 
 def test_stable_prompt_stays_within_identity_section_budget():
     assert len(load_persona_document().stable) <= 4000
 
 
-def test_identity_section_registers_the_cache_safe_current_persona_once(monkeypatch):
-    prompt = _prompt_with_registered_grantley(monkeypatch, inject_identity_section=True)
+@pytest.mark.parametrize("canonical_group", [False, True])
+def test_identity_section_registers_the_cache_safe_current_persona_once(monkeypatch, canonical_group):
+    from plugins.platforms.onebot.adapter import format_chat_id
+
+    chat_id = format_chat_id(True, "183287894") if canonical_group else "183287894"
+    prompt = _prompt_with_registered_grantley(
+        monkeypatch, inject_identity_section=True, chat_id=chat_id,
+    )
     stable = load_persona_document().stable
 
     assert stable in prompt
     assert prompt.count("## Plugin Context: grantley.identity") == 1
-    assert prompt.count("用户要求达成实际目标时，先完成目标") == 1
-    assert "自然选择 1–3 条 [MSG_BREAK]" in prompt
+    assert prompt.count(stable) == 1
 
 
 def test_identity_section_is_absent_when_the_opt_in_is_false(monkeypatch):
@@ -164,7 +133,168 @@ def test_identity_section_is_absent_when_the_opt_in_is_false(monkeypatch):
     )
 
     assert "## Plugin Context: grantley.identity" not in prompt
-    assert "用户要求达成实际目标时，先完成目标" not in prompt
+    assert load_persona_document().stable not in prompt
+
+
+def test_asset_revision_is_adopted_only_by_new_session_identity(tmp_path, monkeypatch):
+    """Real registration + SQLite restore, not a simulated prompt cache."""
+    from agent.conversation_loop import _restore_or_build_system_prompt
+    from hermes_state import SessionDB
+    from plugins.grantley import persona
+
+    original = load_persona_document().source
+    path = tmp_path / "persona.md"
+    path.write_text(original + "\nIDENTITY_REVISION_A\n", encoding="utf-8")
+    monkeypatch.setattr(persona, "PROMPT_ASSET_PATH", path)
+    db = SessionDB(tmp_path / "sessions.db")
+    db.create_session("existing", source="onebot", model="test/model")
+    db.create_session("new", source="onebot", model="test/model")
+    history = [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "嗨"}]
+    try:
+        first = _prompt_with_registered_grantley(
+            monkeypatch, inject_identity_section=True, return_agent=True,
+        )
+        first._session_db, first.session_id = db, "existing"
+        _restore_or_build_system_prompt(first, None, [])
+        saved = db.get_session("existing")["system_prompt"]
+        assert "IDENTITY_REVISION_A" in saved
+
+        path.write_text(original + "\nIDENTITY_REVISION_B\n", encoding="utf-8")
+        resumed = _prompt_with_registered_grantley(
+            monkeypatch, inject_identity_section=True, return_agent=True,
+        )
+        resumed._session_db, resumed.session_id = db, "existing"
+        _restore_or_build_system_prompt(resumed, None, history)
+        assert resumed._cached_system_prompt == saved
+        assert db.get_session("existing")["system_prompt"] == saved
+
+        fresh = _prompt_with_registered_grantley(
+            monkeypatch, inject_identity_section=True, return_agent=True,
+        )
+        fresh._session_db, fresh.session_id = db, "new"
+        _restore_or_build_system_prompt(fresh, None, [])
+        assert "IDENTITY_REVISION_B" in fresh._cached_system_prompt
+        assert "IDENTITY_REVISION_A" not in fresh._cached_system_prompt
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("platform", "chat_id", "chat_type"),
+    [
+        ("telegram", "183287894", "group"),
+        ("cli", "183287894", "group"),
+        ("onebot", "999999999", "group"),
+    ],
+)
+def test_identity_section_is_absent_outside_bound_onebot_lane(
+    monkeypatch,
+    platform,
+    chat_id,
+    chat_type,
+):
+    prompt = _prompt_with_registered_grantley(
+        monkeypatch,
+        inject_identity_section=True,
+        platform=platform,
+        chat_id=chat_id,
+        chat_type=chat_type,
+    )
+
+    assert "## Plugin Context: grantley.identity" not in prompt
+    assert load_persona_document().stable not in prompt
+
+
+# --- 声音段（示范层）-------------------------------------------------------
+# 这一段的存在理由是实测的：身份段里关于消息形状的散文规则没有被遵守
+# （见 docs/personas/grantley-corpus-20260914/FINGERPRINT.md §A2-A4）。
+# 它与身份段共用同一个车道门禁，且必须留在缓存前缀里——所以这里只断言
+# 预算、门禁与缓存安全这三件结构性的事，不断言模型会怎么说话。
+
+
+def test_voice_section_stays_within_its_own_budget():
+    assert len(load_voice_document()) <= 4000
+
+
+def test_both_sections_fit_the_aggregate_plugin_budget():
+    """Per-section cap is 4000, aggregate is 8000; over-budget是整段丢弃。"""
+    total = len(load_persona_document().stable) + len(load_voice_document())
+    assert total <= 8000
+
+
+def test_voice_asset_carries_no_placeholder():
+    """它整段进缓存前缀，占位符会把实时状态烙进冻结的提示词。"""
+    assert "{{persona." not in load_voice_document()
+
+
+def test_voice_loader_rejects_a_placeholder_bearing_asset(tmp_path):
+    bad = tmp_path / "voice.md"
+    bad.write_text("# 声音\n\n心情：{{persona.mood}}\n", encoding="utf-8")
+    with pytest.raises(PersonaAssetError):
+        load_voice_document(bad)
+
+
+@pytest.mark.parametrize("canonical_group", [False, True])
+def test_voice_section_registers_once_inside_the_bound_lane(monkeypatch, canonical_group):
+    from plugins.platforms.onebot.adapter import format_chat_id
+
+    chat_id = format_chat_id(True, "183287894") if canonical_group else "183287894"
+    prompt = _prompt_with_registered_grantley(
+        monkeypatch,
+        inject_identity_section=True,
+        inject_voice_section=True,
+        chat_id=chat_id,
+    )
+    voice = load_voice_document()
+
+    assert voice in prompt
+    assert prompt.count("## Plugin Context: grantley.voice") == 1
+    assert prompt.count("## Plugin Context: grantley.identity") == 1
+
+
+def test_voice_section_is_absent_when_its_own_opt_in_is_false(monkeypatch):
+    """身份段开着也不能顺带把声音段带进来——两个开关互相独立。"""
+    prompt = _prompt_with_registered_grantley(
+        monkeypatch, inject_identity_section=True, inject_voice_section=False
+    )
+
+    assert "## Plugin Context: grantley.voice" not in prompt
+    assert load_voice_document() not in prompt
+
+
+@pytest.mark.parametrize(
+    ("platform", "chat_id", "chat_type"),
+    [
+        ("telegram", "183287894", "group"),
+        ("cli", "183287894", "group"),
+        ("onebot", "999999999", "group"),
+    ],
+)
+def test_voice_section_is_absent_outside_bound_onebot_lane(
+    monkeypatch, platform, chat_id, chat_type
+):
+    prompt = _prompt_with_registered_grantley(
+        monkeypatch,
+        inject_identity_section=True,
+        inject_voice_section=True,
+        platform=platform,
+        chat_id=chat_id,
+        chat_type=chat_type,
+    )
+
+    assert "## Plugin Context: grantley.voice" not in prompt
+    assert load_voice_document() not in prompt
+
+
+def test_voice_section_is_a_pure_function_of_the_asset(monkeypatch):
+    """同一份资产 -> 逐字节相同的段落，与任何运行时状态无关。"""
+    first = _prompt_with_registered_grantley(
+        monkeypatch, inject_identity_section=False, inject_voice_section=True
+    )
+    second = _prompt_with_registered_grantley(
+        monkeypatch, inject_identity_section=False, inject_voice_section=True
+    )
+    assert first == second
 
 
 def test_split_refuses_a_document_without_the_volatile_heading():

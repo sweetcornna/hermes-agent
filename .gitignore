@@ -209,3 +209,11 @@ native/fts5_cjk/*.so
 # corlinman production migration/backup bundle (personal conversation data,
 # QQ history, persona definitions, redacted secrets) — never committed.
 /.migration-export/
+
+# 格兰特利语料轮（2026-09-14）：源自真实 QQ 聊天的采样产物不入库。
+# 刺激文本本身从未落盘（只记 stimulus_sha256），但这些文件里的模型输出会复述真人原话，
+# probe-old-corpus 更是 1697 条旧人格在真实会话里的原话。复现方式见该轮 README「复现」。
+/docs/personas/grantley-corpus-20260914/arm-*.jsonl
+/docs/personas/grantley-corpus-20260914/stimuli.jsonl
+/docs/personas/grantley-corpus-20260914/stimuli-v*.jsonl
+/docs/personas/grantley-corpus-20260914/probe-old-corpus.jsonl

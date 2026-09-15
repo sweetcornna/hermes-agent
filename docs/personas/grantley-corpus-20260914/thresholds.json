@@ -1,0 +1,18 @@
+{
+  "thresholds_source": "docs/personas/grantley-corpus-20260914/baseline-accepted.jsonl",
+  "n": 120,
+  "incumbent_tier2_violations": {
+    "句首哈？": 1,
+    "闲聊Markdown标题": 4
+  },
+  "reply_p90": 132,
+  "bubbles_ge2_share": 0.2,
+  "modal_per_100": 0.343,
+  "tail_period_share": 0.9,
+  "tolerance": {
+    "reply_p90_max_factor": 1.5,
+    "bubbles_ge2_share_drop": 0.15,
+    "modal_per_100_drop": 0.0,
+    "tail_period_share_rise": 0.05
+  }
+}

@@ -2,7 +2,7 @@
 
 This module is where the migration's central architectural decision lives.
 
-The source prompt body (``assets/grantley.md``, byte-exact from corlinman)
+The source prompt body (``assets/grantley.md``, maintained after the corlinman port)
 embeds live mutable state directly in the system prompt under the
 ``## 此刻的我（实时状态）`` heading::
 
@@ -23,9 +23,9 @@ than a conversation, so interpolating them into the system prompt would
 guarantee a cache miss on every turn that a decay tick or a life beat landed
 between.
 
-Resolution: **split the document, don't edit it.**
+Resolution: **split at the stable / volatile boundary.**
 
-:func:`split_persona_document` partitions the byte-exact source at the
+:func:`split_persona_document` partitions the current source at the
 ``## 此刻的我（实时状态）`` heading into two halves:
 
 * :attr:`PersonaDocument.stable` — everything else, with the volatile section
@@ -38,11 +38,10 @@ Resolution: **split the document, don't edit it.**
   through the cache-safe user-message sidecar
   (``MemoryProvider.prefetch()`` → ``<memory-context>`` → ``api_content``).
 
-The character text is never rewritten: the split is mechanical and the
-on-disk asset stays byte-identical to corlinman's copy (asserted by test).
-The only authored addition is :data:`LIVE_STATE_POINTER`, which is framework
-scaffolding rather than character content — without it the model has no idea
-the state block riding on each user message describes *itself*.
+The split preserves all text outside the volatile section. Persona revisions
+are deliberate asset edits and are adopted by newly constructed identities;
+existing conversation prefixes are not rewritten. Evidence and the pre-KC2
+baseline are recorded under ``docs/personas/``.
 """
 
 from __future__ import annotations
@@ -79,20 +78,26 @@ LIVE_STATE_POINTER: str = (
     "你的实时状态（心情 / 精神状态 / 最近在聊 / 现在在做 / 人在哪 / 身边有谁 / "
     "状态 / 当前剧情线）不写在这里。\n"
     "每一轮对话都会在最新一条消息里附带一个 `<persona-state>` 块，"
-    "那里面才是你**当前**的真实状态——以最新的一个为准。\n"
-    "说话时自然带上，不要逐条复述、不要当成清单念出来。空着的字段就当它不存在。"
+    "那里面是角色延展日常的当前状态，以最新的一个为准，"
+    "不是官方剧情或现实执行凭证。\n"
+    "只在相关时自然提到，不逐条复述。空字段保持未知，不能据此填故事。"
 )
 
 #: ``{{persona.<key>}}`` — the placeholder shape used by the source prompt.
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*persona\.([A-Za-z0-9_]+)\s*\}\}")
 
-#: Directory holding the byte-exact ported assets.
+#: Directory holding the maintained persona assets.
 ASSETS_DIR: Path = Path(__file__).resolve().parent / "assets"
 
-#: The ported system-prompt body. Byte-identical to corlinman's
-#: ``corlinman_server/persona/default_grantley.md`` (the repo copy, which says
-#: ``web_search`` — the wire tool name hermes actually dispatches).
+#: Current persona document; full-source hashes belong in evaluation records,
+#: not tests that would prohibit routine, evidence-backed revisions.
 PROMPT_ASSET_PATH: Path = ASSETS_DIR / "grantley.md"
+
+#: Demonstration layer: how he talks, measured against his own bound channel.
+#: Separate asset, separate prompt section — the identity budget is nearly
+#: spent and prose rules about message shape were measurably not followed
+#: (see docs/personas/grantley-corpus-20260914/FINGERPRINT.md §A2-A4).
+VOICE_ASSET_PATH: Path = ASSETS_DIR / "voice.md"
 
 #: Tag wrapping the per-turn state block in the user-message sidecar.
 STATE_BLOCK_TAG: str = "persona-state"
@@ -114,8 +119,7 @@ class PersonaDocument:
         The live-state section template, still holding its ``{{persona.*}}``
         placeholders. Rendered per turn into the user-message sidecar.
     source
-        The unmodified document, kept so callers can assert byte-equality
-        with the corlinman original.
+        The unmodified input document, retained for provenance and diagnostics.
     """
 
     stable: str
@@ -193,6 +197,26 @@ def load_persona_document(path: Path | None = None) -> PersonaDocument:
     except OSError as exc:
         raise PersonaAssetError(f"cannot read persona prompt {target}: {exc}") from exc
     return split_persona_document(text)
+
+
+def load_voice_document(path: Path | None = None) -> str:
+    """Load the demonstration layer verbatim.
+
+    Unlike the persona body this asset has no volatile section: it is a pure
+    cached-prefix payload. A placeholder here would silently bake live state
+    into the frozen prompt, so we reject it loudly instead.
+    """
+    target = Path(path) if path is not None else VOICE_ASSET_PATH
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PersonaAssetError(f"cannot read voice asset {target}: {exc}") from exc
+    leaked = sorted(set(_PLACEHOLDER_RE.findall(text)))
+    if leaked:
+        raise PersonaAssetError(
+            f"voice asset must not contain placeholders, found: {leaked}"
+        )
+    return text
 
 
 def resolve_placeholder(state: PersonaState, key: str) -> str:

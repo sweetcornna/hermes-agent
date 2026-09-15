@@ -1,0 +1,42 @@
+{
+  "model": "gpt-6-astra",
+  "provider": "cornna",
+  "channels": {
+    "1082225370": {
+      "persona": "grantley",
+      "group": true,
+      "channel_owner": "2104743984"
+    },
+    "183287894": {
+      "persona": "grantley",
+      "group": true,
+      "channel_owner": "2104743984"
+    },
+    "149881991": {
+      "persona": "grantley",
+      "group": true,
+      "channel_owner": "2104743984"
+    },
+    "667528618": {
+      "persona": "grantley",
+      "group": true,
+      "channel_owner": "2104743984"
+    },
+    "2104743984": {
+      "persona": "grantley",
+      "group": false,
+      "channel_owner": "2104743984"
+    },
+    "894800697": {
+      "persona": "grantley",
+      "group": true,
+      "channel_owner": "2104743984"
+    }
+  },
+  "identity_enabled": true,
+  "gateway_state": "running",
+  "active_agents": 1,
+  "onebot_state": "connected",
+  "asset_sha256": "a7e0c1ab37d49a1904e5e57abb1f3a091dc9d0cae8acf3ac0760f146bec6e062",
+  "config_sha256": "d6abfc346743bf2b9c0c926da831fa8024ce67f50fa0e93c77ec685a3784a20a"
+}

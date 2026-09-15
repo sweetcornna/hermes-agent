@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "<string>", line 29, in <module>
+  File "/usr/local/lib/python3.11/shutil.py", line 448, in copy2
+    copyfile(src, dst, follow_symlinks=follow_symlinks)
+  File "/usr/local/lib/python3.11/shutil.py", line 256, in copyfile
+    with open(src, 'rb') as fsrc:
+         ^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/opt/hermes/data/.deployments/grantley-humanizer-20260907/backup/sessions.json'

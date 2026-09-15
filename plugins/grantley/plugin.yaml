@@ -36,13 +36,40 @@ config_schema:
     description: >-
       Register the stable identity as a frozen system-prompt section instead
       of managing SOUL.md. Off by default; SOUL.md is the correct layer.
+  inject_voice_section:
+    type: boolean
+    default: false
+    description: >-
+      Register the demonstration layer (assets/voice.md) as a second frozen,
+      lane-gated system-prompt section. Independent of the identity switch and
+      of SOUL.md: it carries message shape only, measured against the bound
+      channel's own human register. Each section is capped at 4000 chars with
+      an 8000-char aggregate budget; over-budget sections are dropped whole,
+      not truncated, so keep both assets well under.
   channels:
     type: object
     default: {}
     description: >-
-      Per-channel persona bindings, keyed by chat id. Each entry accepts
-      persona / channel_owner / group / name. Consumed by the platform
-      adapter through plugins.grantley.channel_binding.
+      Strict per-channel allowlist keyed by exact chat id. A lane is enabled
+      only when its entry explicitly sets persona: grantley; missing, empty,
+      malformed, or non-matching maps fail closed. Entries may also include
+      channel_owner / group / name. Consumed by the platform adapter through
+      plugins.grantley.channel_binding.
+  autocompact:
+    type: object
+    default:
+      enabled: true
+      threshold: 0.75
+      threshold_tokens: null
+      tail_tokens: 16000
+    description: >-
+      Grantley OneBot rolling-compaction policy object. Runtime validation is
+      authoritative: enabled must be boolean (default true); threshold must be
+      a finite number from 0.10 through 0.95 (default 0.75);
+      threshold_tokens must be null or a positive integer clamped to
+      4096..2000000 (default null); tail_tokens must be a positive integer
+      clamped to 256..1000000 (default 16000). Invalid fields fall back
+      independently without disabling other valid fields.
 tags:
   - persona
   - memory

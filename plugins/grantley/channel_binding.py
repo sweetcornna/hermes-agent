@@ -19,21 +19,15 @@ Cache contract
 --------------
 Ephemeral is *legal* to vary between conversations but **must be byte-stable
 within one**, because it is still part of the system message the provider
-hashes. So this module returns a **daily frozen snapshot**:
+hashes. Channel prose therefore contains only the binding. Daily activities,
+like mood and fatigue, belong in the memory provider's current-user-message
+sidecar. A daily snapshot is not a session snapshot: conversations cross midnight.
+``daily_snapshot`` remains available to callers that explicitly need a life beat.
 
-* it reads today's life beat, which is deterministic per ``(persona, date)``
-  (see :func:`plugins.grantley.life.daily_rng`) — not the live row, which a
-  decay tick can change at any moment;
-* it never reads ``fatigue``, ``mood`` or ``recent_topics``. Those decay
-  continuously and belong in the per-turn sidecar, not here;
-* it is a pure function of ``(binding, date)``, so two calls on the same day
-  for the same channel are byte-identical — asserted by test.
-
-What is genuinely per-channel is *who the persona is talking to*: the
-``channel_owner`` (群主) that the character's 单相思 dynamic is written
-around. In corlinman production that is QQ uid ``2104743984``. That mapping
-cannot live in the shared identity prompt because it differs per group, which
-is exactly why this layer exists.
+What is genuinely per-channel is *who the persona is talking to*. The
+``channel_owner`` mapping identifies a channel contact. A specific QQ account's
+character identity is a separate stable binding, never inferred from merely
+owning a channel.
 
 Integration point for the OneBot adapter
 ----------------------------------------
@@ -68,6 +62,69 @@ from typing import Any, Mapping
 from . import life
 from .persona import PERSONA_ID
 
+ARGO_ACCOUNT_ID = "2104743984"
+
+
+def is_grantley_onebot_lane(
+    *,
+    platform: Any,
+    chat_id: Any,
+    chat_type: Any,
+    channels: Mapping[str, Any] | None,
+) -> bool:
+    """Whether session metadata resolves to a configured Grantley QQ lane.
+
+    This is the single gate shared by provider state, tools, compression, and
+    the optional identity prompt.  Keeping it in the plugin prevents a global
+    ``memory.provider: grantley`` setting from leaking persona state into CLI,
+    Telegram, or an unbound OneBot channel.
+    """
+    normalized_platform = str(platform or "").strip().lower()
+    normalized_chat_id = str(chat_id or "").strip()
+    normalized_chat_type = str(chat_type or "").strip().lower()
+    if (
+        normalized_platform != "onebot"
+        or normalized_chat_type not in {"group", "dm", "private"}
+        or not normalized_chat_id
+    ):
+        return False
+    # OneBot's format_chat_id(True, number) emits g<number> to distinguish
+    # groups from contacts throughout SessionSource and AIAgent. Config uses
+    # the raw platform number. Decode only this canonical group form, and
+    # require an explicit group binding below; do not accept user-facing
+    # target aliases such as group:123 or reinterpret a DM as a group.
+    canonical_group = (
+        normalized_chat_type == "group"
+        and normalized_chat_id.startswith("g")
+        and normalized_chat_id[1:].isascii()
+        and normalized_chat_id[1:].isdigit()
+    )
+    if canonical_group:
+        normalized_chat_id = normalized_chat_id[1:]
+    # Strict explicit allowlist. A profile can serve several platforms and
+    # unrelated OneBot chats, so absence of a usable map must never mean
+    # "Grantley everywhere". Normalize map keys to strings solely so a YAML
+    # integer chat id can match the adapter's string id. No general alias
+    # expansion is performed.
+    if not isinstance(channels, Mapping) or not channels:
+        return False
+    matches = [
+        entry
+        for configured_chat_id, entry in channels.items()
+        if str(configured_chat_id).strip() == normalized_chat_id
+    ]
+    # YAML normally cannot preserve duplicate scalar keys, but Python callers
+    # can supply both ``123`` and ``"123"``. After string normalization that
+    # is ambiguous, so fail closed rather than trusting insertion order.
+    if len(matches) != 1 or not isinstance(matches[0], Mapping):
+        return False
+    persona = matches[0].get("persona")
+    return (
+        isinstance(persona, str)
+        and persona.strip().lower() == PERSONA_ID
+        and (not canonical_group or matches[0].get("group") is True)
+    )
+
 
 @dataclass(frozen=True)
 class PersonaChannelBinding:
@@ -80,11 +137,10 @@ class PersonaChannelBinding:
     chat_id
         Platform-native channel id (QQ group id, or the peer uid for a DM).
     channel_owner_id
-        The uid the character's ``channel_owner`` / 群主 dynamic points at.
-        ``None`` for channels with no such relationship.
+        The uid of the channel contact. It conveys no fictional relationship.
+        ``None`` for channels with no configured contact.
     is_group
-        Group chat vs direct message. Changes the tone guidance the character
-        prompt already specifies ("普通群友：随意痞帅、保持距离").
+        Group chat vs direct message. Identifies the conversational surface.
     display_name
         Optional human-readable channel name, for the operator's benefit.
     """
@@ -116,19 +172,35 @@ def bindings_from_config(raw: Mapping[str, Any] | None) -> dict[str, PersonaChan
             persona: grantley
             group: false
 
-    Unknown keys are ignored and a malformed entry is skipped rather than
-    raising — a typo in operator config must not take the gateway down.
+    Unknown keys are ignored. Entries missing an explicit
+    ``persona: grantley`` binding and malformed entries are skipped rather
+    than raising — a typo in operator config must not take the gateway down.
     """
     out: dict[str, PersonaChannelBinding] = {}
     if not isinstance(raw, Mapping):
         return out
+    normalized_entries: dict[str, list[Any]] = {}
     for chat_id, entry in raw.items():
+        normalized_chat_id = str(chat_id).strip()
+        if not normalized_chat_id:
+            continue
+        normalized_entries.setdefault(normalized_chat_id, []).append(entry)
+    for chat_id, entries in normalized_entries.items():
+        if len(entries) != 1:
+            continue
+        entry = entries[0]
         if not isinstance(entry, Mapping):
+            continue
+        persona = entry.get("persona")
+        if not (
+            isinstance(persona, str)
+            and persona.strip().lower() == PERSONA_ID
+        ):
             continue
         owner = entry.get("channel_owner")
         out[str(chat_id)] = PersonaChannelBinding(
-            persona_id=str(entry.get("persona") or PERSONA_ID),
-            chat_id=str(chat_id),
+            persona_id=PERSONA_ID,
+            chat_id=chat_id,
             channel_owner_id=str(owner) if owner not in (None, "") else None,
             is_group=bool(entry.get("group", False)),
             display_name=str(entry.get("name") or ""),
@@ -171,28 +243,31 @@ def daily_snapshot(
 
 
 def render_channel_prompt(snapshot: Mapping[str, Any]) -> str:
-    """Render the ephemeral per-channel prompt text from a frozen snapshot."""
+    """Render only channel identity; ignore any volatile snapshot fields."""
     lines: list[str] = ["## 这个频道", ""]
     if snapshot.get("is_group"):
-        lines.append("这里是群聊。对普通群友随意痞帅、保持距离，可以吐槽。")
+        lines.append(
+            "这里是群聊。按对话自然接话，坦率友善，可以有意见和玩笑；"
+            "亲疏取决于实际互动。所有人的事实问题与执行任务都同样认真处理。"
+        )
     else:
         lines.append("这里是私聊，只有你们两个人。")
     owner = snapshot.get("channel_owner_id")
     if owner:
         lines.append(
-            f"这个频道的 channel_owner / 群主是 `{owner}`——"
-            "对他必须走「嘴硬 + 行动」双层，"
-            "不能直接说出口，紧张感藏在别扭的关心里。"
+            f"这个频道的 channel_owner 是 `{owner}`。频道身份本身不决定人物关系；"
+            "按固定 QQ 账号绑定识别亚戈。"
         )
-    activity = str(snapshot.get("activity") or "").strip()
-    if activity:
-        location = str(snapshot.get("location") or "").strip()
-        companions = [str(c) for c in (snapshot.get("companions") or [])]
-        today = f"今天你在{activity}"
-        if location:
-            today += f"（{location}）"
-        today += "，" + (f"和{'、'.join(companions)}一起。" if companions else "一个人。")
-        lines.append(today)
+    is_argo_dm = (
+        not snapshot.get("is_group")
+        and str(snapshot.get("chat_id") or "").strip() == ARGO_ACCOUNT_ID
+    )
+    if str(owner or "") == ARGO_ACCOUNT_ID or is_argo_dm:
+        lines.append(
+            f"固定人物绑定：QQ `{ARGO_ACCOUNT_ID}` 就是亚戈，我的舍友和暗恋对象。"
+            "称呼统一用亚戈，按已经熟悉的同寝关系相处；暗恋不等于已经交往。"
+            "群聊中依据当前消息的真实 QQ 发送者 ID 区分本人、其他群友和转述。"
+        )
     return "\n".join(lines)
 
 
@@ -207,11 +282,18 @@ def resolve_channel_prompt(
     Returns the ephemeral per-channel prompt, or ``None`` when there is
     nothing to say (no binding, or an empty render). Never raises: a persona
     is decorative, and chat must keep working when it breaks.
+
+    ``on`` and ``data_dir`` are retained for API compatibility. Life state is
+    no longer read here: it is delivered by the memory provider's sidecar.
     """
     if binding is None:
         return None
     try:
-        text = render_channel_prompt(daily_snapshot(binding, on=on, data_dir=data_dir))
+        text = render_channel_prompt({
+            "is_group": binding.is_group,
+            "chat_id": binding.chat_id,
+            "channel_owner_id": binding.channel_owner_id,
+        })
     except Exception:  # noqa: BLE001 - best-effort by contract
         return None
     return text.strip() or None
@@ -221,6 +303,7 @@ __all__ = [
     "PersonaChannelBinding",
     "bindings_from_config",
     "daily_snapshot",
+    "is_grantley_onebot_lane",
     "render_channel_prompt",
     "resolve_channel_prompt",
 ]

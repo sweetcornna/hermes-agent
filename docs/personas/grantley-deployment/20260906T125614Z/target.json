@@ -1,0 +1,8 @@
+{
+  "host": "cornna-cn",
+  "container": "hermes-cloud",
+  "stamp": "20260906T125614Z",
+  "host_repo": "/opt/hermes-cloud/repo",
+  "host_home": "/opt/hermes-cloud/data",
+  "model": "gemini-3.8-flash-high"
+}

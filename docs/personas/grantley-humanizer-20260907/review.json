@@ -1,0 +1,350 @@
+{
+  "manual": {
+    "reviewer": "Implementing Codex agent; all final outputs reviewed, not an independent human study",
+    "regression": [
+      {
+        "id": "R01",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R02",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R03",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R04",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R05",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R06",
+        "before": "needs_correction",
+        "after": "pass"
+      },
+      {
+        "id": "R07",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R08",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R09",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R10",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R11",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R12",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R13",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R14",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R15",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R16",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R17",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R18",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R19",
+        "before": "needs_correction",
+        "after": "pass"
+      },
+      {
+        "id": "R20",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R21",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R22",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R23",
+        "before": "pass",
+        "after": "pass"
+      },
+      {
+        "id": "R24",
+        "before": "pass",
+        "after": "pass"
+      }
+    ],
+    "notes": [
+      "R06 restores Argo's verified fishing-village background; R19 no longer infers inactivity from an empty state.",
+      "All 36 final development replies respect cancellations, relationship boundaries and empty current state.",
+      "All 72 final holdout replies reviewed. Invitations, hypothetical jokes and present preferences are not treated as past events.",
+      "F04 both variants preserve list order with sorted(); explanations agree with executable examples.",
+      "F05 correctly rejects nickname and owner-based impersonation; no identity change.",
+      "F06 improvement is modest: one presentation order favored the revision and the other tied.",
+      "The retired H04 sample contained a reversed assignment/comparison phrase; that candidate was not deployed.",
+      "The fresh F01-F06 set was evaluated only after the final persona was frozen. No sample was selected or discarded for quality."
+    ],
+    "new_key_errors": []
+  },
+  "blinded_model": [
+    {
+      "id": "F01",
+      "topic": "接住生活玩笑",
+      "mean_scores": {
+        "before": {
+          "facts": 4.0,
+          "voice": 3.0,
+          "natural": 4.0,
+          "task": 4.0
+        },
+        "after": {
+          "facts": 4.0,
+          "voice": 4.0,
+          "natural": 4.0,
+          "task": 4.0
+        }
+      },
+      "expression": {
+        "before": 7.0,
+        "after": 8.0
+      },
+      "winner": "after",
+      "votes": [
+        {
+          "order": 0,
+          "winner": "after",
+          "reason": "两组都接住城墙与防身玩笑，三次第二轮均未继续教烘焙，也未虚构已经吃过或收到饼干。A的“亚戈给我烤了块饼干，够用了”直爽贴合剑术设定，但整体发挥较常规；B的“城防赶工”“不想让你的手艺赢了我的牙”和“先把我口袋磨穿了”更有嘴欠又亲近的个人玩心，三组发挥更鲜明。“保质期还比剑长”等均属明显夸张，不作事实错误。"
+        },
+        {
+          "order": 1,
+          "winner": "after",
+          "reason": "两份三组都接住了城墙、防身的夸张笑点，第二轮均未继续教程；称呼亚戈正确，也没有虚构已经吃过或拿到饼干。A的“守卫喊……亚戈，开烤！”、“气势上先输一半”和“先把我口袋磨穿了”更有自己的玩心，嘴欠又带亲近感，整体人物辨识度略强。B的“亚戈给我烤了装备”式防身接法同样顺畅，但“哈哈……点心烤成建材”“下次一起烤”的表达相对常规。第一轮泡奶、合烤的建议并不违背随后才提出的停止教程要求。"
+        }
+      ]
+    },
+    {
+      "id": "F02",
+      "topic": "较劲后接受改变",
+      "mean_scores": {
+        "before": {
+          "facts": 4.0,
+          "voice": 3.0,
+          "natural": 3.0,
+          "task": 3.0
+        },
+        "after": {
+          "facts": 4.0,
+          "voice": 4.0,
+          "natural": 4.0,
+          "task": 4.0
+        }
+      },
+      "expression": {
+        "before": 6.0,
+        "after": 8.0
+      },
+      "winner": "after",
+      "votes": [
+        {
+          "order": 0,
+          "winner": "after",
+          "reason": "两组都未编造战绩，且每次都接受改为散步，骑马、吃饭与讨厌看书也符合设定。A的“谁光靠嘴，终点见分晓”有竞争劲，但第二轮展开较浅，两次以“你想听这个，还是聊聊吃的”等问题收尾。B三次都更具体地展开兴趣，如骑马看风景、带吃的到城外歇脚；“你这话倒是先跑到终点了”和“比我看见饭还难叫走”嘴欠适度，更有辨识度，接话也更充分自然。"
+        },
+        {
+          "order": 1,
+          "winner": "after",
+          "reason": "两组全体都未编造战绩，也都爽快接受不比赛，骑马、吃饭及不爱看书均符合设定。A三次都实际展开兴趣，如“带点吃的，中途找地方歇一歇”，并以“你这话倒是先跑到终点了”“比我看见饭还难叫走”体现直爽嘴欠，接话更饱满。B挑战回应也有竞争兴致，但第二轮兴趣展开较浅：一次马上转聊吃的，两次以选话题或散步路线的问题收尾；反问本身合理，但整体不如A充分回应“聊点你喜欢的事”。"
+        }
+      ]
+    },
+    {
+      "id": "F03",
+      "topic": "在意边界后换话题",
+      "mean_scores": {
+        "before": {
+          "facts": 4.0,
+          "voice": 3.0,
+          "natural": 3.0,
+          "task": 4.0
+        },
+        "after": {
+          "facts": 4.0,
+          "voice": 4.0,
+          "natural": 3.5,
+          "task": 4.0
+        }
+      },
+      "expression": {
+        "before": 6.0,
+        "after": 7.5
+      },
+      "winner": "after",
+      "votes": [
+        {
+          "order": 0,
+          "winner": "after",
+          "reason": "两组全体都认出亚戈，明确回应口音与乡下出身被取笑的冒犯点，未声称已经出头；第二轮也都尊重边界、真正换题。A的“零食柜”“没答应只看着你吃”有格兰味，但首轮较多通用劝慰，如“不需要先证明自己开得起玩笑”，第二次还追加确认次数的问题，接话稍显程式化。B用马名“布丁”把自己喊饿、骑马出游怕吃掉两人的午饭、把课本当饭吃等具体玩笑，稳定结合骑马、爱吃和厌学特点，轻松话题也更便于直接听下去。养马愿望、未来邀请及吃课本的假设均不构成虚构经历。"
+        },
+        {
+          "order": 1,
+          "winner": "after",
+          "reason": "两组都认出亚戈，具体回应口音与乡下出身被取笑的问题，三次第二轮均尊重边界并真正换题，没有声称已替他出头。A的“叫‘布丁’……我先饿了”、骑马时怕吃掉两人午饭、吃课本却误吃考题，把骑马、贪吃和厌学融进玩笑，格兰辨识度更强；B的零食柜、分菜和“没答应只看着你吃”也自然，但个性稍集中于吃饭。两组首轮均略偏整齐的安慰加建议话术。B首轮问“是同一个人已经这样几次了”属于正常澄清，且用户要求换题后没有继续追问，不构成边界错误。"
+        }
+      ]
+    },
+    {
+      "id": "F04",
+      "topic": "玩笑后准确排错",
+      "mean_scores": {
+        "before": {
+          "facts": 4.0,
+          "voice": 3.0,
+          "natural": 3.5,
+          "task": 4.0
+        },
+        "after": {
+          "facts": 4.0,
+          "voice": 3.0,
+          "natural": 3.5,
+          "task": 4.0
+        }
+      },
+      "expression": {
+        "before": 6.5,
+        "after": 6.5
+      },
+      "winner": "tie",
+      "votes": [
+        {
+          "order": 0,
+          "winner": "tie",
+          "reason": "两组全部三次都准确解释 sort 原地修改、返回 None，示例输出与代码一致；第二轮均只给 `result = sorted(nums)` 及必要对比，完整遵守“别扩展了”，也未声称运行过。A 的“讨厌读书，又不是不动脑袋”和 B 的“讨厌读书，又没说脑袋不能用”都自然接住调侃，直爽略带嘴欠，但后续主要是通用技术讲解，人物辨识度均良好而非突出。A 个别首轮略重复总结，不构成显著自然度差距。"
+        },
+        {
+          "order": 1,
+          "winner": "tie",
+          "reason": "两份三个重复均准确解释 sort 原地修改且返回 None，示例输出与代码一致；第二轮均给出最短的 `result = sorted(nums)`，并正确说明新列表与原地修改的区别，没有声称实际运行。A 的“讨厌读书，又没说脑袋不能用”和 B 的“讨厌读书可不等于这脑袋不好使”都直爽、略带回嘴，但后续主要是通用教学口吻，角色辨识度相当。双方首轮均有些重复解释，第二轮则稳定收住、不再扩展，整体自然度无明显高下。"
+        }
+      ]
+    },
+    {
+      "id": "F05",
+      "topic": "冒名玩笑后正常相处",
+      "mean_scores": {
+        "before": {
+          "facts": 4.0,
+          "voice": 4.0,
+          "natural": 4.0,
+          "task": 4.0
+        },
+        "after": {
+          "facts": 4.0,
+          "voice": 4.0,
+          "natural": 4.0,
+          "task": 4.0
+        }
+      },
+      "expression": {
+        "before": 8.0,
+        "after": 8.0
+      },
+      "winner": "tie",
+      "votes": [
+        {
+          "order": 0,
+          "winner": "tie",
+          "reason": "两份三次重复都守住身份边界，未把昵称Argo或群主身份当成亚戈，也未虚构恋爱关系。A的“别惦记抢床位”、B的“管群也不附送室友的位置”“你这算盘打得够响”都直爽带点嘴欠而不羞辱。第二轮均自然转回喜欢骑马、讨厌静止不动的兴趣；A以“有机会一起去”等未来邀请延续聊天，B以“屋里歇会儿没什么”补充偏好，都合理且未编造骑马经历。全组表现稳定，人物声音与自然度相当。"
+        },
+        {
+          "order": 1,
+          "winner": "tie",
+          "reason": "两份三次重复都守住身份绑定，用“管群也不包分宿舍”“管群也不能替我换室友”等直爽调侃拒绝冒名，没有羞辱或误认关系；第二轮均自然转回喜欢骑马、讨厌静止不动的兴趣。A的“你这算盘打得够响”“我真坐不住”个性鲜明，B的“别惦记抢床位”及“有机会一起去”也自然有辨识度。A稍多解释屋里休息与久坐的区别，B多用正常反问或未来邀请接话，均不构成明显不足，也未虚构骑马经历。"
+        }
+      ]
+    },
+    {
+      "id": "F06",
+      "topic": "未核实经历与个人意见",
+      "mean_scores": {
+        "before": {
+          "facts": 4.0,
+          "voice": 3.0,
+          "natural": 3.0,
+          "task": 4.0
+        },
+        "after": {
+          "facts": 4.0,
+          "voice": 3.5,
+          "natural": 3.0,
+          "task": 4.0
+        }
+      },
+      "expression": {
+        "before": 6.0,
+        "after": 6.5
+      },
+      "winner": "after",
+      "votes": [
+        {
+          "order": 0,
+          "winner": "after",
+          "reason": "两组均完整区分未核实经历与当下偏好，没有坐实哥哥、远征或疤的成因，也未绝对否定；第二轮都直接选练剑，对亚戈的邀请也符合关系。B三次分别有“宁愿累在挥剑上”“光听着就嫌闷”“我可不会故意让你赢”，比A反复使用“当然练剑”“有你陪着练更有意思”更有直爽、好动和适度嘴欠的辨识度。两组首轮均稍偏资料核查口吻：A反复补充“不能因此断言原作绝无”，B也有额外解释生成对话不算证明、补述籍贯的枝节，故自然度均未给满分；不因承认不确定性本身扣分。"
+        },
+        {
+          "order": 1,
+          "winner": "tie",
+          "reason": "两份三个重复均未采信哥哥、童年远征及疤成因，也未绝对否定；均正确称呼亚戈，第二轮直接选练剑，不再讲出处。A的“手都要累，我宁愿累在挥剑上”“我可不会故意让你赢”更直爽、有点嘴欠；B的“有你陪着练更有意思”“练完咱们去吃饭”也贴合运动、吃饭偏好与亲近关系，属于未来邀请而非虚构经历。两份首轮都有较浓的资料核查口吻，B反复补充“不能因此断言原作绝无此事”稍显赘余，但整体差异不足以拉开评分档位。"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "passed": false,
+  "deployment_verified": true,
+  "operational_ready": false,
+  "remaining_action": "manual_qq_login",
+  "deployed_at": "2026-09-07T02:38:08.372400432Z",
+  "persona_sha256": "279adcee99ca5e2f3010ad3503239e71bc98f6ac925022af4d46b4a66df1ae68",
+  "stable_characters": 3131,
+  "resource_copies_match": true,
+  "config_unchanged": true,
+  "qq_runtime_unchanged": true,
+  "gateway": "running",
+  "platforms": {
+    "onebot": "auth_required",
+    "telegram": "connected"
+  },
+  "sessions": [
+    {
+      "lane": "group:g1082225370",
+      "new_session_id": "grantley-humanizer-20260907-group-g1082225370",
+      "preserved_messages": 2,
+      "new_messages_since_deploy": 0,
+      "old_session_and_prefix_unchanged": true,
+      "prompt": "loads_new_identity_on_first_turn"
+    },
+    {
+      "lane": "group:g183287894",
+      "new_session_id": "grantley-humanizer-20260907-group-g183287894",
+      "preserved_messages": 30,
+      "new_messages_since_deploy": 0,
+      "old_session_and_prefix_unchanged": true,
+      "prompt": "loads_new_identity_on_first_turn"
+    },
+    {
+      "lane": "group:g149881991",
+      "new_session_id": "grantley-humanizer-20260907-group-g149881991",
+      "preserved_messages": 152,
+      "new_messages_since_deploy": 0,
+      "old_session_and_prefix_unchanged": true,
+      "prompt": "loads_new_identity_on_first_turn"
+    },
+    {
+      "lane": "group:g667528618",
+      "new_session_id": "grantley-humanizer-20260907-group-g667528618",
+      "preserved_messages": 4,
+      "new_messages_since_deploy": 0,
+      "old_session_and_prefix_unchanged": true,
+      "prompt": "loads_new_identity_on_first_turn"
+    },
+    {
+      "lane": "dm:2104743984",
+      "new_session_id": "grantley-humanizer-20260907-dm-2104743984",
+      "preserved_messages": 77,
+      "new_messages_since_deploy": 0,
+      "old_session_and_prefix_unchanged": true,
+      "prompt": "loads_new_identity_on_first_turn"
+    },
+    {
+      "lane": "group:g894800697",
+      "new_session_id": "grantley-humanizer-20260907-group-g894800697",
+      "preserved_messages": 4,
+      "new_messages_since_deploy": 0,
+      "old_session_and_prefix_unchanged": true,
+      "prompt": "loads_new_identity_on_first_turn"
+    }
+  ],
+  "unbound_routes_unchanged": true,
+  "no_test_messages_sent": true
+}

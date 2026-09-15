@@ -1,0 +1,2 @@
+{"ok": true, "updated_files": 8, "backup": "/opt/hermes-cloud/data/.deployments/grantley-kc2-20260906T125614Z/backup", "config_changed": false, "model": "gemini-3.8-flash-high", "active_agents_before": 0, "platforms_before": {"onebot": "auth_required", "telegram": "connected"}}
+

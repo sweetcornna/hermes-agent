@@ -34,10 +34,16 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
+from agent.compression_policy import (
+    normalize_tail_tokens,
+    normalize_threshold_ratio,
+    normalize_threshold_tokens,
+)
 from agent.memory_provider import MemoryProvider, RecallStatus
 
+from .channel_binding import is_grantley_onebot_lane
 from . import life, tools
 from .persona import (
     PERSONA_ID,
@@ -58,6 +64,11 @@ logger = logging.getLogger(__name__)
 #: Plugin storage key. Also the directory name under
 #: ``<hermes home>/plugin-data/``.
 STORAGE_KEY: str = "grantley"
+
+# Grantley's QQ policy is deliberately local to this plugin. The ordinary
+# global compression defaults remain untouched for every other persona.
+DEFAULT_AUTOCOMPACT_THRESHOLD = 0.75
+DEFAULT_AUTOCOMPACT_TAIL_TOKENS = 16_000
 
 
 class GrantleyMemoryProvider(MemoryProvider):
@@ -87,6 +98,10 @@ class GrantleyMemoryProvider(MemoryProvider):
         self._doc: Optional[PersonaDocument] = None
         self._lock = threading.RLock()
         self._last_recall_count = 0
+        self._initialized = False
+        self._platform = ""
+        self._chat_id = ""
+        self._chat_type = ""
 
     # -- required ABC surface ---------------------------------------------
 
@@ -116,13 +131,99 @@ class GrantleyMemoryProvider(MemoryProvider):
         return ""
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
-        """Open storage and parse the persona document. Idempotent."""
+        """Bind the session lane; open persona storage only for bound QQ."""
         with self._lock:
+            self._initialized = False
+            self._platform = str(kwargs.get("platform") or "").lower()
+            self._chat_id = str(kwargs.get("chat_id") or "")
+            self._chat_type = str(kwargs.get("chat_type") or "").lower()
+            self._last_recall_count = 0
+            if not self._is_grantley_qq_lane():
+                self._initialized = True
+                return
             self._document()
             self._ensure_store()
+            self._initialized = True
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        if not self._initialized or not self._is_grantley_qq_lane():
+            return []
         return tools.tool_schemas()
+
+    # -- constructor-time context policy ---------------------------------
+
+    @staticmethod
+    def _bool_setting(value: Any, default: bool) -> bool:
+        return value if isinstance(value, bool) else default
+
+    def _is_grantley_qq_lane(self) -> bool:
+        """Scope the policy to the initialized Grantley OneBot lane.
+
+        Only an explicit ``channels.<chat_id>.persona: grantley`` entry binds
+        a lane. Missing, empty, malformed, or non-matching maps fail closed.
+        This is the same map the reply and proactive lanes use for framing.
+        """
+        return is_grantley_onebot_lane(
+            platform=self._platform,
+            chat_id=self._chat_id,
+            chat_type=self._chat_type,
+            channels=self._config.get("channels"),
+        )
+
+    def context_compression_policy(self) -> Dict[str, Any]:
+        """Tune Hermes' existing rolling compressor for Grantley QQ only.
+
+        The manager resolves this mapping once while constructing the agent.
+        It therefore cannot rewrite the system prompt or churn the provider's
+        cached prefix mid-session. Summaries, durable cooldowns, in-place
+        SessionDB commits, iterative re-compaction, and per-session locking all
+        remain owned by ``agent/`` rather than being duplicated in OneBot.
+        """
+        if not self._is_grantley_qq_lane():
+            return {}
+
+        raw = self._config.get("autocompact")
+        if isinstance(raw, Mapping):
+            config = dict(raw)
+        else:
+            config = {}
+
+        enabled = self._bool_setting(config.get("enabled"), True)
+        policy: Dict[str, Any] = {"enabled": enabled}
+        if not enabled:
+            return policy
+
+        threshold = normalize_threshold_ratio(config.get("threshold"))
+        if threshold is None:
+            threshold = DEFAULT_AUTOCOMPACT_THRESHOLD
+
+        tail_tokens = normalize_tail_tokens(config.get("tail_tokens"))
+        if tail_tokens is None:
+            tail_tokens = DEFAULT_AUTOCOMPACT_TAIL_TOKENS
+
+        threshold_tokens = normalize_threshold_tokens(
+            config.get("threshold_tokens")
+        )
+
+        policy.update(
+            {
+                "threshold": threshold,
+                "threshold_tokens": threshold_tokens,
+                "tail_tokens": tail_tokens,
+                # Grantley must never discard original turns merely because
+                # the summarizer is unavailable. The core records a durable
+                # cooldown and retries after backoff.
+                "abort_on_summary_failure": True,
+                "in_place": True,
+                "micro_compact": False,
+                "min_tail_user_messages": 2,
+            }
+        )
+        return policy
+
+    def system_prompt_stable_across_compression(self) -> bool:
+        """Grantley contributes no system block; retain cached bytes exactly."""
+        return True
 
     # -- the cache-safe channel -------------------------------------------
 
@@ -138,6 +239,10 @@ class GrantleyMemoryProvider(MemoryProvider):
         ``<memory-context>``; the manager adds that itself and logs a warning
         if a provider pre-wraps it.
         """
+        if not self._is_grantley_qq_lane():
+            self._last_recall_count = 0
+            return ""
+
         try:
             doc = self._document()
             store = self._ensure_store()
@@ -185,9 +290,10 @@ class GrantleyMemoryProvider(MemoryProvider):
         Everything this provider knows is time-varying. A ``system_prompt_block``
         is frozen into the system prompt at session start, so putting decaying
         content here would re-hash the cached prefix on every change. The
-        persona's *stable* identity reaches the prompt through ``SOUL.md``
-        (or the opt-in ``grantley.identity`` section), which never changes at
-        runtime.
+        persona's *stable* identity reaches the prompt through the opt-in,
+        lane-gated ``grantley.identity`` section. A ``SOUL.md`` identity is
+        safe only in a dedicated Grantley profile because SOUL is global to
+        every surface served by that profile.
         """
         return ""
 
@@ -199,6 +305,11 @@ class GrantleyMemoryProvider(MemoryProvider):
     def handle_tool_call(
         self, tool_name: str, args: Dict[str, Any], **kwargs: Any
     ) -> str:
+        if not self._is_grantley_qq_lane():
+            return tools._err(
+                "forbidden_lane",
+                "Grantley persona tools are available only in a bound OneBot lane",
+            )
         try:
             store = self._ensure_store()
         except Exception as exc:  # noqa: BLE001

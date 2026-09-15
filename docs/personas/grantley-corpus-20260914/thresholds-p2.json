@@ -1,0 +1,15 @@
+{
+  "thresholds_source": "docs/personas/grantley-corpus-20260914/arm-accepted.jsonl",
+  "n": 24,
+  "incumbent_tier2_violations": {},
+  "reply_p90": 122,
+  "bubbles_ge2_share": 0.0417,
+  "modal_per_100": 0.385,
+  "tail_period_share": 0.75,
+  "tolerance": {
+    "reply_p90_max_factor": 1.5,
+    "bubbles_ge2_share_drop": 0.15,
+    "modal_per_100_drop": 0.0,
+    "tail_period_share_rise": 0.05
+  }
+}

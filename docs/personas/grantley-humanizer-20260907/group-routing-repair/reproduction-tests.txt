@@ -1,0 +1,101 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 2 test files (~40 tests) under ['tests/plugins/grantley/test_persona_rendering.py', 'tests/plugins/grantley/test_autocompact.py']; running with -j 30
+[ 55.0% |    22/~40 | ✓61 | ✗ 1] ✗ tests/plugins/grantley/test_autocompact.py (61✓ 1✗, 5.8s)
+
+  ╔╍ Failed: tests/plugins/grantley/test_autocompact.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ ...........F..................................................           [100%]
+  ║ =================================== FAILURES ===================================
+  ║ ___ test_canonical_gateway_group_id_loads_the_same_persona_state_and_policy ____
+  ║ tests/plugins/grantley/test_autocompact.py:171: in test_canonical_gateway_group_id_loads_the_same_persona_state_and_policy
+  ║     assert canonical.context_compression_policy() == raw.context_compression_policy()
+  ║ E   AssertionError: assert {} == {'enabled': T...': 16000, ...}
+  ║ E     
+  ║ E     Right contains 8 more items:
+  ║ E     {'abort_on_summary_failure': True,
+  ║ E      'enabled': True,
+  ║ E      'in_place': True,
+  ║ E      'micro_compact': False,
+  ║ E      'min_tail_user_messages': 2,...
+  ║ E     
+  ║ E     ...Full output truncated (4 lines hidden), use '-vv' to show
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/plugins/grantley/test_autocompact.py::test_canonical_gateway_group_id_loads_the_same_persona_state_and_policy
+  ║ 1 failed, 61 passed in 2.59s
+  ║
+  ║  Repro: python -m pytest tests/plugins/grantley/test_autocompact.py -q --tb=short
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+[100.0% |    40/~40 | ✓81 | ✗ 2] ✗ tests/plugins/grantley/test_persona_rendering.py (20✓ 1✗, 6.7s)
+
+  ╔╍ Failed: tests/plugins/grantley/test_persona_rendering.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ .....F...............                                                    [100%]
+  ║ =================================== FAILURES ===================================
+  ║ __ test_identity_section_registers_the_cache_safe_current_persona_once[True] ___
+  ║ tests/plugins/grantley/test_persona_rendering.py:122: in test_identity_section_registers_the_cache_safe_current_persona_once
+  ║     assert stable in prompt
+  ║ E   AssertionError: assert '# 格兰特利·贝尔\n\n## 我是谁\n\n用格兰的视角交流，自称“我”，称对方“你”。直爽、好动、重朋友，言行有时粗鲁，\n会惹人烦，也有善解人意的一面。日常自然过骑士学院的生活；问到现实身份、出处或\n实际执行情况就如实回答，不...吗，有自己的具体反应吗，多余的解释或追问能删吗？\n删改措辞时核对事实、数字、代码、来源和完成状态，不能新增经历、删掉必要信息或把未知说死。\n讲解时让文字与代码、例子逐项对应，核对因果和改动的方向，不能前一句说反、后一句又改回来。\n' in 'You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direc...sation started: Monday, September 07, 2026 (UTC, UTC+00:00)\nModel: test/model\nProvider: openrouter\nPlatform: onebot'
+  ║ ------------------------------ Captured log call -------------------------------
+  ║ INFO     run_agent:agent_runtime_helpers.py:2580 OpenAI client created (agent_init, shared=True) thread=MainThread:8316920192 provider=openrouter base_url=https://openrouter.ai/api/v1 model=test/model
+  ║ INFO     tools.tool_search:tool_search.py:827 tool_search activated (tier 1): 17 core/visible tools kept, 10 deferred (~1845 tokens), listing full (budget ~4000 tokens)
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/plugins/grantley/test_persona_rendering.py::test_identity_section_registers_the_cache_safe_current_persona_once[True]
+  ║ 1 failed, 20 passed in 2.87s
+  ║
+  ║  Repro: python -m pytest tests/plugins/grantley/test_persona_rendering.py -q --tb=short
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 2 files, 81 tests passed, 2 failed (100% complete) in 6.7s (30 workers) ===
+  Durations cached to test_durations.json (2 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 12.5s  (runner wall: 6.7s, parallelism: 30x)
+  P50: 6.71s  P90: 6.71s  P95: 6.71s  P99: 6.71s  Max: 6.71s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+      6.71s  tests/plugins/grantley/test_persona_rendering.py
+      5.75s  tests/plugins/grantley/test_autocompact.py
+
+=== Failure output ===
+
+--- tests/plugins/grantley/test_autocompact.py ---
+...........F..................................................           [100%]
+=================================== FAILURES ===================================
+___ test_canonical_gateway_group_id_loads_the_same_persona_state_and_policy ____
+tests/plugins/grantley/test_autocompact.py:171: in test_canonical_gateway_group_id_loads_the_same_persona_state_and_policy
+    assert canonical.context_compression_policy() == raw.context_compression_policy()
+E   AssertionError: assert {} == {'enabled': T...': 16000, ...}
+E     
+E     Right contains 8 more items:
+E     {'abort_on_summary_failure': True,
+E      'enabled': True,
+E      'in_place': True,
+E      'micro_compact': False,
+E      'min_tail_user_messages': 2,...
+E     
+E     ...Full output truncated (4 lines hidden), use '-vv' to show
+=========================== short test summary info ============================
+FAILED tests/plugins/grantley/test_autocompact.py::test_canonical_gateway_group_id_loads_the_same_persona_state_and_policy
+1 failed, 61 passed in 2.59s
+
+--- tests/plugins/grantley/test_persona_rendering.py ---
+.....F...............                                                    [100%]
+=================================== FAILURES ===================================
+__ test_identity_section_registers_the_cache_safe_current_persona_once[True] ___
+tests/plugins/grantley/test_persona_rendering.py:122: in test_identity_section_registers_the_cache_safe_current_persona_once
+    assert stable in prompt
+E   AssertionError: assert '# 格兰特利·贝尔\n\n## 我是谁\n\n用格兰的视角交流，自称“我”，称对方“你”。直爽、好动、重朋友，言行有时粗鲁，\n会惹人烦，也有善解人意的一面。日常自然过骑士学院的生活；问到现实身份、出处或\n实际执行情况就如实回答，不...吗，有自己的具体反应吗，多余的解释或追问能删吗？\n删改措辞时核对事实、数字、代码、来源和完成状态，不能新增经历、删掉必要信息或把未知说死。\n讲解时让文字与代码、例子逐项对应，核对因果和改动的方向，不能前一句说反、后一句又改回来。\n' in 'You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direc...sation started: Monday, September 07, 2026 (UTC, UTC+00:00)\nModel: test/model\nProvider: openrouter\nPlatform: onebot'
+------------------------------ Captured log call -------------------------------
+INFO     run_agent:agent_runtime_helpers.py:2580 OpenAI client created (agent_init, shared=True) thread=MainThread:8316920192 provider=openrouter base_url=https://openrouter.ai/api/v1 model=test/model
+INFO     tools.tool_search:tool_search.py:827 tool_search activated (tier 1): 17 core/visible tools kept, 10 deferred (~1845 tokens), listing full (budget ~4000 tokens)
+=========================== short test summary info ============================
+FAILED tests/plugins/grantley/test_persona_rendering.py::test_identity_section_registers_the_cache_safe_current_persona_once[True]
+1 failed, 20 passed in 2.87s
+
+=== 2 files with test failures (2 tests failed) ===
+  tests/plugins/grantley/test_autocompact.py  (1 test failed)
+  tests/plugins/grantley/test_persona_rendering.py  (1 test failed)

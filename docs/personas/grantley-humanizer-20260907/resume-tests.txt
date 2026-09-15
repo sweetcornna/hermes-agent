@@ -1,0 +1,36 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 11 test files (~227 tests) under ['tests/plugins/grantley', 'tests/agent/test_memory_provider.py', 'tests/gateway/test_onebot_persona_binding.py']; running with -j 30
+[  0.4% |     1/~227 | ✓1 | ✗0] ✓ tests/plugins/grantley/test_argo_revision.py (1✓, 1.0s)
+[  0.9% |     2/~227 | ✓2 | ✗0] ✓ tests/plugins/grantley/test_humanizer_revision.py (1✓, 1.0s)
+[  1.8% |     4/~227 | ✓4 | ✗0] ✓ tests/plugins/grantley/test_longlife_migration.py (2✓, 1.0s)
+[  7.5% |    17/~227 | ✓17 | ✗ 0] ✓ tests/plugins/grantley/test_cache_safety.py (13✓, 1.3s)
+[ 12.3% |    28/~227 | ✓29 | ✗ 0] ✓ tests/plugins/grantley/test_life_illustration.py (12✓, 1.3s)
+[ 20.7% |    47/~227 | ✓48 | ✗ 0] ✓ tests/plugins/grantley/test_decay.py (19✓, 1.4s)
+[ 30.0% |    68/~227 | ✓69 | ✗ 0] ✓ tests/gateway/test_onebot_persona_binding.py (21✓, 1.6s)
+[ 55.5% |   126/~227 | ✓127 | ✗  0] ✓ tests/plugins/grantley/test_life_and_events.py (58✓, 2.0s)
+[ 83.3% |   189/~227 | ✓195 | ✗  0] ✓ tests/agent/test_memory_provider.py (68✓, 2.5s)
+[ 92.1% |   209/~227 | ✓250 | ✗  0] ✓ tests/plugins/grantley/test_autocompact.py (55✓, 5.2s)
+[100.0% |   227/~227 | ✓270 | ✗  0] ✓ tests/plugins/grantley/test_persona_rendering.py (20✓, 7.4s)
+
+=== Summary: 11 files, 270 tests passed, 0 failed (100% complete) in 7.5s (30 workers) ===
+  Durations cached to test_durations.json (11 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   11
+  Total subprocess CPU-wall: 25.6s  (runner wall: 7.5s, parallelism: 30x)
+  P50: 1.40s  P90: 5.25s  P95: 7.45s  P99: 7.45s  Max: 7.45s
+  <1s: 3 files (27%)  <2s: 8 files (73%)
+  Top 10 slowest:
+      7.45s  tests/plugins/grantley/test_persona_rendering.py
+      5.25s  tests/plugins/grantley/test_autocompact.py
+      2.55s  tests/agent/test_memory_provider.py
+      1.96s  tests/plugins/grantley/test_life_and_events.py
+      1.55s  tests/gateway/test_onebot_persona_binding.py
+      1.40s  tests/plugins/grantley/test_decay.py
+      1.32s  tests/plugins/grantley/test_life_illustration.py
+      1.28s  tests/plugins/grantley/test_cache_safety.py
+      0.97s  tests/plugins/grantley/test_longlife_migration.py
+      0.96s  tests/plugins/grantley/test_humanizer_revision.py

@@ -1,0 +1,25 @@
+{
+  "gateway": "running",
+  "state_updated_at": "2026-09-07T13:57:32.169543+00:00",
+  "platforms": {
+    "onebot": "disconnected",
+    "telegram": "connected"
+  },
+  "model": "gpt-6-astra",
+  "binding_sha256": [
+    "8d3458b9680148c2a2d886a7836f5d4b56b20c2cbb15d2fc17443e755ed1ab3f",
+    "8d3458b9680148c2a2d886a7836f5d4b56b20c2cbb15d2fc17443e755ed1ab3f"
+  ],
+  "persona_sha256": "279adcee99ca5e2f3010ad3503239e71bc98f6ac925022af4d46b4a66df1ae68",
+  "config_sha256": "f58fa00c750ed55014486f0100dc868b372e03595398a97bbc100d0b862bca83",
+  "canonical_groups_bound": 5,
+  "no_test_messages_sent": true,
+  "verified_at": "2026-09-07T13:57:35.307555+00:00",
+  "deployment_verified": true,
+  "operational_ready": false,
+  "remaining_action": "restore_qq_connection",
+  "onebot_detail": {
+    "state": "disconnected",
+    "updated_at": "2026-09-07T13:57:32.169558+00:00"
+  }
+}

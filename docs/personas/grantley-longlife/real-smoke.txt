@@ -1,0 +1,34 @@
+state.db (async_delegation): linked SQLite 3.40.1 is vulnerable to the WAL-reset corruption bug (https://sqlite.org/wal.html#walresetbug) — using journal_mode=DELETE instead of enabling WAL. Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); Hermes-managed installs can repair the embedded runtime with `hermes update`. See `hermes doctor`. This warning fires once per process per database.
+state.db: linked SQLite 3.40.1 is vulnerable to the WAL-reset corruption bug (https://sqlite.org/wal.html#walresetbug) — using journal_mode=DELETE instead of enabling WAL. Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); Hermes-managed installs can repair the embedded runtime with `hermes update`. See `hermes doctor`. This warning fires once per process per database.
+🗜️ Compacting context — summarizing earlier conversation so I can continue...
+{"phase": "real_compaction", "epoch": 1, "remaining_messages": 13, "fact_preserved": true}
+🗜️ Compacting context — summarizing earlier conversation so I can continue...
+{"phase": "real_compaction", "epoch": 2, "remaining_messages": 9, "fact_preserved": true}
+⚠️  API call failed (attempt 1/3): RateLimitError [HTTP 429]
+   🔌 Provider: custom  Model: gemini-3.8-flash-high
+   🌐 Endpoint: https://api.cornna.xyz/v1
+   📝 Error: HTTP 429: Resource has been exhausted (e.g. check quota).
+   📋 Details: {'code': 429, 'message': 'Resource has been exhausted (e.g. check quota).', 'status': 'RESOURCE_EXHAUSTED'}
+   ⏱️  Elapsed: 27.20s  Context: 11 msgs, ~18,582 tokens
+⏱️ Rate limited. Waiting 2.1s (attempt 2/3)...
+⚠️  API call failed (attempt 2/3): RateLimitError [HTTP 429]
+   🔌 Provider: custom  Model: gemini-3.8-flash-high
+   🌐 Endpoint: https://api.cornna.xyz/v1
+   📝 Error: HTTP 429: Resource has been exhausted (e.g. check quota).
+   📋 Details: {'code': 429, 'message': 'Resource has been exhausted (e.g. check quota).', 'status': 'RESOURCE_EXHAUSTED'}
+   ⏱️  Elapsed: 49.60s  Context: 11 msgs, ~18,582 tokens
+⏱️ Rate limited. Waiting 5.7s (attempt 3/3)...
+⚠️  API call failed (attempt 3/3): RateLimitError [HTTP 429]
+   🔌 Provider: custom  Model: gemini-3.8-flash-high
+   🌐 Endpoint: https://api.cornna.xyz/v1
+   📝 Error: HTTP 429: Resource has been exhausted (e.g. check quota).
+   📋 Details: {'code': 429, 'message': 'Resource has been exhausted (e.g. check quota).', 'status': 'RESOURCE_EXHAUSTED'}
+   ⏱️  Elapsed: 69.48s  Context: 11 msgs, ~18,582 tokens
+❌ Rate limited after 3 retries — HTTP 429: Resource has been exhausted (e.g. check quota).
+   💀 Final error: HTTP 429: Resource has been exhausted (e.g. check quota).
+🧾 Request debug dump written to: /tmp/grantley-longlife-smoke-aro1atyz/sessions/request_dump_isolated-longlife-smoke_20260906_212800_772098.json
+Traceback (most recent call last):
+  File "/opt/hermes/data/.deployments/grantley-longlife-20260906/real_smoke.py", line 97, in <module>
+    assert 'SABLE-619' in output and '12' in output, output
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: API call failed after 3 retries: HTTP 429: Resource has been exhausted (e.g. check quota).

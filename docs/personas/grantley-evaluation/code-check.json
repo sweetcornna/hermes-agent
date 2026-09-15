@@ -1,0 +1,19 @@
+{
+  "sample": "reviewed-samples.jsonl",
+  "case_id": 23,
+  "oracle": "bisect_left; input arrays sorted ascending",
+  "checks": [
+    {
+      "variant": "before",
+      "function": "binary_search_left",
+      "cases": 1890,
+      "passed": true
+    },
+    {
+      "variant": "after",
+      "function": "binary_search_leftmost",
+      "cases": 1890,
+      "passed": true
+    }
+  ]
+}

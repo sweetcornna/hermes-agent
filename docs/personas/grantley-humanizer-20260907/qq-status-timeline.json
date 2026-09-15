@@ -1,0 +1,6 @@
+{
+  "account_status_log": [
+    "2026-09-07T02:31:54.382132483Z 2026-09-07 10:31:54,381 WARNING hermes_plugins.onebot_platform.adapter: OneBot: QQ account state online -> auth-required (source=get_status); the WebSocket remains a transport link and will not be restarted",
+    "2026-09-07T02:38:45.988521641Z 2026-09-07 10:38:45,988 WARNING hermes_plugins.onebot_platform.adapter: OneBot: QQ account state unknown -> auth-required (source=get_status); the WebSocket remains a transport link and will not be restarted"
+  ]
+}

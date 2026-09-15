@@ -17,6 +17,7 @@ from plugins.grantley.channel_binding import (
     PersonaChannelBinding,
     bindings_from_config,
     daily_snapshot,
+    render_channel_prompt,
     resolve_channel_prompt,
 )
 from plugins.grantley.jobs import run_decay, run_life_advance
@@ -37,31 +38,34 @@ def store() -> GrantleyStore:
 # ── seed pack ──────────────────────────────────────────────────────────────
 
 
-def test_bundled_seed_pack_carries_grantleys_lore():
+def test_bundled_seed_pack_supplies_every_sampled_category():
+    import yaml
+    from plugins.grantley.persona import load_persona_document
+
+    path = life.bundled_seeds_path("grantley")
+    authored = yaml.safe_load(path.read_text(encoding="utf-8"))
     lib = life.resolve_seed_library("grantley")
-    assert "护送商队穿越北境森林" in lib["mission_scenario"]
-    assert "艾尔戈" in lib["companion"]
-    assert "奥斯卡" in lib["companion"]
-    assert "剑术场训练" in lib["academy_scene"]
-    assert "断崖修道院" in lib["travel_destination"]
-    # Every category the source pack defines survived the port.
-    assert set(lib) >= {
-        "mission_scenario",
-        "travel_destination",
-        "academy_scene",
-        "companion",
-        "tension",
-        "weather",
-        "mood",
-        "duration_hint",
-        "season_hint",
-    }
+    categories = {key for pool in life.EVENT_SEED_POOLS.values() for key in pool.values()}
+    assert categories <= authored.keys()
+    for category in categories:
+        assert authored[category]
+        assert lib[category] == authored[category]
+    # A label for teachers must never turn them into sampled classmates.
+    assert set(lib["mentor"]).isdisjoint(lib["companion"])
+    stable = load_persona_document().stable
+    for name in lib["companion"]:
+        if name != life.SOLO_COMPANION:
+            assert name in stable
+    # Sampling must stay in the authored pools, not revive generic adventures.
+    for seed in range(100):
+        for kind, pool in life.EVENT_SEED_POOLS.items():
+            draw = life.draw_event_seed(lib, kind, random.Random(seed))
+            assert all(draw[key] in authored[category] for key, category in pool.items())
 
 
 def test_unknown_persona_falls_back_to_generic_not_grantleys_world():
     lib = life.resolve_seed_library("someone_else")
     assert lib["companion"] == life.GENERIC_SEEDS["companion"]
-    assert "艾尔戈" not in lib["companion"]
 
 
 def _block_hermes_time_import(monkeypatch):
@@ -135,7 +139,10 @@ def test_operator_override_layers_over_bundled(tmp_path):
     lib = life.resolve_seed_library("grantley", tmp_path)
     assert lib["companion"] == ["自定义伙伴"]
     # A partial override replaces only the categories it names.
-    assert "护送商队穿越北境森林" in lib["mission_scenario"]
+    bundled = life.resolve_seed_library("grantley")
+    assert {k: v for k, v in lib.items() if k != "companion"} == {
+        k: v for k, v in bundled.items() if k != "companion"
+    }
 
 
 # ── life-beat draw: determinism and seeding ────────────────────────────────
@@ -849,6 +856,49 @@ def test_channel_prompt_names_the_channel_owner():
     assert "群聊" in text
 
 
+def test_argo_is_bound_by_account_in_group_and_dm():
+    from plugins.grantley.channel_binding import ARGO_ACCOUNT_ID
+    for binding in (
+        PersonaChannelBinding(chat_id="group", channel_owner_id=ARGO_ACCOUNT_ID, is_group=True),
+        PersonaChannelBinding(chat_id=ARGO_ACCOUNT_ID, is_group=False),
+    ):
+        prompt = resolve_channel_prompt(binding)
+        assert f"QQ `{ARGO_ACCOUNT_ID}` 就是亚戈" in prompt
+        assert "舍友和暗恋对象" in prompt
+    unrelated = resolve_channel_prompt(PersonaChannelBinding(chat_id="17", channel_owner_id="17"))
+    assert ARGO_ACCOUNT_ID not in unrelated
+    assert "舍友和暗恋对象" not in unrelated
+
+
+def test_channel_identity_is_independent_of_day_and_life_seed(tmp_path):
+    binding = PersonaChannelBinding(chat_id="group", channel_owner_id="owner", is_group=True)
+    first = resolve_channel_prompt(binding, on=datetime(2026, 9, 6, tzinfo=timezone.utc))
+    directory = tmp_path / "persona_life"
+    directory.mkdir()
+    (directory / "grantley.events.yaml").write_text(
+        "academy_scene:\n  - DIFFERENT_ACTIVITY\ncompanion:\n  - DIFFERENT_PERSON\n",
+        encoding="utf-8",
+    )
+    next_day = resolve_channel_prompt(
+        binding, on=datetime(2026, 9, 7, tzinfo=timezone.utc), data_dir=tmp_path
+    )
+    assert first == next_day
+    assert "DIFFERENT_ACTIVITY" not in next_day
+    assert "DIFFERENT_PERSON" not in next_day
+
+
+def test_render_ignores_volatile_fields_and_owner_only_changes_contact_id():
+    snapshot = {"is_group": True, "channel_owner_id": "OWNER_A"}
+    base = render_channel_prompt(snapshot)
+    changed_life = render_channel_prompt({
+        **snapshot, "activity": "training", "location": "elsewhere",
+        "companions": ["new companion"], "date": "2099-01-01", "mood": "angry",
+    })
+    other_owner = render_channel_prompt({**snapshot, "channel_owner_id": "OWNER_B"})
+    assert changed_life == base
+    assert other_owner.replace("OWNER_B", "OWNER_A") == base
+
+
 def test_dm_binding_reads_as_a_direct_message():
     binding = PersonaChannelBinding(chat_id="536132102", is_group=False)
     text = resolve_channel_prompt(
@@ -869,13 +919,20 @@ def test_snapshot_contains_no_decaying_value():
 
 def test_bindings_from_config_parses_and_skips_junk():
     parsed = bindings_from_config({
-        "183287894": {"channel_owner": "2104743984", "group": True, "name": "群"},
-        "536132102": {"group": False},
+        "183287894": {"persona": "grantley", "channel_owner": "2104743984", "group": True, "name": "群"},
+        "536132102": {"persona": "grantley", "group": False},
+        "missing-persona": {"group": True},
+        "other-persona": {"persona": "other", "group": True},
+        42: {"persona": "grantley", "group": True},
+        "42": {"persona": "grantley", "group": True},
         "bad": "not-a-mapping",
     })
     assert parsed["183287894"].channel_owner_id == "2104743984"
     assert parsed["183287894"].is_group is True
     assert parsed["536132102"].channel_owner_id is None
+    assert "missing-persona" not in parsed
+    assert "other-persona" not in parsed
+    assert "42" not in parsed
     assert "bad" not in parsed
 
 

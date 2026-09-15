@@ -1,0 +1,16 @@
+{
+  "mode": "cases",
+  "arms": {
+    "candidate": {
+      "stable_chars": 4976,
+      "stable_sha256": "93d16af7af1bed4d2236db9e0895569b6289b917a111a0ca7e8a0c3d37897c13"
+    }
+  },
+  "cases_sha256": "299ff956938b39322ea76fcac1f7a702e3dd6859cd70d0ff47eb91d4dd026ad5",
+  "created_at": "2026-09-14T16:56:11.397776+00:00",
+  "ssh_host": "root@149.118.61.165",
+  "hermes_home": "/opt/hermes/data",
+  "job_count": 24,
+  "keep_messages": true,
+  "transport": "SSH to configured provider; no gateway/tool execution"
+}

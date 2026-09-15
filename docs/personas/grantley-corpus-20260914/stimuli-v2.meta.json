@@ -1,0 +1,115 @@
+{
+  "mode": "stimuli",
+  "arms": {
+    "candidate": {
+      "stable_chars": 4976,
+      "stable_sha256": "93d16af7af1bed4d2236db9e0895569b6289b917a111a0ca7e8a0c3d37897c13"
+    }
+  },
+  "stimuli_count": 24,
+  "stimuli_set_sha256": "6af4ca6a229674bb4fffa5084363528fa1c6ee5ddcb380302e4d7ecf01766646",
+  "stimuli_ids": [
+    {
+      "id": "S01",
+      "sha256": "e2c64dd903e63a66"
+    },
+    {
+      "id": "S02",
+      "sha256": "e7da619239858d6d"
+    },
+    {
+      "id": "S03",
+      "sha256": "00aa32f6ccc80361"
+    },
+    {
+      "id": "S04",
+      "sha256": "728e74e457f70b44"
+    },
+    {
+      "id": "S05",
+      "sha256": "4a93ee38c1987583"
+    },
+    {
+      "id": "S06",
+      "sha256": "4cf6e718151fcc25"
+    },
+    {
+      "id": "S07",
+      "sha256": "1185896a6562c6c9"
+    },
+    {
+      "id": "S08",
+      "sha256": "061ca80c6e3e3793"
+    },
+    {
+      "id": "S09",
+      "sha256": "8789b36b1cf5a687"
+    },
+    {
+      "id": "S10",
+      "sha256": "ecbf62ba4a8644f0"
+    },
+    {
+      "id": "S11",
+      "sha256": "dc6068a71031ee14"
+    },
+    {
+      "id": "S12",
+      "sha256": "1f12ec57c1137c88"
+    },
+    {
+      "id": "S13",
+      "sha256": "02d57b4660ad83ab"
+    },
+    {
+      "id": "S14",
+      "sha256": "54fba3c3ad28f189"
+    },
+    {
+      "id": "S15",
+      "sha256": "55b5870d54bf576e"
+    },
+    {
+      "id": "S16",
+      "sha256": "97559600436b7c69"
+    },
+    {
+      "id": "S17",
+      "sha256": "18bb97e23cd25db7"
+    },
+    {
+      "id": "S18",
+      "sha256": "ed1549dbd1947f15"
+    },
+    {
+      "id": "S19",
+      "sha256": "b4c7798dbb064bbc"
+    },
+    {
+      "id": "S20",
+      "sha256": "d5ff37fd43049f1e"
+    },
+    {
+      "id": "S21",
+      "sha256": "9515fc13f4667937"
+    },
+    {
+      "id": "S22",
+      "sha256": "bb0703665140a669"
+    },
+    {
+      "id": "S23",
+      "sha256": "fbd84301f60e945f"
+    },
+    {
+      "id": "S24",
+      "sha256": "d2fc5da0bef857b7"
+    }
+  ],
+  "created_at": "2026-09-14T16:51:58.919493+00:00",
+  "ssh_host": "root@149.118.61.165",
+  "hermes_home": "/opt/hermes/data",
+  "job_count": 24,
+  "keep_messages": false,
+  "transport": "SSH to configured provider; no gateway/tool execution"
+}
