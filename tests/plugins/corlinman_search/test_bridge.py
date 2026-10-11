@@ -75,18 +75,25 @@ def test_portable_plugin_is_resolved_by_the_real_hermes_loader(tmp_path, monkeyp
     server_name, config = next(iter(loaded.items()))
     assert server_name.endswith("__search")
     assert config["command"] == "uv"
-    assert config["args"][:4] == [
-        "run",
-        "--isolated",
-        "--with",
-        "free-search-mcp>=0.8.0,<1",
-    ]
+    # The real loader must preserve the reviewed manifest's dependency pin;
+    # upgrading the package should not require updating a second version literal.
+    manifest = json.loads((PLUGIN_ROOT / "mcp.json").read_text())
+    expected_args = [argument.replace("${PLUGIN_DATA}", config["env"]["PLUGIN_DATA"])
+                     for argument in manifest["mcpServers"]["search"]["args"][:-1]]
+    assert config["args"][:-1] == expected_args
+    assert "--no-project" in config["args"]  # never install the parent Hermes project
+    dependency = config["args"][config["args"].index("--with") + 1]
+    from packaging.requirements import Requirement
+    requirement = Requirement(dependency)
+    assert requirement.name == "free-search-mcp"
+    assert any(spec.operator == "==" and "*" not in spec.version for spec in requirement.specifier)
     assert config["args"][-1] == str(PLUGIN_ROOT / "server.py")
     assert config["env"]["SEARCH_MCP_ALLOW_PRIVATE_HOSTS"] == "false"
     assert config["env"]["SEARCH_MCP_DOWNLOAD_ENABLED"] == "false"
     assert config["env"]["SEARCH_MCP_LOG_LEVEL"] == "WARNING"
     assert config["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert config["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
+    assert config["cwd"] == config["env"]["PLUGIN_DATA"]
 
 
 def test_no_enabled_plugin_means_no_managed_search_config(tmp_path, monkeypatch):

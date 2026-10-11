@@ -1,0 +1,6 @@
+engine duckduckgo failed: Failed to perform, curl: (28) Connection timed out after 8002 milliseconds. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.
+engine mojeek failed: HTTP Error 403: Forbidden
+engine duckduckgo failed: Failed to perform, curl: (28) Connection timed out after 8001 milliseconds. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.
+engine mojeek failed: HTTP Error 403: Forbidden
+engine googlenews failed: Failed to perform, curl: (28) Connection timed out after 8001 milliseconds. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.
+engine googlenews failed: Failed to perform, curl: (28) Connection timed out after 8001 milliseconds. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.

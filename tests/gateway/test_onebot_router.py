@@ -247,10 +247,47 @@ class TestReplyPolicy:
             "[CQ:at,qq=100] help", [AtSegment(qq="100"), TextSegment(text=" help")], 123))
         assert req is not None and req.mentioned is True
 
-    def test_slash_command_counts_as_an_explicit_summons(self):
-        """Without this, '/status' in a group is eaten by the keyword gate."""
+    def test_slash_command_is_not_a_summons_in_a_group_by_default(self):
+        """A group is not a console (主窗口 rule, see .main_window).
+
+        The adapter denies a group event ``allow_gateway_control``, so
+        ``/status`` typed there cannot execute.  If it still bypassed the
+        keyword gate, that dead operator text would become a model turn
+        instead — so the summons goes with the capability.
+        """
         router = _enabled(group_keywords={"123": ["never_matches"]})
+        assert router.dispatch(
+            _group_event("/status", [TextSegment(text="/status")], 123)
+        ) is None
+
+    def test_slash_command_counts_as_an_explicit_summons_when_group_control_is_on(self):
+        """With the escape hatch on, '/status' is not eaten by the keyword gate."""
+        router = _enabled(
+            group_keywords={"123": ["never_matches"]}, group_commands_enabled=True
+        )
         req = router.dispatch(_group_event("/status", [TextSegment(text="/status")], 123))
+        assert req is not None and req.is_command is True
+
+    def test_group_slash_command_does_not_claim_the_speech_cap_bypass(self):
+        """``is_command`` is what adapter.py reads to skip the speech cap.
+
+        Reported honestly it would hand any group member a way around the
+        cap by typing a leading slash, so it stays False with the hatch off
+        even when the message is answered for another reason (an @mention).
+        """
+        router = _enabled(group_keywords={"123": ["never_matches"]})
+        req = router.dispatch(_group_event(
+            "[CQ:at,qq=100] /status",
+            [AtSegment(qq="100"), TextSegment(text=" /status")],
+            123,
+        ))
+        assert req is not None and req.mentioned is True
+        assert req.is_command is False
+
+    def test_private_slash_command_is_unaffected(self):
+        """The lock is group-scoped: a DM still reports its commands."""
+        router = _enabled(group_keywords={"123": ["never_matches"]})
+        req = router.dispatch(_private_event("/status"))
         assert req is not None and req.is_command is True
 
 
@@ -372,6 +409,40 @@ def _count_hook():
 
 
 class TestRateLimitDispatch:
+
+    def test_main_window_dm_bypasses_both_exhausted_limiters(self):
+        user_id = 77
+        group_bucket = TokenBucket.per_minute(1)
+        sender_bucket = TokenBucket.per_minute(1)
+        assert group_bucket.check(f"onebot:{user_id}")
+        assert sender_bucket.check(f"onebot:{user_id}:{user_id}")
+
+        calls, hook = _count_hook()
+        router = (
+            ChannelRouter(main_window_settings={"main_window_chat_id": str(user_id)})
+            .with_rate_limits(group_bucket, sender_bucket)
+            .with_rate_limit_hook(hook)
+        )
+
+        req = router.dispatch(_private_event(user_id=user_id))
+        assert req is not None
+        assert req.binding.is_group is False
+        assert calls == []
+
+    @pytest.mark.parametrize("reason", ["group", "sender"])
+    def test_non_main_window_dm_rate_limit_behavior_is_unchanged(self, reason):
+        calls, hook = _count_hook()
+        group_bucket = TokenBucket.per_minute(1) if reason == "group" else None
+        sender_bucket = TokenBucket.per_minute(1) if reason == "sender" else None
+        router = (
+            ChannelRouter(main_window_settings={"main_window_chat_id": "999"})
+            .with_rate_limits(group_bucket, sender_bucket)
+            .with_rate_limit_hook(hook)
+        )
+
+        assert router.dispatch(_private_event("m1", user_id=77)) is not None
+        assert router.dispatch(_private_event("m2", user_id=77)) is None
+        assert calls == [("onebot", reason)]
 
     def test_drops_when_group_over_limit(self):
         calls, hook = _count_hook()

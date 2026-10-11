@@ -1,0 +1,12 @@
+{
+  "before_config_sha256": "d6abfc346743bf2b9c0c926da831fa8024ce67f50fa0e93c77ec685a3784a20a",
+  "credentials_sha256": "558156fc13add3cdb0bdeb278a61e863f2e647eddc3d278d6e6266e36ac5b768",
+  "image": "sha256:8bce426d1e93c851cd676dc1807b822a7094d7f753139d7b9467e50dbfd79366",
+  "plugin_hashes": {
+    "__init__.py": "ccc273e3faa83817d794a7d098d4cc0e91a8303b4d5ea79e84e77712a49177ad",
+    "provider.py": "215b77a9ecde74bc2d8706626ad89983bd71e14c426e22b39ca3fbf06f11b4fe",
+    "plugin.yaml": "9b3337c4b979f7ae751d0153e1dd4982b900deb395385e5ba67bf95e5f92c0e3"
+  },
+  "live_search_verified": true,
+  "tests_passed": true
+}

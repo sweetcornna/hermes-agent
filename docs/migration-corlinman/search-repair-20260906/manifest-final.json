@@ -1,0 +1,50 @@
+[
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/corlinman_search/mcp.json",
+    "source": "corlinman_search/mcp.json",
+    "before": "c6e88f921a805aff08e660cd05f38089d78a618ef06a714764c14ac84983b26b",
+    "after": "94cf229c279fc30118ea1c91e2b8ca0d0b66cfb3a82de565637ae4dfaaf91378"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/corlinman_search/server.py",
+    "source": "corlinman_search/server.py",
+    "before": "e036ace8605017ae34d53ab2a9e215ae6c6c5a20f50db017ce5f685c1b5e5d8e",
+    "after": "5bb9f85b88acf1d5505eb32e7e20124236ddda87d5199ef33d18b603e69c1028"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/grantley/assets/grantley.md",
+    "source": "upload/grantley/assets/grantley.md",
+    "before": "6f4c6f7d8423e37c752c63bdd4d9521d8d8ff95d9e2b6eb89926c37263c6e716",
+    "after": "5a70a96f7b5a4966424205b7fcb830818477d64353ae3ed2ae70bbf1754104c9"
+  },
+  {
+    "target": "/opt/hermes-cloud/data/plugins/grantley/assets/grantley.md",
+    "source": "upload/grantley/assets/grantley.md",
+    "before": "6f4c6f7d8423e37c752c63bdd4d9521d8d8ff95d9e2b6eb89926c37263c6e716",
+    "after": "5a70a96f7b5a4966424205b7fcb830818477d64353ae3ed2ae70bbf1754104c9"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/grantley/channel_binding.py",
+    "source": "upload/grantley/channel_binding.py",
+    "before": "470ae501163a04e37ecb19dab753971bff2534a49c83ff6c77e92ca7d6aaef3f",
+    "after": "2b5bbc1ba96c3cf57009923754475d417a4b8fcacec6f065ba2be35d8a873032"
+  },
+  {
+    "target": "/opt/hermes-cloud/data/plugins/grantley/channel_binding.py",
+    "source": "upload/grantley/channel_binding.py",
+    "before": "470ae501163a04e37ecb19dab753971bff2534a49c83ff6c77e92ca7d6aaef3f",
+    "after": "2b5bbc1ba96c3cf57009923754475d417a4b8fcacec6f065ba2be35d8a873032"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/platforms/onebot/adapter.py",
+    "source": "upload/onebot/adapter.py",
+    "before": "8e9ade9c0c82bfba88d3eeb2a3d75b6dc3802ad6f132698211ce7474412f8c8c",
+    "after": "0ac8884774a84956bdc0bb1271c597ada4aa2b7d5e81fdede2c75029642122ce"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/platforms/onebot/reply_context.py",
+    "source": "upload/onebot/reply_context.py",
+    "before": "134d8d2c2e3028f5ceb477e7fa41ac998a46b5c677f06de9692281dd2bc0f2ec",
+    "after": "4eac273e89d59da55342ae7aa29d594c85f8cca1f5f8fc945f0ebf956865dd46"
+  }
+]

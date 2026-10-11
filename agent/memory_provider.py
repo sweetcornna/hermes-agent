@@ -22,6 +22,8 @@ Lifecycle (called by MemoryManager, wired in run_agent.py):
   shutdown()             — clean exit
 
 Optional hooks (override to opt in):
+  context_compression_policy() -> dict — constructor-time compression overrides
+  system_prompt_stable_across_compression() -> bool — retain cached prompt bytes
   on_turn_start(turn, message, **kwargs) — per-turn tick with runtime context
   on_session_end(messages)               — end-of-session extraction
   on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
@@ -238,6 +240,37 @@ class MemoryProvider(ABC):
         """Clean shutdown — flush queues, close connections."""
 
     # -- Optional hooks (override to opt in) ---------------------------------
+
+    def context_compression_policy(self) -> Dict[str, Any]:
+        """Return constructor-time context-compression config overrides.
+
+        This is a deliberately narrow plugin edge: a provider may tune the
+        existing compressor for the session it was initialized for, but it
+        cannot replace the compressor, add tools, or mutate the system prompt.
+        The mapping uses the same keys as ``config.yaml``'s ``compression``
+        section and is resolved once, while the agent is constructed. It must
+        therefore be stable for the logical session; configuration changes
+        take effect on the next construction so prompt-cache prefixes are
+        never invalidated mid-conversation.
+
+        The default is empty for full backward compatibility. MemoryManager
+        permits only one external provider, so two provider policies cannot
+        conflict.
+        """
+        return {}
+
+    def system_prompt_stable_across_compression(self) -> bool:
+        """Whether compression may retain the exact cached system prompt.
+
+        External providers default to ``False`` because ``on_pre_compress``
+        may update state subsequently rendered by ``system_prompt_block``.
+        A provider may opt in only when that block is byte-stable for the
+        logical session (including when it is deliberately always empty).
+        The compressor still rebuilds on ordinary session construction and
+        reset; this hook applies only to an already-cached prompt at a
+        compaction boundary.
+        """
+        return False
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Called at the start of each turn with the user message.

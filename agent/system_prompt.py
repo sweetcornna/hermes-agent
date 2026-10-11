@@ -177,6 +177,12 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
         profile_name = "default"
     return {
         "session_id": str(getattr(agent, "session_id", None) or ""),
+        # Generic session-scoped routing metadata lets plugin prompt sections
+        # self-gate without process-global environment checks or plugin
+        # special-cases in core. The section snapshot is still rendered once
+        # and frozen for the logical session.
+        "chat_id": str(getattr(agent, "_chat_id", None) or ""),
+        "chat_type": str(getattr(agent, "_chat_type", None) or ""),
         "model": str(getattr(agent, "model", None) or ""),
         "provider": str(getattr(agent, "provider", None) or ""),
         "platform": str(getattr(agent, "platform", None) or ""),

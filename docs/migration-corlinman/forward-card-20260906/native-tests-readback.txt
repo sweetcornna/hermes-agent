@@ -1,0 +1,21 @@
+✔ native messages retain string IDs, deduplicate, exclude history/self/old sessions, and preserve mentions (1.725709ms)
+✔ native acceptance alone does not complete a send; exact native delivery callback does (1.677042ms)
+✔ outbound reply uses the original native ID and rejects a different conversation (0.490708ms)
+✔ timeout does not resend and session changes revoke ongoing native operations (5.484375ms)
+✔ self-check exercises the native message service without sending, unsupported media fails before send (0.172083ms)
+✔ complete card type 10 builds only own drafts and waits for the final native confirmation (1.027583ms)
+[SnowLuma native forward] {"failed_stage":"drafts"}
+✔ complete card type 16 builds only own drafts and waits for the final native confirmation (0.306792ms)
+[SnowLuma native forward] {"failed_stage":"card"}
+✔ foreign drafts and failed card preparation never send to the recipient (0.477ms)
+[SnowLuma native forward] {"failed_stage":"build"}
+✔ account change while building a card cannot deliver through the next session (0.301167ms)
+✔ self-card verification reads native forwarded records and hashes the complete body without sending (0.218125ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 82.626375

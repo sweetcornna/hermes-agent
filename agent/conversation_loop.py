@@ -42,6 +42,7 @@ from agent.message_metadata import append_message
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
+    compose_multimodal_api_content,
     compose_user_api_content,
     reanchor_current_turn_user_idx,
 )
@@ -2147,9 +2148,14 @@ def run_conversation(
                     # previously-injected copy).
                     api_msg["content"] = _api_content
                 else:
-                    # Callers that bypass the prologue stamping: compose live.
+                    # Callers that bypass the prologue stamping, and image
+                    # turns (a list the str sidecar can't carry): compose live.
                     _composed = compose_user_api_content(
                         api_msg.get("content", ""),
+                        _ext_prefetch_cache,
+                        _plugin_user_context,
+                    ) or compose_multimodal_api_content(
+                        api_msg.get("content"),
                         _ext_prefetch_cache,
                         _plugin_user_context,
                     )
@@ -4071,6 +4077,8 @@ def run_conversation(
                     _cache_pct = ""
                     if canonical_usage.cache_read_tokens and prompt_tokens:
                         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
+                    if canonical_usage.cache_write_tokens:
+                        _cache_pct += f" cache_write={canonical_usage.cache_write_tokens}"
                     logger.info(
                         "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
                         agent.session_api_calls, agent.model, agent.provider or "unknown",
@@ -5909,7 +5917,7 @@ def run_conversation(
                             agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -6123,7 +6131,7 @@ def run_conversation(
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0

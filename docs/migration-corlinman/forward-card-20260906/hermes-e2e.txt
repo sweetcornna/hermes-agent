@@ -1,0 +1,3 @@
+OneBot home_channel is GROUP g183287894 — bare 'deliver=onebot' targets and gateway notifications will land in that group. Point home_channel at the private chat that owns this gateway (see main_window.py); a group id is refused as the main window, so commands stay locked there regardless.
+providers.cornna: unknown config keys ignored: enabled
+{"target_is_self": true, "result": {"success": true, "platform": "onebot", "chat_id": "2952532060", "message_id": "76417699905199"}}

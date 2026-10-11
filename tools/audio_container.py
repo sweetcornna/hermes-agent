@@ -24,6 +24,11 @@ Detection notes:
   ``M4B ``) from video brands (isom/mp42/avc1/qt).
 - The ``0xFF 0xFx`` sync word is shared by MP3 and ADTS AAC; bits 3-1 of
   byte 1 disambiguate (ADTS: ``ID=0``, ``layer=00``).
+- AMR and SILK are raw codec streams, not real containers, but QQ/WeChat voice
+  notes arrive as one of the two under a guessed ``.amr`` name — without them
+  here the guessed extension survives onto disk and STT rejects the file.
+  Tencent prefixes SILK with one byte, so the SILK magic is accepted at offset
+  0 and offset 1.
 """
 
 from __future__ import annotations
@@ -40,19 +45,30 @@ CONTAINER_TO_EXT = {
     "mp3": ".mp3",
     "aac": ".aac",
     "webm": ".webm",
+    "amr": ".amr",
+    "silk": ".silk",
 }
 
 # MP4 ftyp brands that mean "this is audio" (iOS voice notes use M4A ).
 _MP4_AUDIO_BRANDS = (b"m4a ", b"m4b ")
+
+# Covers narrowband (``#!AMR\n``), wideband (``#!AMR-WB\n``) and the
+# multi-channel ``_MC1.0`` variants of both.
+_AMR_MAGIC = b"#!AMR"
+_SILK_MAGIC = b"#!SILK"
+# Tencent's one-byte SILK prefix. Both spellings are in the wild — the full
+# magic pushed to offset 1, and the truncated ``\x02!`` header that
+# ``gateway/platforms/qqbot/adapter.py`` already keys off.
+_SILK_TENCENT_HEADER = b"\x02!"
 
 
 def sniff_container(data: bytes) -> Optional[str]:
     """Return a container id from magic bytes, or ``None`` when unknown.
 
     Possible ids: ``m4a``, ``mp4``, ``ogg``, ``flac``, ``wav``, ``mp3``,
-    ``aac``, ``webm``. Only audio/AV containers are claimed — images
-    (including RIFF/WEBP) return ``None`` so callers can layer their own
-    image detection first.
+    ``aac``, ``webm``, ``amr``, ``silk``. Only audio/AV containers are
+    claimed — images (including RIFF/WEBP) return ``None`` so callers can
+    layer their own image detection first.
     """
     if len(data) >= 8 and data[4:8] == b"ftyp":
         # Brand at bytes 8-11: audio brands ("M4A ", "M4B ") are voice
@@ -77,6 +93,12 @@ def sniff_container(data: bytes) -> Optional[str]:
         return "mp3"
     if data.startswith(b"\x1a\x45\xdf\xa3"):
         return "webm"
+    if data.startswith(_SILK_MAGIC) or data[1:].startswith(_SILK_MAGIC):
+        return "silk"
+    if data.startswith(_SILK_TENCENT_HEADER):
+        return "silk"
+    if data.startswith(_AMR_MAGIC):
+        return "amr"
     return None
 
 

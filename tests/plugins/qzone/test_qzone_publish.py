@@ -124,6 +124,20 @@ class TestGenerateImageCharacterReferences:
         assert filename == "generated.png"
         assert calls == [{"prompt": "配图", "aspect_ratio": "square"}]
 
+    def test_explicit_scene_cast_overrides_fixed_configured_cast(self, _generation_stubs):
+        calls, config, cornna, monkeypatch = _generation_stubs
+        monkeypatch.setattr(config, "load_config", lambda: {"qzone": {"reference_characters": ["algo", "oscar"]}})
+        monkeypatch.setattr(cornna, "available_characters", lambda: ["grantley", "paul"])
+        publish._generate_image("scene", "landscape", reference_characters=["grantley", "paul"])
+        assert calls[0]["reference_image_urls"] == ["character:grantley", "character:paul"]
+
+    def test_explicit_missing_reference_fails_before_model_call(self, _generation_stubs):
+        calls, _config, cornna, monkeypatch = _generation_stubs
+        monkeypatch.setattr(cornna, "available_characters", lambda: ["grantley"])
+        with pytest.raises(RuntimeError, match="reference art unavailable"):
+            publish._generate_image("scene", "portrait", reference_characters=["grantley", "paul"])
+        assert calls == []
+
     def test_reference_characters_missing_on_disk_uses_plain_generation(
         self, _generation_stubs, caplog
     ):
@@ -179,9 +193,18 @@ class TestGenerateImageCharacterReferences:
         }]
         assert "too many reference images" in caplog.text
 
-    def test_reference_generation_failure_retries_without_references(
-        self, _generation_stubs, caplog
+    def test_reference_generation_failure_does_not_fall_back_off_model(
+        self, _generation_stubs
     ):
+        """A refused reference prompt fails; it never retries bare.
+
+        This used to retry without ``reference_image_urls``.  Live on
+        2026-08-28 the provider refused one reference-guided prompt and the
+        bare retry produced a different character entirely — a blond human
+        for a tiger persona — which was then published under that persona's
+        name.  The references are the identity lock, not decoration, so
+        losing them has to fail the prompt rather than swap the subject.
+        """
         calls, config, cornna, monkeypatch = _generation_stubs
         monkeypatch.setattr(
             config, "load_config", lambda: {"qzone": {"reference_characters": ["grantley"]}}
@@ -196,28 +219,25 @@ class TestGenerateImageCharacterReferences:
             if args.get("reference_image_urls"):
                 calls.append(args)
                 raise RuntimeError("reference image disappeared")
+            # Reached only if the fallback comes back: record it so the
+            # assertion below names the actual regression.
+            calls.append(args)
             return plain_generate(args)
 
         monkeypatch.setattr(image_generation_tool, "_handle_image_generate", _retrying_generate)
 
-        with caplog.at_level("WARNING"):
-            image, filename = publish._generate_image("配图", "square")
+        with pytest.raises(RuntimeError, match="no off-model fallback"):
+            publish._generate_image("配图", "square")
 
-        assert image == _PNG
-        assert filename == "generated.png"
         assert calls == [
             {
                 "prompt": "配图",
                 "aspect_ratio": "square",
                 "reference_image_urls": ["character:grantley"],
             },
-            {"prompt": "配图", "aspect_ratio": "square"},
         ]
-        assert "retrying without references" in caplog.text
 
-    def test_plain_generation_failure_after_reference_retry_propagates(
-        self, _generation_stubs
-    ):
+    def test_reference_failure_reports_the_underlying_cause(self, _generation_stubs):
         calls, config, cornna, monkeypatch = _generation_stubs
         monkeypatch.setattr(
             config, "load_config", lambda: {"qzone": {"reference_characters": ["grantley"]}}
@@ -241,7 +261,6 @@ class TestGenerateImageCharacterReferences:
                 "aspect_ratio": "square",
                 "reference_image_urls": ["character:grantley"],
             },
-            {"prompt": "配图", "aspect_ratio": "square"},
         ]
 
     def test_non_local_terminal_backend_skips_character_references(
@@ -596,7 +615,11 @@ class TestHandlerPublish:
 
 
 class TestPublishIdempotency:
-    def test_success_is_logged_as_sent(self):
+    def test_success_is_logged_as_sent(self, monkeypatch):
+        # Daily Grantley posts add their companion image at the publish
+        # boundary when the model supplied text only.
+        monkeypatch.setattr(publish, "_generate_image", lambda *_args, **_kw: (_PNG, "generated.png"))
+        monkeypatch.setattr(publish, "_classify_images_safe", lambda _images: True)
         _run({"text": "hello", "job": "hermes.qzone_daily"})
         entry = state.post_log_entries()[-1]
         assert entry["outcome"] == "sent"
@@ -646,6 +669,53 @@ class TestPublishIdempotency:
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("drafts", [None, ["sports ground", "river swimming", "workshop break"]])
+def test_daily_generation_wraps_every_scene_and_preserves_selected_cast(monkeypatch, drafts):
+    calls = []
+
+    def generate(prompt, aspect, **kw):
+        calls.append((prompt, aspect, kw))
+        return _PNG, "generated.png"
+
+    monkeypatch.setattr(publish, "_generate_image", generate)
+    monkeypatch.setattr(publish, "_classify_images_safe", lambda _: True)
+    transport = _transport()
+    args = {"text": "今天跑步、游泳，再去工坊帮忙。", "job": "hermes.qzone_daily", "reference_characters": ["paul"]}
+    if drafts is not None:
+        args["generate"] = drafts
+    out = _run(args, transport=transport)
+    assert out["success"] and out["images"] == 3 and out["generated"]
+    assert len(calls) == 3
+    assert len({prompt for prompt, _, _ in calls}) == 3
+    for i, (prompt, _, kw) in enumerate(calls, 1):
+        assert kw["reference_characters"] == ["grantley", "paul"]
+        assert f"现在只画第 {i} 张" in prompt
+        assert "不是犬或狼" in prompt
+        assert "三个独立场景" in prompt
+        if drafts:
+            assert all(scene in prompt for scene in drafts)
+    assert "清楚展现格兰腹肌" in calls[0][0]
+    assert sum("cgi_upload_image" in call["url"] for call in transport.calls) == 3
+
+
+def test_daily_single_draft_is_rejected_before_generation_or_publish(monkeypatch):
+    monkeypatch.setattr(publish, "_generate_image", lambda *_a, **_kw: pytest.fail("must not generate"))
+    transport = _transport()
+    out = _run({"text": "日常", "job": "hermes.qzone_daily", "generate": "one scene"}, transport=transport)
+    assert out["code"] == "invalid_args"
+    assert transport.calls == []
+
+
+def test_daily_media_rejection_never_posts_text_only(monkeypatch):
+    monkeypatch.setattr(publish, "_generate_image", lambda *_a, **_kw: (_PNG, "generated.png"))
+    monkeypatch.setattr(publish, "_classify_images_safe", lambda _: False)
+    transport = _transport()
+    out = _run({"text": "日常", "job": "hermes.qzone_daily"}, transport=transport)
+    assert out["code"] == "content_policy_blocked"
+    assert transport.calls == []
+    assert state.post_log_entries() == []
 
 
 def test_schema_is_hermes_shaped():

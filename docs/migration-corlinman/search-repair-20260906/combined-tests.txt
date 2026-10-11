@@ -1,0 +1,29 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 7 test files (~172 tests) under ['tests/plugins/grantley/test_persona_rendering.py', 'tests/plugins/grantley/test_life_and_events.py', 'tests/plugins/grantley/test_cache_safety.py', 'tests/gateway/test_onebot_reply_context.py', 'tests/gateway/test_onebot_persona_binding.py', 'tests/gateway/test_onebot_main_window.py', 'tests/plugins/corlinman_search/test_bridge.py']; running with -j 4
+[  4.1% |     7/~172 | ✓7 | ✗0] ✓ tests/plugins/corlinman_search/test_bridge.py (7✓, 0.8s)
+[ 16.3% |    28/~172 | ✓28 | ✗ 0] ✓ tests/gateway/test_onebot_persona_binding.py (21✓, 1.2s)
+[ 23.8% |    41/~172 | ✓41 | ✗ 0] ✓ tests/plugins/grantley/test_cache_safety.py (13✓, 0.5s)
+[ 43.6% |    75/~172 | ✓75 | ✗ 0] ✓ tests/gateway/test_onebot_main_window.py (34✓, 1.4s)
+[ 55.8% |    96/~172 | ✓99 | ✗ 0] ✓ tests/gateway/test_onebot_reply_context.py (24✓, 1.4s)
+[ 89.5% |   154/~172 | ✓157 | ✗  0] ✓ tests/plugins/grantley/test_life_and_events.py (58✓, 0.9s)
+[100.0% |   172/~172 | ✓177 | ✗  0] ✓ tests/plugins/grantley/test_persona_rendering.py (20✓, 3.4s)
+
+=== Summary: 7 files, 177 tests passed, 0 failed (100% complete) in 4.8s (4 workers) ===
+  Durations cached to test_durations.json (7 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   7
+  Total subprocess CPU-wall: 9.7s  (runner wall: 4.8s, parallelism: 4x)
+  P50: 1.21s  P90: 3.44s  P95: 3.44s  P99: 3.44s  Max: 3.44s
+  <1s: 3 files (43%)  <2s: 6 files (86%)
+  Top 10 slowest:
+      3.44s  tests/plugins/grantley/test_persona_rendering.py
+      1.39s  tests/gateway/test_onebot_reply_context.py
+      1.39s  tests/gateway/test_onebot_main_window.py
+      1.21s  tests/gateway/test_onebot_persona_binding.py
+      0.90s  tests/plugins/grantley/test_life_and_events.py
+      0.82s  tests/plugins/corlinman_search/test_bridge.py
+      0.52s  tests/plugins/grantley/test_cache_safety.py

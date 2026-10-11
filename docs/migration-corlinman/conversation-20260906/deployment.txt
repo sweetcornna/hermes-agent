@@ -1,0 +1,1 @@
+{"deployed": true, "started_at": "2026-09-06T15:34:20.209863286Z", "gateway": "running", "onebot": "connected", "qq_not_restarted": true, "history_preserved": true, "persona_revision": "grantley-conversation-20260906", "native_forward_available": false, "backup": "/opt/hermes-cloud/data/.deployments/conversation-20260906/backup"}

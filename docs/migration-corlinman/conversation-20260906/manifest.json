@@ -1,0 +1,32 @@
+[
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/platforms/onebot/adapter.py",
+    "before": "0ac8884774a84956bdc0bb1271c597ada4aa2b7d5e81fdede2c75029642122ce",
+    "source": "upload/plugins/platforms/onebot/adapter.py",
+    "after": "2e9eeea7249b363d359a4caf77069253e44133725cea15a0d97e1021ab4c195f"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/platforms/onebot/router.py",
+    "before": "b3ac0a2f199d34088e7d94a0afe969f8323a85207c21b76405b6baeaab9a02d9",
+    "source": "upload/plugins/platforms/onebot/router.py",
+    "after": "4d829b6293b4adcce46b5d8096e7e9034b734399380eab56cef9034307393381"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/platforms/onebot/reply_batch.py",
+    "before": null,
+    "source": "upload/plugins/platforms/onebot/reply_batch.py",
+    "after": "417a84603c4f19bf00d78764335a388f28344908075b2159e3d768c9739492e7"
+  },
+  {
+    "target": "/opt/hermes-cloud/repo/plugins/grantley/assets/grantley.md",
+    "before": "5a70a96f7b5a4966424205b7fcb830818477d64353ae3ed2ae70bbf1754104c9",
+    "source": "upload/plugins/grantley/assets/grantley.md",
+    "after": "a7e0c1ab37d49a1904e5e57abb1f3a091dc9d0cae8acf3ac0760f146bec6e062"
+  },
+  {
+    "target": "/opt/hermes-cloud/data/plugins/grantley/assets/grantley.md",
+    "before": "5a70a96f7b5a4966424205b7fcb830818477d64353ae3ed2ae70bbf1754104c9",
+    "source": "upload/plugins/grantley/assets/grantley.md",
+    "after": "a7e0c1ab37d49a1904e5e57abb1f3a091dc9d0cae8acf3ac0760f146bec6e062"
+  }
+]

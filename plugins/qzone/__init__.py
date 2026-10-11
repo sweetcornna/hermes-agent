@@ -52,7 +52,7 @@ def _check_qzone_available() -> bool:
     """Expose these tools only when a OneBot backend is configured.
 
     They have no credentials of their own — the QQ session is borrowed from
-    NapCat / Lagrange — so without a configured endpoint there is nothing
+    SnowLuma / NapCat / Lagrange / go-cqhttp — so without a configured endpoint there is nothing
     they could possibly do, and a schema entry would be pure token cost.
     """
     try:

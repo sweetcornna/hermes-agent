@@ -224,6 +224,29 @@ class TestSegmentHelpers:
         assert [m.kind for m in media] == ["video", "document"]
         assert media[1].mime == "application/octet-stream"
 
+    def test_media_record_with_url_keeps_the_url(self):
+        media = P.segments_to_media([
+            P.RecordSegment(url="https://cdn/v.amr", file="v.amr")
+        ])
+        assert [(m.kind, m.url, m.file_name) for m in media] == [
+            ("audio", "https://cdn/v.amr", "v.amr")
+        ]
+
+    def test_media_record_without_url_survives_as_a_resolve_by_id_ref(self):
+        # NapCat's name-only record: the file id is the only handle we get,
+        # and get_record can still turn it into audio. Dropping it here made
+        # the voice note vanish with no attachment and no log line.
+        media = P.segments_to_media([P.RecordSegment(url="", file="ABCD1234.amr")])
+        assert [(m.kind, m.url, m.mime, m.file_name) for m in media] == [
+            ("audio", "", "audio/*", "ABCD1234.amr")
+        ]
+
+    def test_media_record_with_neither_url_nor_file_is_still_skipped(self):
+        # Nothing can recover this one; a phantom attachment is worse than a
+        # missing one.
+        assert P.segments_to_media([P.RecordSegment(url="", file=None)]) == []
+        assert P.segments_to_media([P.RecordSegment(url="", file="")]) == []
+
     def test_media_skips_empty_urls(self):
         # gocq ships an empty url for offline media; NapCat ships name-only
         # file segments. Neither can be downloaded.
@@ -281,6 +304,79 @@ class TestActionToWire:
         s = P.action_to_wire(P.UploadGroupFile(group_id=10, file="/tmp/x.pdf", name="x.pdf"))
         assert s["action"] == "upload_group_file"
         assert "folder" not in s["params"]
+
+    def test_get_record_envelope_defaults_out_format_to_mp3(self):
+        s = P.action_to_wire(P.GetRecord(file="abc123.silk"))
+        assert s == {
+            "action": "get_record",
+            "params": {"file": "abc123.silk", "out_format": "mp3"},
+        }
+
+    def test_get_record_envelope_explicit_out_format(self):
+        s = P.action_to_wire(P.GetRecord(file="abc123.silk", out_format="wav"))
+        assert s["params"]["out_format"] == "wav"
+
+    def test_send_group_ai_record_envelope_emits_both_text_and_test(self):
+        """NapCat's own docs disagree on "text" vs "test" — emit both.
+
+        See the comment on the ``SendGroupAiRecord`` branch of
+        ``action_to_wire`` for the doc citation; this test exists so a
+        future "cleanup" that drops one of the two keys fails loudly.
+        """
+        s = P.action_to_wire(
+            P.SendGroupAiRecord(
+                group_id=100, character="lucy-voice-xxx", text="hello there"
+            )
+        )
+        assert s["action"] == "send_group_ai_record"
+        assert s["params"]["group_id"] == 100
+        assert s["params"]["character"] == "lucy-voice-xxx"
+        assert s["params"]["text"] == "hello there"
+        assert s["params"]["test"] == "hello there"
+
+    def test_get_ai_record_envelope_emits_both_text_and_test(self):
+        s = P.action_to_wire(
+            P.GetAiRecord(group_id=100, character="lucy-voice-xxx", text="preview me")
+        )
+        assert s["action"] == "get_ai_record"
+        assert s["params"]["text"] == "preview me"
+        assert s["params"]["test"] == "preview me"
+
+    def test_get_ai_characters_envelope_omits_unset_chat_type(self):
+        s = P.action_to_wire(P.GetAiCharacters(group_id=100))
+        assert s == {"action": "get_ai_characters", "params": {"group_id": 100}}
+
+    def test_get_ai_characters_envelope_includes_chat_type_when_set(self):
+        s = P.action_to_wire(P.GetAiCharacters(group_id=100, chat_type=1))
+        assert s["params"] == {"group_id": 100, "chat_type": 1}
+
+    def test_send_poke_private_omits_group_id(self):
+        s = P.action_to_wire(P.SendPoke(user_id=42))
+        assert s == {"action": "send_poke", "params": {"user_id": 42}}
+        assert "group_id" not in s["params"]
+
+    def test_send_poke_group_includes_group_id(self):
+        s = P.action_to_wire(P.SendPoke(user_id=42, group_id=7))
+        assert s["params"] == {"user_id": 42, "group_id": 7}
+
+    @pytest.mark.parametrize(
+        "action",
+        [
+            P.GetRecord(file="abc123.silk"),
+            P.SendGroupAiRecord(group_id=1, character="lucy-voice-xxx", text="hi"),
+            P.GetAiRecord(group_id=1, character="lucy-voice-xxx", text="hi"),
+            P.GetAiCharacters(group_id=1),
+            P.SendPoke(user_id=1),
+        ],
+    )
+    def test_new_actions_do_not_fall_through_to_forward_msg(self, action):
+        """Regression guard: the final ``action_to_wire`` branch is an
+        un-guarded fall-through for ``SendGroupForwardMsg``.  Every new
+        ``isinstance`` branch must sit above it or it's dead code that
+        silently mis-serializes as a forward message.
+        """
+        s = P.action_to_wire(action)
+        assert s["action"] != "send_group_forward_msg"
 
     def test_image_segment_serializes_inline_url_and_file(self):
         s = P.action_to_wire(P.SendGroupMsg(group_id=7, message=[

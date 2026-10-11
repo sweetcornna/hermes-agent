@@ -1,0 +1,19 @@
+{
+  "container_restart_policy": "no",
+  "qq_autostart_on_next_supervisor_start": false,
+  "qq_autorestart": false,
+  "qq_startretries_on_next_supervisor_start": 0,
+  "qq_restarted": false,
+  "hermes_restarted": false,
+  "live_pid_unchanged": true,
+  "supervisor_reload_performed": true,
+  "backup": "/opt/hermes-cloud/data/.deployments/native-minimal-hardening-20260907",
+  "seccomp_current": [
+    "seccomp=unconfined"
+  ],
+  "cap_add_current": [
+    "SYS_PTRACE"
+  ],
+  "supervisor_qq_state": "STOPPED",
+  "all_existing_qq_processes_unchanged": true
+}

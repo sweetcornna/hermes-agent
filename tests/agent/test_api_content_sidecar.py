@@ -1036,3 +1036,76 @@ class TestStaleConfirmationRedactionDropsSidecar:
         )
         assert cleaned[0]["content"] != "confirm forced restart"
         assert "api_content" not in cleaned[0]
+
+
+# ---------------------------------------------------------------------------
+# Image turns: list content still receives the prefetch / plugin context
+# ---------------------------------------------------------------------------
+
+from agent.turn_context import compose_multimodal_api_content, user_message_text
+
+_IMAGE_PART = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+
+class TestMultimodalInjection:
+    def test_compose_appends_text_part_without_mutating(self):
+        content = [{"type": "text", "text": "look"}, _IMAGE_PART]
+        out = compose_multimodal_api_content(content, "likes tea", "PLUGIN-CTX")
+        fenced = build_memory_context_block("likes tea")
+        assert out == [*content, {"type": "text", "text": fenced + "\n\nPLUGIN-CTX"}]
+        assert len(content) == 2
+
+    def test_compose_none_for_str_or_nothing_to_inject(self):
+        assert compose_multimodal_api_content("hello", "mem", "ctx") is None
+        assert compose_multimodal_api_content([_IMAGE_PART], "", "") is None
+
+    def test_user_message_text_joins_text_parts(self):
+        content = [{"type": "text", "text": "看看"}, _IMAGE_PART, {"type": "text", "text": "这张"}]
+        assert user_message_text(content) == "看看\n这张"
+        assert user_message_text("plain") == "plain"
+        assert user_message_text(None) == ""
+
+    def test_prologue_prefetches_from_image_turn_text(self):
+        """An attached picture used to make the prefetch query empty, which
+        is_trivial_prompt skips — dropping persona state and the clock."""
+
+        class _Mem:
+            query = None
+
+            def on_turn_start(self, *_a, **_k):
+                pass
+
+            def prefetch_all(self, query):
+                self.query = query
+                return "MEM"
+
+            def describe_recall(self):
+                return ""
+
+        agent = _FakeAgent()
+        agent._memory_manager = _Mem()
+        content = [{"type": "text", "text": "她好漂亮"}, _IMAGE_PART]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            ctx = _build(
+                agent,
+                user_message=content,
+                summarize_user_message_for_log=user_message_text,
+            )
+        assert agent._memory_manager.query == "她好漂亮"
+        assert ctx.ext_prefetch_cache == "MEM"
+        # Nothing stamped: the str sidecar cannot carry a list.
+        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+
+    def test_image_turn_wire_carries_injection_and_store_stays_clean(self, wire_env):
+        make_agent, handler, db, sid = wire_env
+        agent = make_agent()
+        agent._model_supports_vision = lambda: True  # native image parts on the wire
+        content = [{"type": "text", "text": "what is this"}, _IMAGE_PART]
+
+        agent.run_conversation(content, conversation_history=[], task_id="t")
+
+        sent = _user_messages(_chat_requests(handler)[0])[-1]["content"]
+        assert sent == [*content, {"type": "text", "text": "PLUGIN-CTX"}]
+        user_rows = [r for r in db.get_messages(sid) if r["role"] == "user"]
+        assert "PLUGIN-CTX" not in (user_rows[0]["content"] or "")
+        assert not user_rows[0].get("api_content")

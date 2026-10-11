@@ -31,6 +31,12 @@ from agent.auxiliary_client import (
     aux_interrupt_protection,
     call_llm,
 )
+from agent.compression_policy import (
+    MIN_COMPRESSION_TAIL_TOKENS,
+    normalize_tail_tokens,
+    normalize_threshold_ratio,
+    normalize_threshold_tokens,
+)
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
@@ -2098,7 +2104,22 @@ class ContextCompressor(ContextEngine):
     @property
     def tail_token_budget(self) -> int:
         if self._tail_token_budget is None:
-            if getattr(self, "tail_mode", "legacy") == "lean":
+            configured_tail_tokens = getattr(
+                self, "configured_tail_tokens", None,
+            )
+            if configured_tail_tokens is not None:
+                # An absolute persona/session tail must leave a meaningful
+                # compressible window even when a small threshold_tokens cap
+                # is configured. Keep at least 20% of the trigger budget
+                # available for the rolling summary + regrowth headroom.
+                self._tail_token_budget = min(
+                    configured_tail_tokens,
+                    max(
+                        MIN_COMPRESSION_TAIL_TOKENS,
+                        int(self.threshold_tokens * 0.80),
+                    ),
+                )
+            elif getattr(self, "tail_mode", "legacy") == "lean":
                 # Lean mode (#compaction-v2): the verbatim tail is a small
                 # recency window, not a context hoard — the upgraded summary
                 # (verbatim user messages, constraints section, recovery
@@ -2637,8 +2658,21 @@ class ContextCompressor(ContextEngine):
         self._apply_threshold_tokens_cap()
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
+        configured_tail_tokens = getattr(
+            self, "configured_tail_tokens", None,
+        )
+        if configured_tail_tokens is not None:
+            self.tail_token_budget = min(
+                configured_tail_tokens,
+                max(
+                    MIN_COMPRESSION_TAIL_TOKENS,
+                    int(self.threshold_tokens * 0.80),
+                ),
+            )
+        else:
+            self.tail_token_budget = int(
+                self.threshold_tokens * self.summary_target_ratio,
+            )
         self.max_summary_tokens = min(
             int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
         )
@@ -2725,13 +2759,12 @@ class ContextCompressor(ContextEngine):
         Non-numeric or non-positive values are treated as None so a bad
         config value never silently caps the threshold at zero.
         """
-        if value is None:
-            return None
-        try:
-            ivalue = int(value)
-        except (TypeError, ValueError):
-            return None
-        return ivalue if ivalue > 0 else None
+        return normalize_threshold_tokens(value)
+
+    @staticmethod
+    def _coerce_tail_tokens(value: Any) -> int | None:
+        """Normalize an absolute recent-tail budget to a positive int."""
+        return normalize_tail_tokens(value)
 
     def _apply_threshold_tokens_cap(self) -> None:
         """Apply the absolute token cap if configured.
@@ -2823,6 +2856,7 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
         threshold_tokens_cap: Any = None,
+        tail_tokens: Any = None,
         proactive_prune_tokens: int = 0,
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
@@ -2842,13 +2876,16 @@ class ContextCompressor(ContextEngine):
         # Stored as a plain dict; resolved in _resolve_threshold(), then the
         # small-context floor is applied on top.
         self.model_thresholds = model_thresholds or {}
-        # _config_threshold_percent is the raw config value (before per-model
-        # override or small-context floor). Used as the fallback when switching
-        # to a model with no matching override.
-        self._config_threshold_percent = threshold_percent
+        # _config_threshold_percent is the validated config value (before
+        # per-model override or small-context floor). Used as the fallback
+        # when switching to a model with no matching override.
+        normalized_threshold = normalize_threshold_ratio(threshold_percent)
+        if normalized_threshold is None:
+            normalized_threshold = 0.50
+        self._config_threshold_percent = normalized_threshold
         # Resolve per-model override first, then apply the small-context floor.
         self._base_threshold_percent = resolve_model_threshold(
-            model, self.model_thresholds, threshold_percent,
+            model, self.model_thresholds, normalized_threshold,
         )
         self.threshold_percent = self._base_threshold_percent
         # Absolute token cap from config (compression.threshold_tokens). When
@@ -2859,6 +2896,10 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(
             threshold_tokens_cap,
         )
+        # Optional absolute verbatim-tail budget. This is resolved once at
+        # construction (or retained across model switches) and only affects
+        # compaction boundaries; it never mutates the system prompt.
+        self.configured_tail_tokens = self._coerce_tail_tokens(tail_tokens)
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         # Proactive tool-result pruning (cost-oriented; runs INDEPENDENTLY of the
@@ -3117,6 +3158,32 @@ class ContextCompressor(ContextEngine):
         if self.awaiting_real_usage_after_compression and self.last_prompt_tokens == -1:
             return
         self.last_prompt_tokens = snapshot
+
+    def real_prompt_floor(self) -> int:
+        """Last real provider prompt count, as a floor for the next request.
+
+        Zero when unknown, or when a compaction ran since that reading (the
+        count then describes a history that no longer exists).
+        """
+        if self.awaiting_real_usage_after_compression or self.last_prompt_tokens <= 0:
+            return 0
+        return int(self.last_real_prompt_tokens or 0)
+
+    def seed_real_prompt_tokens(self, tokens: int) -> None:
+        """Adopt a persisted real prompt count for a freshly built compressor.
+
+        A gateway rebuilds the agent after idle eviction or restart; without
+        the session's last real count its first preflight sees only the rough
+        estimate. Never overrides a reading this compressor already holds.
+        """
+        try:
+            tokens = int(tokens)
+        except (TypeError, ValueError):
+            return
+        if tokens <= 0 or self.last_prompt_tokens != 0 or self.last_real_prompt_tokens > 0:
+            return
+        self.last_prompt_tokens = tokens
+        self.last_real_prompt_tokens = tokens
 
     def note_request_rough_estimate(self, rough_tokens: int) -> None:
         """Record the rough estimate of the request about to be sent.

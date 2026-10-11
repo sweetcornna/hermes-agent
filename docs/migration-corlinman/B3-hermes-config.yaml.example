@@ -11,7 +11,7 @@
 #   env var                | source in corlinman config.toml
 #   -----------------------|--------------------------------------------------
 #   CORNNA_API_KEY         | providers.cornna.api_key.value
-#   ONEBOT_ACCESS_TOKEN    | channels.qq.instances.default.napcat_access_token
+#   ONEBOT_ACCESS_TOKEN    | NapCat /opt/napcat/config/onebot11_<QQ>.json websocketServers[ws].token
 #   TELEGRAM_BOT_TOKEN     | (already placed by the earlier Telegram batch)
 #
 # Rollback: delete everything below the B3 banner in config.yaml, or restore
@@ -158,10 +158,39 @@ platforms:
   #      auto-enable the platform just because ONEBOT_WS_URL is present.
   onebot:
     enabled: false
+    # ---- 主窗口 --------------------------------------------------------
+    # The ONE chat this gateway answers to. Bare `deliver=onebot` targets,
+    # gateway restart/drain notices and every cron digest with no explicit
+    # target resolve through here — so this must be the owner's private
+    # chat, never a group. A group id in this slot is what puts operator
+    # notices in a room full of strangers.
+    home_channel:
+      chat_id: "2104743984"
+      name: "主窗口 (DM)"
     extra:
-      ws_url: "ws://127.0.0.1:3001"          # the existing corlinman-napcat container
+      ws_url: "ws://127.0.0.1:3011"          # NapCat OneBot v11 (container-internal 3001)
       # access_token comes from ONEBOT_ACCESS_TOKEN in .env — never inlined here.
       self_ids: []
+
+      # ---- who may operate this gateway ---------------------------------
+      # 主窗口, restated for the control axis: slash commands are honoured in
+      # this private chat and nowhere else. Reminders land here (home_channel
+      # above) and commands come from here — one id, so the two cannot drift.
+      main_window_chat_id: "2104743984"
+
+      # A QQ group is a place the persona talks, NOT a console. With this
+      # false (the default) every group event carries
+      # allow_gateway_control=False, so `MessageEvent.is_command()` is false
+      # and the run loop's command paths are never entered — group members
+      # cannot run slash commands even while `group_replies_enabled` is on.
+      # Structural, not a denial message; see plugins/platforms/onebot/
+      # main_window.py for why this is not left to `group_allow_admin_from`.
+      group_gateway_control_enabled: false
+
+      # Second, independent lock on the same thing: hermes core's own slash
+      # gating (gateway/slash_access.py). Listing an admin ENABLES gating for
+      # the DM scope — unset, every allowed DM user runs every command.
+      allow_admin_from: ["2104743984"]
 
       # corlinman `group_replies_enabled = false`. Master switch for ALL group
       # activity; while false every group message is dropped before the
@@ -187,7 +216,22 @@ platforms:
         "149881991":  ["格兰"]
         "667528618":  ["格兰"]
 
-      # corlinman group_rate_limit_window_minutes / _max_messages
+      # ---- inbound anti-hammering ---------------------------------------
+      # These buckets are deliberately generous: the current router applies
+      # them to private chats too, so the 主窗口 remains usable.
+      # ONEBOT_RATE_LIMIT_GROUP_PER_MIN / ONEBOT_RATE_LIMIT_SENDER_PER_MIN
+      rate_limit_group_per_min: 30
+      rate_limit_sender_per_min: 10
+
+      # ONEBOT_GROUP_REPLY_COOLDOWN_SECS: minimum gap between non-@ group
+      # replies; an @mention bypasses this politeness timer.  20s matches the
+      # corlinman production default.
+      group_reply_cooldown_secs: 20
+
+      # ONEBOT_GROUP_RATE_LIMIT_WINDOW_MINUTES +
+      # ONEBOT_GROUP_RATE_LIMIT_MAX_MESSAGES: exact hard cap, 5 non-command
+      # messages per group per 3-minute window. Shared by reactive replies and
+      # proactive speaking; @mentions do not bypass this budget.
       group_rate_limit_window_minutes: 3
       group_rate_limit_max_messages: 5
 

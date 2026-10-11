@@ -63,6 +63,7 @@ class TestOverrides:
             "max_bytes": 100_000,
             "max_lines": 5000,
             "max_line_length": 4096,
+            "max_result_chars": None,
         }
 
 
@@ -139,3 +140,42 @@ class TestIntegrationReadPagination:
         # Clamped to default MAX_LINES (2000).
         assert limit == tol.DEFAULT_MAX_LINES
         assert offset == 10
+
+
+class TestMaxResultChars:
+    """``max_result_chars`` lowers the per-result spill threshold (opt-in)."""
+
+    @staticmethod
+    def _budget(cfg, context_length=200_000):
+        import types
+
+        from agent.tool_executor import _budget_for_agent
+
+        agent = types.SimpleNamespace(
+            context_compressor=types.SimpleNamespace(context_length=context_length)
+        )
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            return _budget_for_agent(agent)
+
+    def test_absent_keeps_the_context_scaled_threshold(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert tol.get_tool_output_limits()["max_result_chars"] is None
+        tol._reset_tool_output_limits_cache()
+        assert self._budget({}).default_result_size == 100_000
+
+    def test_cap_lowers_the_per_result_threshold(self):
+        budget = self._budget({"tool_output": {"max_result_chars": 16_000}})
+        assert budget.default_result_size == 16_000
+        assert budget.resolve_threshold("terminal") == 16_000
+        assert budget.resolve_threshold("read_file") == float("inf")
+
+    def test_cap_never_raises_a_smaller_scaled_threshold(self):
+        budget = self._budget(
+            {"tool_output": {"max_result_chars": 90_000}}, context_length=20_000
+        )
+        assert budget.default_result_size < 90_000
+
+    @pytest.mark.parametrize("bad", [0, -1, "x", None])
+    def test_invalid_cap_is_ignored(self, bad):
+        budget = self._budget({"tool_output": {"max_result_chars": bad}})
+        assert budget.default_result_size == 100_000

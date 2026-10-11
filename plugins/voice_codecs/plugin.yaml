@@ -1,0 +1,47 @@
+name: voice_codecs
+version: 1.0.0
+label: Voice-note codecs (SILK / AMR)
+# ``backend``: bundled and auto-loaded, like the other capability backends
+# (image_gen, spotify, qzone). It MUST be a kind that loads without being
+# named in ``plugins.enabled`` — SILK/AMR voice notes transcribe out of the
+# box today, and demoting that to opt-in would silently break every install
+# that receives them. ``platform``/``exclusive``/``model-provider`` belong to
+# other discovery systems, and a decoder is none of those.
+#
+# Loading costs one small module import and two registry entries: this plugin
+# registers NO tools, so it adds nothing to the model's schema and no tokens
+# to any API call. ``pilk`` is imported and ``ffmpeg`` is probed only inside
+# ``decode()``, i.e. only when a voice note in that codec actually arrives.
+kind: backend
+description: >
+  Decoders for the two raw speech-codec streams that arrive as voice notes
+  and that no speech-to-text provider accepts: SILK (Skype's codec, used by
+  WeChat and QQ voice messages) and AMR (the 3GPP telephony codec, also what
+  QQ labels its voice notes as). Each is decoded to a temporary 16 kHz WAV
+  and handed to whichever STT provider is configured — built-in or plugin.
+
+  Not platform-scoped on purpose. SILK is WeChat's and QQ's, AMR is generic
+  telephony, and both show up on other bridges; tying them to one messaging
+  platform would mean re-shipping the same codec per platform.
+
+  Which decoder runs is decided by the file's magic bytes, never by its
+  name. QQ hands the OneBot adapter a SILK payload named "voice.amr" (and
+  the reverse), so deciding from the extension picks the wrong codec and
+  every QQ voice message fails to transcribe.
+
+  Optional dependencies, both absent by default and neither installed until
+  a voice note needs it:
+    - SILK needs the "pilk" package. It is lazy-installed on the first .silk
+      voice note; when that fails the transcription result says so.
+    - AMR needs an "ffmpeg" binary on PATH (or in /opt/homebrew/bin,
+      /usr/local/bin). Not installed automatically — the result names it.
+  With neither present nothing crashes: the voice note fails to transcribe
+  with a message naming what to install.
+author: hermes-agent
+tags:
+  - audio
+  - codec
+  - stt
+  - voice
+  - silk
+  - amr

@@ -19,7 +19,9 @@ contract; several of the tests exist only to pin it down:
    b. Group whitelist — a hard gate.  **An @mention does not bypass it**,
       and an *empty* set means "no group is allowed", which is different
       from ``None`` ("no whitelist configured").
-   c. Explicit summons = @mention or a slash command.
+   c. Explicit summons = @mention, or a slash command when
+      ``group_commands_enabled`` (off by default — a group is not a
+      console; see :mod:`.main_window`).
    d. Reply policy + per-group cooldown for everything else.
 5. Drop empty text (pure sticker, recall placeholder).
 6. Token-bucket rate limits — deliberately AFTER the gate, so filtered
@@ -38,8 +40,9 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional
 
+from . import main_window
 from .protocol import (
     MessageEvent,
     MessageType,
@@ -74,11 +77,17 @@ _COMMAND_RE = re.compile(r"^/[A-Za-z][A-Za-z0-9_\-]*(?:\s|$)")
 def looks_like_command(text: str) -> bool:
     """Whether *text* reads as a slash command.
 
-    Group semantics: a slash command is an explicit summons, exactly like an
-    @mention — it bypasses the keyword filter and the cooldown.  Without
-    this, typing ``/status`` in a group would be silently swallowed by the
-    keyword gate, which is how the ported gate behaves if you drop the
-    command check on the floor.
+    A pure text predicate — it answers the same question in every channel,
+    and the router decides what the answer buys.
+
+    Group semantics: a slash command is an explicit summons, bypassing the
+    keyword filter and the cooldown exactly like an @mention, but ONLY where
+    ``ChannelRouter.group_commands_enabled`` is on.  It is off by default
+    (see :mod:`.main_window`): the adapter denies a group event
+    ``allow_gateway_control``, so the command could not execute anyway, and
+    letting it keep the bypass would turn dead operator text into a model
+    turn.  With the switch on, dropping this check on the floor is what
+    silently feeds ``/status`` to the keyword gate instead.
     """
     return bool(_COMMAND_RE.match((text or "").lstrip()))
 
@@ -212,8 +221,32 @@ class ChannelRouter:
     replies when called.
     """
 
+    group_commands_enabled: bool = False
+    """Whether a leading ``/`` in a GROUP still counts as an explicit summons.
+
+    ``False`` (the default) is the router half of the 主窗口 rule in
+    :mod:`.main_window`: a group is a place the persona talks, not a console
+    somebody operates the agent from.  The adapter already denies a group
+    event ``allow_gateway_control``, so ``/status`` typed in a group cannot
+    execute — and if the summons bypass stayed on, that inert text would
+    still punch through the keyword filter and the cooldown to become a
+    *model turn*, which is a worse outcome than the command being ignored.
+    So both halves move together, off the same switch
+    (``group_gateway_control_enabled``): with commands inert in groups they
+    are ordinary text and face the ordinary reply policy, and
+    :attr:`RoutedRequest.is_command` stays ``False`` so they do not skip the
+    group speech cap either.
+
+    Private chat is untouched: a DM's ``is_command`` is always reported
+    honestly, and who may actually run it is decided by
+    ``main_window.gateway_control_allowed``.
+    """
+
     self_ids: List[int] = field(default_factory=list)
     """Fallback @mention targets used only until a live ``self_id`` is seen."""
+
+    main_window_settings: Optional[Mapping[str, Any]] = None
+    """Settings consumed by :func:`main_window.is_main_window`."""
 
     group_limiter: Optional[TokenBucket] = None
     sender_limiter: Optional[TokenBucket] = None
@@ -245,11 +278,22 @@ class ChannelRouter:
     # dispatch
     # ------------------------------------------------------------------
 
-    def dispatch(self, event: MessageEvent) -> Optional[RoutedRequest]:
+    def dispatch(
+        self,
+        event: MessageEvent,
+        *,
+        continuation: bool = False,
+        addressed: bool = False,
+    ) -> Optional[RoutedRequest]:
         """Return a :class:`RoutedRequest`, or ``None`` to stay silent.
 
         Every drop is silent: callers log at DEBUG if they want visibility,
         and rate-limit drops additionally fire :attr:`rate_limit_hook`.
+        ``continuation`` is set only for an already accepted sender burst;
+        it skips re-addressing and a second token charge, never channel gates.
+        ``addressed`` marks a message the implicit-address judge found aimed
+        at the bot: it counts as a summons for the reply policy, but still
+        pays the rate limits like any other new turn.
         """
         # The event names the account that received it.  Prefer that live
         # value so a stale configured id cannot keep acting as a mention
@@ -276,8 +320,14 @@ class ChannelRouter:
                 and str(group_id) not in self.group_whitelist
             ):
                 return None
-            explicit = mentioned or is_command
-            if not self._group_reply_allowed(group_id, text, explicit):
+            if not self.group_commands_enabled:
+                # A group cannot drive the gateway (see the field docstring
+                # and .main_window), so a slash prefix earns no privilege
+                # here — neither the summons bypass below nor the speech-cap
+                # short-circuit the adapter reads off ``is_command``.
+                is_command = False
+            explicit = mentioned or is_command or addressed
+            if not continuation and not self._group_reply_allowed(group_id, text, explicit):
                 return None
             binding = Binding.group(event.self_id, group_id, event.user_id)
         else:  # pragma: no cover — MessageType is a closed enum
@@ -288,16 +338,22 @@ class ChannelRouter:
             return None
 
         # Rate limits run last so a filtered message never spends tokens.
-        # Per-group first: cheaper and lower cardinality.
-        if self.group_limiter is not None:
-            if not self.group_limiter.check(f"{binding.channel}:{binding.thread}"):
-                self._fire_hook(binding.channel, "group")
-                return None
-        if self.sender_limiter is not None:
-            key = f"{binding.channel}:{binding.thread}:{binding.sender}"
-            if not self.sender_limiter.check(key):
-                self._fire_hook(binding.channel, "sender")
-                return None
+        # The main-window DM is the only in-band control lane, so it never
+        # enters either bucket.  Per-group first: cheaper and lower cardinality.
+        if not continuation and not main_window.is_main_window(
+            self.main_window_settings,
+            chat_id=binding.thread,
+            is_group=binding.is_group,
+        ):
+            if self.group_limiter is not None:
+                if not self.group_limiter.check(f"{binding.channel}:{binding.thread}"):
+                    self._fire_hook(binding.channel, "group")
+                    return None
+            if self.sender_limiter is not None:
+                key = f"{binding.channel}:{binding.thread}:{binding.sender}"
+                if not self.sender_limiter.check(key):
+                    self._fire_hook(binding.channel, "sender")
+                    return None
 
         return RoutedRequest(
             binding=binding,

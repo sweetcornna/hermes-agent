@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import json
 from pathlib import Path
 import logging
@@ -87,9 +88,19 @@ def _budget_for_agent(agent) -> BudgetConfig:
     """
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
+        budget = budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
     except Exception:
-        return DEFAULT_BUDGET
+        budget = DEFAULT_BUDGET
+    # ``tool_output.max_result_chars`` lowers the per-result threshold so long
+    # chat sessions store a preview + spill path instead of every full result.
+    try:
+        from tools.tool_output_limits import get_tool_output_limits
+        cap = get_tool_output_limits().get("max_result_chars")
+    except Exception:
+        cap = None
+    if cap and cap < budget.default_result_size:
+        budget = dataclasses.replace(budget, default_result_size=cap)
+    return budget
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.

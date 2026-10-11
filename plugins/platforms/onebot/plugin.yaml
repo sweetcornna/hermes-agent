@@ -10,7 +10,7 @@ kind: platform
 version: 1.0.0
 description: >
   QQ gateway adapter speaking the OneBot v11 protocol. Dials OUT to a
-  forward WebSocket exposed by a local NapCat / Lagrange / go-cqhttp
+  forward WebSocket exposed by a local SnowLuma / NapCat / Lagrange / go-cqhttp
   backend (default ws://127.0.0.1:3001) and relays messages between QQ
   groups / direct messages and the Hermes agent. Binds no port, and never
   writes the backend's own configuration — another service may own it.
@@ -33,7 +33,7 @@ requires_env:
     password: false
 optional_env:
   - name: ONEBOT_ACCESS_TOKEN
-    description: "OneBot access token. NOT the NapCat WebUI token — they are two different secrets."
+    description: "OneBot access token. NOT the NapCat WebUI token or SnowLuma WebUI password — they are two different secrets."
     prompt: "OneBot access token (blank if none)"
     password: true
   - name: ONEBOT_SELF_IDS
@@ -173,7 +173,7 @@ optional_env:
     prompt: "Max concurrent turns"
     password: false
   - name: ONEBOT_TYPING_INDICATOR
-    description: "Send NapCat's '对方正在输入…' indicator in direct messages (default: true). QQ groups never render one."
+    description: "Send the OneBot v11 '对方正在输入…' indicator in direct messages (default: true). QQ groups never render one."
     prompt: "Enable typing indicator? (true/false)"
     password: false
   - name: ONEBOT_HEALTH_PROBE_S

@@ -72,6 +72,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.media_cache import ext_for_mime
+from tools.audio_container import sniff_audio_ext, sniff_container
 
 logger = logging.getLogger(__name__)
 
@@ -2047,28 +2048,28 @@ class QQAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _guess_ext_from_data(data: bytes) -> str:
-        """Guess file extension from magic bytes."""
-        if data[:9] == b"#!SILK_V3" or data[:6] == b"#!SILK":
-            return ".silk"
-        if data[:2] == b"\x02!":
-            return ".silk"
-        if data[:4] == b"RIFF":
-            return ".wav"
-        if data[:4] == b"fLaC":
-            return ".flac"
-        if data[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
-            return ".mp3"
-        if data[:4] == b"\x30\x26\xb2\x75" or data[:4] == b"\x4f\x67\x67\x53":
-            return ".ogg"
-        if data[:4] == b"\x00\x00\x00\x20" or data[:4] == b"\x00\x00\x00\x1c":
-            return ".amr"
-        # Default to .amr for unknown (QQ's most common voice format)
-        return ".amr"
+        """Guess file extension from magic bytes.
+
+        Delegates to the shared sniffer (``tools/audio_container.py``) — ONE
+        module owns magic-byte container detection, so this adapter and the
+        rest of the gateway can never drift on what a SILK/AMR header looks
+        like. The ``.amr`` fallback stays here rather than in the sniffer:
+        it is QQ's most common voice format, so it is the right guess for
+        unrecognised bytes *on this platform only* (the sniffer's own default
+        is ``.ogg``, which is right for the platforms that pass no fallback).
+        """
+        return sniff_audio_ext(data, ".amr")
 
     @staticmethod
     def _looks_like_silk(data: bytes) -> bool:
-        """Check if bytes look like a SILK audio file."""
-        return data[:6] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
+        """Check if bytes look like a SILK audio file.
+
+        Same shared sniffer as ``_guess_ext_from_data``, so the pilk branch in
+        ``_convert_audio_to_wav`` and the extension it writes to disk can never
+        disagree. It knows both Tencent spellings — the bare ``#!SILK`` magic
+        and the one-byte-prefixed variant.
+        """
+        return sniff_container(data) == "silk"
 
     async def _convert_silk_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert audio file to WAV using the pilk library.

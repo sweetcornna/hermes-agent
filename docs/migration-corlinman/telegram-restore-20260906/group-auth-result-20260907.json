@@ -1,0 +1,18 @@
+{
+  "changed_key": "platforms.telegram.extra.group_allow_from",
+  "group_allowed_users": [
+    "1114483029",
+    "7711246035"
+  ],
+  "group_admins": [
+    "1114483029",
+    "7711246035"
+  ],
+  "free_response_chats": [
+    "-1003990634877"
+  ],
+  "model": "gpt-6-astra",
+  "reasoning_effort": "high",
+  "no_core_code_changes": true,
+  "backup": "/opt/hermes/data/.deployments/telegram-group-auth-20260907"
+}

@@ -1,0 +1,6 @@
+{"path": "/opt/QQ/resources/app/snowluma-native-replacement/kernel-operations.cjs", "sha256": "73de2e558c03d2194e9ca52f9472bbd8bcc27cfc5487512c82b20a830b6252d9"}
+{"path": "/opt/QQ/resources/app/snowluma-native-replacement/onebot/gateway.cjs", "sha256": "51a29a89bb918141b7df482a8414b65fd8ca6b0b9273b57f70900caac9744332"}
+{"path": "/opt/QQ/resources/app/snowluma-native-replacement/onebot/send-guard.cjs", "sha256": "11997d389b384067559900019969f60fb5d7124682bad8480f4e74dfa64c73e0"}
+{"path": "/opt/QQ/resources/app/snowluma-native-replacement/onebot/forward.cjs", "sha256": null}
+{"section": "program:qq", "command": "qq --no-sandbox %(ENV_SNOWLUMA_QQ_FLAGS)s", "user": "snowluma"}
+{"section": "program:native-onebot", "command": "/usr/local/bin/node /opt/QQ/resources/app/snowluma-native-replacement/onebot/gateway.cjs /app/data/native-onebot.json", "user": "snowluma"}

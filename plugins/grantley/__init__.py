@@ -70,7 +70,7 @@ def load_plugin_config() -> Dict[str, Any]:
             if isinstance(value, dict) and value:
                 return dict(value)
     except Exception as exc:  # noqa: BLE001 - config is optional
-        logger.debug("grantley: config unavailable (%s)", exc)
+        logger.warning("grantley: config unavailable (%s)", exc)
     return {}
 
 

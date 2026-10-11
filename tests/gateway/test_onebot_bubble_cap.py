@@ -541,6 +541,29 @@ class TestTooManyBubblesBecomeCards:
         assert card_node_texts(ad) == parts, "the card preserves every bubble, uncapped"
 
 
+class TestExplicitCompleteAnswers:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("chat", [str(DM_PEER), f"g{GROUP}"])
+    async def test_short_complex_answer_preserves_code_and_sources_in_card(self, chat):
+        body = "def _calc_(x):\n    return x ** 2 * 3\n\n依据：https://docs.python.org/3/"
+        ad = make_adapter()
+        assert len(body) < ad.forward_threshold
+        result = await ad.send(chat, A.LONG_REPLY_MARKER + "\n" + body)
+        assert result.success
+        assert card_node_texts(ad) == [body]
+        assert A.LONG_REPLY_MARKER not in str(ad._client.actions)
+
+    @pytest.mark.asyncio
+    async def test_explicit_card_rejection_preserves_complete_answer(self):
+        ad = make_adapter(client=FakeClient([
+            {"status": "failed", "retcode": 1200, "message": "try later"},
+        ]))
+        body = "return x ** 2 * 3\n参考：https://docs.python.org/3/"
+        result = await ad.send(str(DM_PEER), A.LONG_REPLY_MARKER + body)
+        assert result.success
+        assert wire_messages(ad) == [body]
+
+
 class TestTheRoutingBoundaries:
     """Length and bubble count both route only when strictly over the limit."""
 

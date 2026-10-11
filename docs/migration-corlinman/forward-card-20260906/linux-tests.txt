@@ -1,0 +1,201 @@
+TAP version 13
+# (node:8521) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: long Unicode/code bodies survive draft chunking without an omitted character
+ok 1 - long Unicode/code bodies survive draft chunking without an omitted character
+  ---
+  duration_ms: 15.984777
+  type: 'test'
+  ...
+# Subtest: the entire card and each real send are durable and cannot replay after reopening
+ok 2 - the entire card and each real send are durable and cannot replay after reopening
+  ---
+  duration_ms: 40.214196
+  type: 'test'
+  ...
+# Subtest: a timed-out card is not reported as safely unsent and cannot be resent
+ok 3 - a timed-out card is not reported as safely unsent and cannot be resent
+  ---
+  duration_ms: 34.578027
+  type: 'test'
+  ...
+# Subtest: a card preparation refusal proves the recipient is unsent without pausing valid text
+ok 4 - a card preparation refusal proves the recipient is unsent without pausing valid text
+  ---
+  duration_ms: 25.791681
+  type: 'test'
+  ...
+# Subtest: generated cards reject other senders and unsupported media before any draft
+ok 5 - generated cards reject other senders and unsupported media before any draft
+  ---
+  duration_ms: 0.298105
+  type: 'test'
+  ...
+# Subtest: native messages retain string IDs, deduplicate, exclude history/self/old sessions, and preserve mentions
+ok 6 - native messages retain string IDs, deduplicate, exclude history/self/old sessions, and preserve mentions
+  ---
+  duration_ms: 2.952984
+  type: 'test'
+  ...
+# Subtest: native acceptance alone does not complete a send; exact native delivery callback does
+ok 7 - native acceptance alone does not complete a send; exact native delivery callback does
+  ---
+  duration_ms: 9.149162
+  type: 'test'
+  ...
+# Subtest: outbound reply uses the original native ID and rejects a different conversation
+ok 8 - outbound reply uses the original native ID and rejects a different conversation
+  ---
+  duration_ms: 3.910686
+  type: 'test'
+  ...
+# Subtest: timeout does not resend and session changes revoke ongoing native operations
+ok 9 - timeout does not resend and session changes revoke ongoing native operations
+  ---
+  duration_ms: 5.840538
+  type: 'test'
+  ...
+# Subtest: self-check exercises the native message service without sending, unsupported media fails before send
+ok 10 - self-check exercises the native message service without sending, unsupported media fails before send
+  ---
+  duration_ms: 0.515044
+  type: 'test'
+  ...
+# Subtest: complete card builds only own drafts and waits for the final native confirmation
+ok 11 - complete card builds only own drafts and waits for the final native confirmation
+  ---
+  duration_ms: 3.226746
+  type: 'test'
+  ...
+# Subtest: foreign drafts and failed card preparation never send to the recipient
+ok 12 - foreign drafts and failed card preparation never send to the recipient
+  ---
+  duration_ms: 1.417645
+  type: 'test'
+  ...
+# Subtest: account change while building a card cannot deliver through the next session
+ok 13 - account change while building a card cannot deliver through the next session
+  ---
+  duration_ms: 2.732186
+  type: 'test'
+  ...
+# (node:8535) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"native-message-received"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: real authenticated WebSocket crosses kernel Unix pipes, correlates echo and forwards typed events
+ok 14 - real authenticated WebSocket crosses kernel Unix pipes, correlates echo and forwards typed events
+  ---
+  duration_ms: 72.185865
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# Subtest: gateway refuses a missing token and browser origins before accepting a client
+ok 15 - gateway refuses a missing token and browser origins before accepting a client
+  ---
+  duration_ms: 32.380042
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: forward card crosses the real authenticated gateway and replays without another draft or card
+ok 16 - forward card crosses the real authenticated gateway and replays without another draft or card
+  ---
+  duration_ms: 52.118989
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: authenticated writes never replay an uncertain native malformed outcome
+ok 17 - authenticated writes never replay an uncertain native malformed outcome
+  ---
+  duration_ms: 84.530999
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: authenticated writes never replay an uncertain native rejected outcome
+ok 18 - authenticated writes never replay an uncertain native rejected outcome
+  ---
+  duration_ms: 67.486812
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: authenticated writes never replay an uncertain native missing_id outcome
+ok 19 - authenticated writes never replay an uncertain native missing_id outcome
+  ---
+  duration_ms: 71.098155
+  type: 'test'
+  ...
+# (node:8547) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: completed operation survives restart; a distinct operation may intentionally send identical text
+ok 20 - completed operation survives restart; a distinct operation may intentionally send identical text
+  ---
+  duration_ms: 29.281575
+  type: 'test'
+  ...
+# Subtest: concurrent replay never emits another native operation or claims the original was not sent
+ok 21 - concurrent replay never emits another native operation or claims the original was not sent
+  ---
+  duration_ms: 14.139402
+  type: 'test'
+  ...
+# Subtest: uncertain outcome persists a pause and remains non-replayable after explicit resume
+ok 22 - uncertain outcome persists a pause and remains non-replayable after explicit resume
+  ---
+  duration_ms: 22.011961
+  type: 'test'
+  ...
+# Subtest: failed native operations trip the configured breaker and do not auto retry
+ok 23 - failed native operations trip the configured breaker and do not auto retry
+  ---
+  duration_ms: 18.590428
+  type: 'test'
+  ...
+# Subtest: minute budget persists across reopen and expires according to its rolling window
+ok 24 - minute budget persists across reopen and expires according to its rolling window
+  ---
+  duration_ms: 27.939263
+  type: 'test'
+  ...
+# Subtest: client disconnect before a paced send cancels it without touching the native sender
+ok 25 - client disconnect before a paced send cancels it without touching the native sender
+  ---
+  duration_ms: 18.002056
+  type: 'test'
+  ...
+# Subtest: only one live owner may write an account journal
+ok 26 - only one live owner may write an account journal
+  ---
+  duration_ms: 13.30802
+  type: 'test'
+  ...
+# Subtest: a crashed process leaves an uncertain record that cannot be replayed
+ok 27 - a crashed process leaves an uncertain record that cannot be replayed
+  ---
+  duration_ms: 50.750988
+  type: 'test'
+  ...
+# Subtest: an unrelated database and a symlink are refused without schema mutation
+ok 28 - an unrelated database and a symlink are refused without schema mutation
+  ---
+  duration_ms: 4.560877
+  type: 'test'
+  ...
+1..28
+# tests 28
+# suites 0
+# pass 28
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1048.703027

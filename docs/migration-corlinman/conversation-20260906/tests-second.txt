@@ -1,0 +1,29 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 7 test files (~259 tests) under ['tests/gateway/test_onebot_reply_batch.py', 'tests/gateway/test_onebot_bubble_cap.py', 'tests/gateway/test_onebot_bubble_overflow_merge.py', 'tests/gateway/test_onebot_plugin.py', 'tests/gateway/test_onebot_main_window.py', 'tests/gateway/test_onebot_persona_binding.py', 'tests/plugins/grantley/test_cache_safety.py']; running with -j 4
+[  8.1% |    21/~259 | ✓21 | ✗ 0] ✓ tests/gateway/test_onebot_persona_binding.py (21✓, 1.3s)
+[ 21.2% |    55/~259 | ✓55 | ✗ 0] ✓ tests/gateway/test_onebot_main_window.py (34✓, 1.4s)
+[ 46.3% |   120/~259 | ✓123 | ✗  0] ✓ tests/gateway/test_onebot_bubble_cap.py (68✓, 1.8s)
+[ 51.4% |   133/~259 | ✓136 | ✗  0] ✓ tests/plugins/grantley/test_cache_safety.py (13✓, 0.5s)
+[ 54.8% |   142/~259 | ✓151 | ✗  0] ✓ tests/gateway/test_onebot_reply_batch.py (15✓, 1.7s)
+[ 58.3% |   151/~259 | ✓166 | ✗  0] ✓ tests/gateway/test_onebot_bubble_overflow_merge.py (15✓, 3.4s)
+[100.0% |   259/~259 | ✓302 | ✗  0] ✓ tests/gateway/test_onebot_plugin.py (136✓, 3.6s)
+
+=== Summary: 7 files, 302 tests passed, 0 failed (100% complete) in 4.9s (4 workers) ===
+  Durations cached to test_durations.json (7 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   7
+  Total subprocess CPU-wall: 13.7s  (runner wall: 4.9s, parallelism: 4x)
+  P50: 1.70s  P90: 3.58s  P95: 3.58s  P99: 3.58s  Max: 3.58s
+  <1s: 1 files (14%)  <2s: 5 files (71%)
+  Top 10 slowest:
+      3.58s  tests/gateway/test_onebot_plugin.py
+      3.44s  tests/gateway/test_onebot_bubble_overflow_merge.py
+      1.79s  tests/gateway/test_onebot_bubble_cap.py
+      1.70s  tests/gateway/test_onebot_reply_batch.py
+      1.42s  tests/gateway/test_onebot_main_window.py
+      1.27s  tests/gateway/test_onebot_persona_binding.py
+      0.50s  tests/plugins/grantley/test_cache_safety.py

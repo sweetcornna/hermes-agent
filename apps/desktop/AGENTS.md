@@ -2,8 +2,8 @@
 
 How to build Hermes Desktop well. This is a judgment guide, not an inventory —
 it teaches the invariants and the reasoning behind them so a change fits the app
-even as files move. Read it with the repository `AGENTS.md` (root rules still
-apply) and [`DESIGN.md`](./DESIGN.md) for the visual and interaction contract.
+even as files move. The repository `AGENTS.md` rules still apply. Read
+[`DESIGN.md`](./DESIGN.md) when changing visual or interaction behavior.
 
 When a rule here and the code disagree, trust the code and fix whichever is
 wrong — but never break an invariant to make a change easier.
@@ -159,7 +159,7 @@ property of the SESSION's client, not of the backend host. Wire its
 availability off the session source the app already sends on `session.create`
 (`source: 'desktop'`), never off an env var on the backend process: that
 process might be a remote or cloud gateway this app merely connected to. See
-the root AGENTS.md, "Surface capability is a property of the SESSION."
+[the root reference's session-capability rule](../../AGENTS.full.md#surface-capability-is-a-property-of-the-session-never-of-the-process-env).
 
 ## Respect the person using it
 

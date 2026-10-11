@@ -16,7 +16,9 @@ Provides speech-to-text transcription with six providers:
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
 
-Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
+Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac —
+plus every codec a registered audio-decoder plugin claims, decoded to WAV
+before dispatch (see :mod:`agent.audio_decoder`).
 
 Usage::
 
@@ -39,8 +41,11 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import TYPE_CHECKING, Optional, Dict, Any
 from urllib.parse import urljoin
+
+if TYPE_CHECKING:  # imported for typing only — the runtime lookup stays lazy
+    from agent.audio_decoder import AudioDecoder
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import is_truthy_value
@@ -100,7 +105,6 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
-_HAS_PILK = _safe_find_spec("pilk")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -123,6 +127,13 @@ XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 
+# Formats an STT provider accepts unconverted. This is the BUILT-IN half of
+# the supported set — plugin-registered audio decoders widen it at runtime,
+# so read ``supported_formats()`` when you want everything the pipeline can
+# actually take. Kept a plain module-level set because that is what callers
+# and tests already import; the dynamic half is a separate function rather
+# than a magic set subclass. **Kept in sync with ``_BUILTIN_EXTENSIONS`` in
+# :mod:`agent.audio_decoder_registry`**, which cannot import this module.
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac", ".caf"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
@@ -1516,54 +1527,187 @@ def _validate_audio_file(
         return source_error
 
     audio_path = Path(file_path)
-    if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
+    suffix = audio_path.suffix.lower()
+    # Built-in formats never reach the plugin registry: the common case stays
+    # a plain set membership test with no plugin discovery behind it.
+    if suffix not in SUPPORTED_FORMATS and suffix not in _registered_decoder_extensions():
         return {
             "success": False,
             "transcript": "",
-            "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
+            "error": _unsupported_format_error(audio_path),
         }
     return None
+
+
+# ---------------------------------------------------------------------------
+# Codec pre-conversion (plugin-provided decoders)
+# ---------------------------------------------------------------------------
+#
+# Some inbound voice notes are raw codec streams no STT provider accepts and
+# have to be decoded to WAV first. Which codecs those are is NOT core
+# knowledge: a decoder needs an optional dependency or an external binary and
+# matters only to the installs that receive that codec, so it ships as a
+# plugin registering an ``agent.audio_decoder.AudioDecoder``. Core keeps the
+# dispatch, the size cap and the temp-file lifetime; see the ABC's module
+# docstring for the contract.
+
+# Every magic the shared sniffer knows decides inside 16 bytes (the longest is
+# ftyp+brand at 12, plus a one-byte container prefix).
+_CONTAINER_HEADER_BYTES = 16
+
+
+def _preparation_error(message: str) -> Dict[str, Any]:
+    """Wrap a decoder-stage failure in the standard transcribe envelope."""
+    return {"success": False, "transcript": "", "error": message}
+
+
+def _sniff_source_container(file_path: str) -> Optional[str]:
+    """Return the container id of *file_path* from its magic bytes, or None.
+
+    Unreadable files return None rather than raising: the caller is about to
+    validate the path anyway, and a decoder lookup is not the place to report
+    an I/O error.
+    """
+    from tools.audio_container import sniff_container
+
+    try:
+        with open(file_path, "rb") as handle:
+            header = handle.read(_CONTAINER_HEADER_BYTES)
+    except OSError:
+        return None
+    return sniff_container(header)
+
+
+def _registered_decoder_extensions() -> frozenset:
+    """Return the file extensions registered audio decoders claim.
+
+    Empty when plugin discovery is unavailable — an install with no decoder
+    plugin simply advertises the built-in formats, which is the honest answer.
+    """
+    try:
+        from agent.audio_decoder_registry import decodable_extensions
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        return decodable_extensions()
+    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+        logger.debug("Audio decoder registry unavailable: %s", exc)
+        return frozenset()
+
+
+def supported_formats() -> set:
+    """Return every extension the transcription pipeline accepts right now.
+
+    ``SUPPORTED_FORMATS`` plus whatever the registered decoders claim. A
+    function rather than a constant because the second half depends on which
+    plugins are installed and enabled.
+    """
+    return set(SUPPORTED_FORMATS) | set(_registered_decoder_extensions())
+
+
+def _unsupported_format_error(audio_path: Path) -> str:
+    """Build the rejection message, naming a missing decoder when that is the gap.
+
+    A file whose *bytes* identify a container no provider accepts and no
+    registered decoder claims is not simply an unsupported format — the
+    install is missing an audio-decoder plugin, and saying so is the
+    difference between an actionable message and a dead end. (A QQ/WeChat
+    voice note on an install with the codec plugin disabled lands here.)
+    """
+    from tools.audio_container import CONTAINER_TO_EXT
+
+    message = (
+        f"Unsupported format: {audio_path.suffix}. "
+        f"Supported: {', '.join(sorted(supported_formats()))}"
+    )
+    container = _sniff_source_container(str(audio_path))
+    claimed_ext = CONTAINER_TO_EXT.get(container) if container else None
+    if claimed_ext and claimed_ext not in SUPPORTED_FORMATS:
+        message += (
+            f". No audio decoder plugin claims {container} audio ({claimed_ext}) "
+            f"— install or enable one (`hermes plugins list`)."
+        )
+    return message
+
+
+def _decoder_for_source(file_path: str) -> Optional["AudioDecoder"]:
+    """Return the registered decoder claiming *file_path*, or None.
+
+    The bytes outrank the name. Messaging platforms hand voice notes a
+    guessed filename — one codec's payload routinely arrives under another
+    codec's extension — so an extension-only check picks the wrong decoder
+    and transcription fails on every voice note. The suffix is consulted
+    only when the header is unrecognizable, which keeps a header-stripped
+    stream on the decoder that can still read it.
+    """
+    from tools.audio_container import CONTAINER_TO_EXT
+
+    container = _sniff_source_container(file_path)
+    suffix = Path(file_path).suffix.lower()
+
+    # Built-in formats never reach the registry — registration already
+    # refuses to let a decoder claim one, and short-circuiting here keeps
+    # ordinary voice notes off the plugin-discovery path entirely.
+    if container is not None:
+        if CONTAINER_TO_EXT.get(container) in SUPPORTED_FORMATS:
+            return None
+    elif suffix in SUPPORTED_FORMATS:
+        return None
+
+    try:
+        from agent.audio_decoder_registry import find_decoder
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        return find_decoder(container_id=container, suffix=suffix)
+    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+        logger.debug("Audio decoder lookup skipped (discovery failed): %s", exc)
+        return None
 
 
 def _prepare_audio_for_transcription(
     file_path: str,
 ) -> tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
-    """Convert a decoder-safe .silk source to a temporary supported WAV file."""
-    audio_path = Path(file_path)
-    if audio_path.suffix.lower() != ".silk":
+    """Decode a source no STT provider accepts into a temporary WAV.
+
+    Returns ``(path, cleanup_dir, error)``; ``cleanup_dir`` is the caller's
+    to remove, per the ownership rule in :mod:`agent.audio_decoder`. Formats
+    a provider already accepts pass straight through, so no input that works
+    today gains a conversion hop.
+    """
+    from agent.audio_decoder import AudioDecodeError
+
+    decoder = _decoder_for_source(file_path)
+    if decoder is None:
         return file_path, None, None
-    if not _HAS_PILK:
-        # pilk is a tiny silk-v3 codec binding — lazy-install it on first
-        # .silk voice note instead of bloating the base install.
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("stt.silk", prompt=False)
-        except Exception:
-            pass
-        if not _safe_find_spec("pilk"):
-            return None, None, {
-                "success": False,
-                "transcript": "",
-                "error": "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription.",
-            }
 
-    temp_dir = tempfile.mkdtemp(prefix="hermes-silk-")
-    converted_path = os.path.join(temp_dir, f"{audio_path.stem}.wav")
     try:
-        import pilk
+        decoded = decoder.decode(file_path)
+        prepared_path = decoded.path
+        cleanup_dir = decoded.cleanup_dir
+        if not prepared_path or not Path(prepared_path).is_file():
+            # A decoder that reports success without a file would otherwise
+            # leak its temp dir: nobody downstream has a handle to it.
+            if cleanup_dir:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            raise AudioDecodeError(
+                f"Audio decoder '{decoder.name}' did not produce a readable file."
+            )
+    except AudioDecodeError as exc:
+        # The decoder's own actionable message (missing optional dependency,
+        # missing binary, corrupt payload). It has already cleaned up.
+        return None, None, _preparation_error(str(exc))
+    except Exception as exc:  # noqa: BLE001 — a buggy decoder must not end the turn
+        logger.error(
+            "Audio decoder %r failed on %s: %s",
+            getattr(decoder, "name", type(decoder).__name__), file_path, exc,
+            exc_info=True,
+        )
+        return None, None, _preparation_error(
+            f"Failed to decode audio for transcription: {exc}"
+        )
 
-        pilk.silk_to_wav(file_path, converted_path)
-        if not Path(converted_path).is_file() or Path(converted_path).stat().st_size == 0:
-            raise RuntimeError("pilk did not produce a readable WAV file")
-        return converted_path, temp_dir, None
-    except Exception as exc:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        logger.error("Failed to convert .silk audio %s: %s", file_path, exc, exc_info=True)
-        return None, None, {
-            "success": False,
-            "transcript": "",
-            "error": f"Failed to convert .silk audio for transcription: {exc}",
-        }
+    return prepared_path, cleanup_dir, None
 
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
@@ -1724,6 +1868,57 @@ def _touch_transcription_time() -> None:
     _last_transcription_time = time.monotonic()
 
 
+# Compute type used when the device is force-pinned to CPU and the user has
+# NOT pinned ``stt.local.compute_type`` themselves.  int8 is the always-
+# available CPU quantization, so it is the right *default* here — but it is a
+# default, never an override of a value the user set (#8319 / #9088).
+_FORCED_CPU_COMPUTE_TYPE = "int8"
+
+
+def _resolve_faster_whisper_load_params(
+    device: str,
+    compute_type: str,
+    *,
+    force_cpu: bool,
+) -> tuple[str, str]:
+    """Decide the ``(device, compute_type)`` actually handed to ``WhisperModel``.
+
+    Pure policy: the host probe's answer arrives as the ``force_cpu``
+    argument instead of being asked for in here, so every branch is testable
+    on any host without the test pretending to run on another OS.
+
+    What the Apple Silicon/Rosetta guard protects against is ctranslate2's
+    *device* autodetection aborting inside native code before Python can catch
+    anything (see ``_should_force_faster_whisper_cpu``).  So on a forcing host
+    the device is pinned to ``"cpu"`` unconditionally — never ``"auto"``,
+    never a GPU — and an explicitly configured non-CPU device is refused out
+    loud instead of silently.
+
+    ``compute_type`` is not part of that hazard: it only falls back to
+    ``int8`` when the user left it at ``"auto"``.  An explicit
+    ``stt.local.compute_type`` therefore keeps meaning what it says on every
+    supported host, Apple Silicon included (#8319 / #9088).
+    """
+    resolved_device = (device or "auto").strip() or "auto"
+    resolved_compute_type = (compute_type or "auto").strip() or "auto"
+    if not force_cpu:
+        return resolved_device, resolved_compute_type
+
+    if resolved_device.lower() != "cpu":
+        if resolved_device.lower() != "auto":
+            # Don't discard a user setting quietly: say why it can't be used.
+            logger.warning(
+                "stt.local.device=%r is not usable on Apple Silicon/Rosetta "
+                "(ctranslate2 device autodetection can abort inside native "
+                "code) — loading faster-whisper on CPU instead.",
+                device,
+            )
+        resolved_device = "cpu"
+    if resolved_compute_type.lower() == "auto":
+        resolved_compute_type = _FORCED_CPU_COMPUTE_TYPE
+    return resolved_device, resolved_compute_type
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
@@ -1740,6 +1935,12 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
 
     We try the requested config first (fast CUDA path when it works), and on
     any CUDA library load failure fall back to CPU + int8.
+
+    On Apple Silicon/Rosetta the device is pinned to CPU up front
+    (``_resolve_faster_whisper_load_params``) so ctranslate2 never runs its
+    abort-prone device autodetection; a configured ``compute_type`` is still
+    honoured there, with a loud one-shot retry on ``int8`` if that pinned
+    value turns out not to load.
     """
     force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
@@ -1749,13 +1950,33 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # gateway survives, then keep inference on CPU to avoid device probing.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+    device, compute_type = _resolve_faster_whisper_load_params(
+        device, compute_type, force_cpu=force_cpu
+    )
+
     from faster_whisper import WhisperModel
     if force_cpu:
         logger.info(
             "Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
-            "(int8) to avoid native device autodetection crashes"
+            "(compute_type=%s) to avoid native device autodetection crashes",
+            compute_type,
         )
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        try:
+            return WhisperModel(model_name, device=device, compute_type=compute_type)
+        except Exception as exc:
+            if compute_type == _FORCED_CPU_COMPUTE_TYPE:
+                raise
+            # Honouring the configured compute_type must never make gateway
+            # voice *less* reliable than the old unconditional int8 did — but
+            # the downgrade is announced, not silent.
+            logger.warning(
+                "faster-whisper failed to load on CPU with the configured "
+                "stt.local.compute_type=%r (%s) — retrying with %r.",
+                compute_type, exc, _FORCED_CPU_COMPUTE_TYPE,
+            )
+            return WhisperModel(
+                model_name, device="cpu", compute_type=_FORCED_CPU_COMPUTE_TYPE
+            )
 
     try:
         return WhisperModel(model_name, device=device, compute_type=compute_type)
@@ -3170,13 +3391,20 @@ def transcribe_audio(
     if blocked:
         return {"success": False, "transcript": "", "error": blocked}
 
-    # Cap .silk sources before the decoder runs (decoder safety). For all
-    # other inputs the remote-upload size cap is provider-scoped and enforced
-    # in _transcribe_prepared_audio, so local whisper can handle big files.
-    is_silk = Path(file_path).suffix.lower() == ".silk"
-    source_error = _validate_audio_source_file(file_path, enforce_size_limit=is_silk)
+    # Path safety before anything reads the file — the container sniff below
+    # opens it, so a symlink must be refused first.
+    source_error = _validate_audio_source_file(file_path, enforce_size_limit=False)
     if source_error:
         return source_error
+
+    # Cap a source before a plugin decoder runs on it (decoder safety). For
+    # all other inputs the remote-upload size cap is provider-scoped and
+    # enforced in _transcribe_prepared_audio, so local whisper can handle big
+    # files.
+    if _decoder_for_source(file_path) is not None:
+        size_error = _validate_audio_file_size(Path(file_path))
+        if size_error:
+            return size_error
 
     prepared_path, cleanup_dir, prep_error = _prepare_audio_for_transcription(file_path)
     if prep_error:
@@ -3230,33 +3458,51 @@ def transcribe_audio_local_fallback(
     """Try an already-installed local STT backend without changing config.
 
     This is intended for passive inbound-media recovery after the configured
-    provider has failed. It deliberately does not lazy-install dependencies or
-    fall through to another cloud provider.
+    provider has failed. It deliberately does not lazy-install a transcription
+    backend or fall through to another cloud provider.
     """
     error = _validate_audio_file(file_path)
     if error:
         return error
 
+    # A raw codec stream is opaque to whisper and to the local CLI backends,
+    # so this recovery path shares transcribe_audio's decoder dispatch —
+    # otherwise a voice note the configured provider failed on fails again
+    # here for a reason that has nothing to do with the provider.
+    prepared_path, cleanup_dir, prep_error = _prepare_audio_for_transcription(file_path)
+    if prep_error:
+        return prep_error
+    if prepared_path is None:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "Audio preprocessing did not produce a file for transcription.",
+        }
+
     stt_config = _load_stt_config()
     local_cfg = stt_config.get("local") or {}
     local_model = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
 
-    if _HAS_FASTER_WHISPER:
-        return _transcribe_local(
-            file_path,
-            _normalize_local_model(local_model),
-        )
-    if _has_local_command():
-        return _transcribe_local_command(
-            file_path,
-            _normalize_local_command_model(local_model),
-        )
-    return {
-        "success": False,
-        "transcript": "",
-        "error": "No installed local STT backend is available.",
-        "provider": "local",
-    }
+    try:
+        if _HAS_FASTER_WHISPER:
+            return _transcribe_local(
+                prepared_path,
+                _normalize_local_model(local_model),
+            )
+        if _has_local_command():
+            return _transcribe_local_command(
+                prepared_path,
+                _normalize_local_command_model(local_model),
+            )
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "No installed local STT backend is available.",
+            "provider": "local",
+        }
+    finally:
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:

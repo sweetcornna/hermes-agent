@@ -1,0 +1,12 @@
+[Unit]
+Description=Check whether the Hermes primary-model probe is due
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=1s
+Unit=hermes-fallback-recovery.service
+
+[Install]
+WantedBy=timers.target
+

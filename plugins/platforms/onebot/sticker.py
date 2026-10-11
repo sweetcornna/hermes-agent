@@ -46,6 +46,7 @@ so they always take the base64 branch and never the literal-path fallback.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -57,7 +58,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "STICKER_CATALOG",
+    "CATALOG_FILENAME",
     "DEFAULT_STICKER_PROBABILITY",
+    "load_catalog",
     "MARKER_RE",
     "extract_markers",
     "available_stickers",
@@ -151,11 +154,91 @@ _BY_SLUG = {entry["slug"]: entry for entry in STICKER_CATALOG}
 #: dropped rather than reinterpreted as a path.
 MARKER_RE = re.compile(r"\[\s*STICKER\s*:\s*([A-Za-z0-9_-]+)\s*\]", re.IGNORECASE)
 
+#: The slug charset, shared by the marker and by pack validation.
+_SLUG_RE = re.compile(r"[a-z0-9_-]+")
+
 #: Where the images live when nobody says otherwise: the persona plugin's own
 #: asset directory, resolved relative to THIS file rather than the process
 #: working directory.  The deployed tree is rooted at ``/opt/hermes/repo``
 #: and the gateway is not started from it, so a relative path would miss.
 _DEFAULT_DIR = Path(__file__).resolve().parents[2] / "grantley" / "assets" / "stickers"
+
+
+#: A pack may describe itself with this file, sitting next to its images.
+#: When absent the bundled :data:`STICKER_CATALOG` is used, which is what
+#: keeps the original single-pack deployment byte-identical: grantley's
+#: directory has no ``catalog.json`` and never needs one.
+CATALOG_FILENAME = "catalog.json"
+
+#: ``{resolved_dir: (mtime_ns, catalog)}``.  The menu is composed on the
+#: inbound hot path, and re-reading a small JSON file per turn is pure waste;
+#: keying on mtime means an operator who edits a pack still gets picked up
+#: without a restart.
+_CATALOG_CACHE: dict = {}
+
+
+def _coerce_catalog(raw: Any) -> Optional[List[dict]]:
+    """Validate a decoded ``catalog.json`` into catalogue entries, or ``None``.
+
+    Every field the rest of this module reads must be a non-empty string, and
+    the slug must match the marker charset — otherwise a pack could advertise
+    a name the model can write but :func:`sticker_path` would never resolve,
+    which is precisely the "set up to fail by its own prompt" failure the
+    disk filter in :func:`available_stickers` exists to prevent.  A malformed
+    file degrades the whole pack to the bundled catalogue rather than to a
+    half-loaded one: partial packs fail in ways nobody can read off a log.
+    """
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: List[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None
+        slug = str(item.get("slug") or "").strip().lower()
+        file = str(item.get("file") or "").strip()
+        scene = str(item.get("scene") or "").strip()
+        when = str(item.get("when") or "").strip()
+        if not (slug and file and scene and when):
+            return None
+        if not _SLUG_RE.fullmatch(slug):
+            return None
+        # A pack must not be able to name a path.  ``file`` is joined onto the
+        # pack directory, so a separator or a parent ref here is a traversal.
+        if "/" in file or "\\" in file or file.startswith("."):
+            return None
+        out.append({"slug": slug, "file": file, "scene": scene, "when": when})
+    return out
+
+
+def load_catalog(directory: Optional[str] = None) -> List[dict]:
+    """The catalogue for one pack: its own ``catalog.json``, else the bundled one.
+
+    This is the seam that lets a second persona reuse the whole sticker
+    mechanism — probability gate, menu, ``[STICKER:slug]`` marker, base64
+    inlining — with its own images and its own descriptions, without a second
+    code path and without touching the original pack.
+    """
+    base = Path(directory or default_sticker_dir())
+    path = base / CATALOG_FILENAME
+    try:
+        stat = path.stat()
+    except OSError:
+        return STICKER_CATALOG
+    key = str(path)
+    cached = _CATALOG_CACHE.get(key)
+    if cached is not None and cached[0] == stat.st_mtime_ns:
+        return cached[1]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — a broken pack must not cost a turn
+        logger.warning("OneBot: sticker catalog %s is unreadable (%s)", path, exc)
+        return STICKER_CATALOG
+    entries = _coerce_catalog(raw)
+    if entries is None:
+        logger.warning("OneBot: sticker catalog %s is malformed; using the bundled set", path)
+        return STICKER_CATALOG
+    _CATALOG_CACHE[key] = (stat.st_mtime_ns, entries)
+    return entries
 
 
 def default_sticker_dir() -> str:
@@ -171,21 +254,55 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
-def probability_from_extra(extra: Optional[Mapping[str, Any]]) -> float:
-    """Resolve the probability: ``extra`` → environment → default.
+def _per_channel(extra: Mapping[str, Any], key: str, chat_id: Any) -> Any:
+    """One channel's override out of a ``{chat_id: value}`` map, or ``None``.
+
+    *chat_id* is the platform-native id the operator writes in ``channels:``
+    (a bare QQ group id), not the adapter's ``g``-prefixed form — both are
+    accepted here because the two call sites historically pass different
+    shapes and a silent miss would look exactly like "no override".
+    """
+    table = extra.get(key)
+    if not isinstance(table, Mapping) or chat_id is None:
+        return None
+    raw = str(chat_id).strip()
+    if not raw:
+        return None
+    for candidate in (raw, raw[1:] if raw[:1] in ("g", "G") else None, "g" + raw):
+        if candidate and candidate in table:
+            return table[candidate]
+    return None
+
+
+def probability_from_extra(
+    extra: Optional[Mapping[str, Any]], chat_id: Any = None
+) -> float:
+    """Resolve the probability: per-channel → ``extra`` → environment → default.
 
     Clamped rather than validated.  An operator who writes ``2`` means
     "always", and refusing to start the whole gateway over a typo in a
     cosmetic setting would be a wildly disproportionate failure.
     """
     extra = extra or {}
+    override = _per_channel(extra, "sticker_probabilities", chat_id)
+    if override is not None:
+        return min(1.0, max(0.0, _as_float(override, DEFAULT_STICKER_PROBABILITY)))
     raw = extra.get("sticker_probability", os.getenv("ONEBOT_STICKER_PROBABILITY"))
     return min(1.0, max(0.0, _as_float(raw, DEFAULT_STICKER_PROBABILITY)))
 
 
-def dir_from_extra(extra: Optional[Mapping[str, Any]]) -> str:
-    """Resolve the asset directory: ``extra`` → environment → bundled path."""
+def dir_from_extra(extra: Optional[Mapping[str, Any]], chat_id: Any = None) -> str:
+    """Resolve the asset directory: per-channel → ``extra`` → env → bundled.
+
+    The per-channel map (``sticker_dirs``) is what gives a channel bound to a
+    different persona its own pack.  Without it every channel on one OneBot
+    account shares one set, and a second persona would be offered the first
+    persona's face.
+    """
     extra = extra or {}
+    override = _per_channel(extra, "sticker_dirs", chat_id)
+    if override and str(override).strip():
+        return str(override).strip()
     raw = extra.get("sticker_dir") or os.getenv("ONEBOT_STICKER_DIR")
     return str(raw).strip() if raw and str(raw).strip() else default_sticker_dir()
 
@@ -198,10 +315,12 @@ def sticker_path(slug: str, directory: Optional[str] = None) -> Optional[str]:
     text against a directory is how a traversal gets read off disk.  A name
     that is not one of the nine is not a path at all.
     """
-    entry = _BY_SLUG.get(str(slug or "").strip().lower())
+    base = directory or default_sticker_dir()
+    by_slug = {e["slug"]: e for e in load_catalog(base)}
+    entry = by_slug.get(str(slug or "").strip().lower())
     if entry is None:
         return None
-    path = Path(directory or default_sticker_dir()) / entry["file"]
+    path = Path(base) / entry["file"]
     if not path.is_file():
         logger.warning("OneBot: sticker %r is missing at %s", entry["slug"], path)
         return None
@@ -235,8 +354,9 @@ def available_stickers(directory: Optional[str] = None) -> List[dict]:
     send path would then drop — a model that picks a missing sticker has been
     set up to fail by its own prompt.
     """
-    base = Path(directory or default_sticker_dir())
-    return [entry for entry in STICKER_CATALOG if (base / entry["file"]).is_file()]
+    resolved = directory or default_sticker_dir()
+    base = Path(resolved)
+    return [e for e in load_catalog(resolved) if (base / e["file"]).is_file()]
 
 
 def render_menu(entries: Sequence[dict]) -> str:
@@ -272,6 +392,7 @@ def should_offer(probability: float, rng: Optional[random.Random] = None) -> boo
 def offer_menu(
     extra: Optional[Mapping[str, Any]],
     rng: Optional[random.Random] = None,
+    chat_id: Any = None,
 ) -> Optional[str]:
     """This turn's sticker menu, or ``None`` to say nothing about stickers.
 
@@ -279,9 +400,28 @@ def offer_menu(
     exist, not told to use them sparingly, and not told it just failed a dice
     roll.  It simply writes a reply.
     """
-    if not should_offer(probability_from_extra(extra), rng):
+    if not should_offer(probability_from_extra(extra, chat_id), rng):
         return None
-    entries = available_stickers(dir_from_extra(extra))
+    entries = available_stickers(dir_from_extra(extra, chat_id))
+    if not entries:
+        return None
+    return render_menu(entries)
+
+
+def standing_menu(
+    extra: Optional[Mapping[str, Any]],
+    chat_id: Any = None,
+) -> Optional[str]:
+    """The menu whenever stickers are on for *chat_id*, with no dice.
+
+    The menu rides the system message, and a per-turn roll there changed
+    those bytes on ~30% of consecutive turns, discarding the whole cached
+    history each time. The roll lives on the send side instead
+    (``OneBotAdapter._sticker_segment``), so the prompt stays byte-stable.
+    """
+    if probability_from_extra(extra, chat_id) <= 0:
+        return None
+    entries = available_stickers(dir_from_extra(extra, chat_id))
     if not entries:
         return None
     return render_menu(entries)

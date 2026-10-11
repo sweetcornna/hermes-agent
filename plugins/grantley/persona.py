@@ -102,6 +102,26 @@ VOICE_ASSET_PATH: Path = ASSETS_DIR / "voice.md"
 #: Tag wrapping the per-turn state block in the user-message sidecar.
 STATE_BLOCK_TAG: str = "persona-state"
 
+#: What the model reads for the internal machine values. The English bucket
+#: and state names stay the storage/scheduler vocabulary; a Chinese-speaking
+#: character should not see ``mild fatigue`` or ``at_academy`` in his own
+#: notes, because he repeats what he reads.
+FATIGUE_DISPLAY: Mapping[str, str] = {
+    "rested": "精神很好",
+    "fresh": "还挺精神",
+    "mild fatigue": "有点累",
+    "tired": "很累",
+}
+LIFE_STATE_DISPLAY: Mapping[str, str] = {
+    "at_academy": "在学院",
+    "on_mission": "在外面办事",
+    "traveling": "出门在外",
+    "resting": "在休息",
+    "training": "在集训",
+    "unknown": "",
+}
+MOOD_DISPLAY: Mapping[str, str] = {"neutral": "平常", "tired": "累"}
+
 
 class PersonaAssetError(RuntimeError):
     """Raised when a ported asset is missing or structurally unrecognised."""
@@ -235,14 +255,18 @@ def resolve_placeholder(state: PersonaState, key: str) -> str:
       raising, so a typo in a template cannot kill a render.
     """
     if key == "mood":
-        return str(state.mood or "")
+        mood = str(state.mood or "")
+        return MOOD_DISPLAY.get(mood, mood)
     if key == "fatigue":
-        return bucket_fatigue(state.fatigue)
+        label = bucket_fatigue(state.fatigue)
+        return FATIGUE_DISPLAY.get(label, label)
     if key == "recent_topics":
         return format_topics(list(state.recent_topics), RECENT_TOPICS_VISIBLE)
     raw = state.state_json.get(key)
     if raw is None:
         return ""
+    if key == "life_state":
+        return LIFE_STATE_DISPLAY.get(str(raw), str(raw))
     return str(raw)
 
 

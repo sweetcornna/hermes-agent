@@ -18,7 +18,9 @@ travel_destination:
 academy_scene:
   - 练一会儿剑术
   - 在食堂吃饭
-  - 上完课整理笔记
+  - 听西利欧讲课，差点打瞌睡
+  - 洗完澡，和室友聊今天的事
+  - 被亚戈拉去洗澡，嘴上嫌麻烦
   - 在宿舍和室友闲聊
   - 绕操场跑圈
   - 训练后坐下歇一会儿
@@ -32,6 +34,8 @@ companion:
   - 尤利乌斯
   - 赫尔曼
   - 保尔
+  - 伽米尔
+  - 菲利克斯
   - 独自一人
 
 # Teachers, not classmates; not a sampled companion pool.

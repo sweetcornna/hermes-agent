@@ -1,0 +1,1 @@
+{"installed": true, "qq_restarted": true, "forward_advertised": false, "self_test_required": true, "backup": "/opt/hermes-cloud/data/.deployments/forward-card-20260906/backup"}

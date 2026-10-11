@@ -27,6 +27,11 @@ M4A = b"\x00\x00\x00\x1cftypM4A " + b"\x00" * 64
 M4B = b"\x00\x00\x00\x1cftypM4B " + b"\x00" * 64
 MP4_ISOM = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
 WEBM = b"\x1a\x45\xdf\xa3" + b"\x00" * 64
+AMR_NB = b"#!AMR\n" + b"\x00" * 64
+AMR_WB = b"#!AMR-WB\n" + b"\x00" * 64
+SILK_BARE = b"#!SILK_V3" + b"\x00" * 64
+SILK_TENCENT = b"\x02#!SILK_V3" + b"\x00" * 64
+SILK_TENCENT_SHORT = b"\x02!" + b"\x00" * 64
 UNKNOWN = b"not-audio-at-all" + b"\x00" * 64
 
 
@@ -44,14 +49,25 @@ class TestSniffContainer:
             (M4B, "m4a"),
             (MP4_ISOM, "mp4"),
             (WEBM, "webm"),
+            (AMR_NB, "amr"),
+            (AMR_WB, "amr"),
+            (SILK_BARE, "silk"),
+            (SILK_TENCENT, "silk"),
+            (SILK_TENCENT_SHORT, "silk"),
         ],
     )
     def test_magic_bytes(self, data, expected):
         assert sniff_container(data) == expected
 
 
+    @pytest.mark.parametrize("data", [UNKNOWN, WEBP, b"", b"#"])
+    def test_unknown_bytes_are_not_claimed(self, data):
+        assert sniff_container(data) is None
+
+
     def test_every_container_has_an_extension(self):
-        for data in (OGG, FLAC, WAV, MP3_ID3, AAC_ADTS, M4A, MP4_ISOM, WEBM):
+        samples = (OGG, FLAC, WAV, MP3_ID3, AAC_ADTS, M4A, MP4_ISOM, WEBM)
+        for data in samples + (AMR_NB, AMR_WB, SILK_BARE, SILK_TENCENT):
             container = sniff_container(data)
             assert container in CONTAINER_TO_EXT
 
@@ -68,6 +84,10 @@ class TestSniffAudioExt:
             (AAC_ADTS, ".aac"),
             (M4A, ".m4a"),
             (WEBM, ".webm"),
+            (AMR_NB, ".amr"),
+            (AMR_WB, ".amr"),
+            (SILK_BARE, ".silk"),
+            (SILK_TENCENT, ".silk"),
         ],
     )
     def test_container_wins_over_claimed_ext(self, data, expected):
@@ -91,6 +111,10 @@ class TestInboundCacheUsesSniffer:
             (AAC_ADTS, ".ogg", ".aac"),   # Android ADTS AAC voice note
             (WEBM, ".ogg", ".webm"),
             (FLAC, ".mp3", ".flac"),
+            # QQ/OneBot guesses ".amr" for every voice note it cannot name.
+            (SILK_TENCENT, ".amr", ".silk"),
+            (AMR_NB, ".amr", ".amr"),
+            (AMR_WB, ".silk", ".amr"),
         ],
     )
     def test_wrong_ext_repaired(self, tmp_path, data, claimed, expected_suffix):

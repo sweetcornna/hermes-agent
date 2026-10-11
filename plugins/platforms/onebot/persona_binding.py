@@ -28,12 +28,10 @@ The real signatures in ``channel_binding`` (not its prose):
 * ``resolve_channel_prompt(binding, *, on=None, data_dir=None) -> str | None``
   — ``None`` for "nothing to say", and it never raises by contract.
 
-``on`` is passed explicitly here, which is the whole reason the caching below
-is legitimate: the module documents its output as a **daily frozen snapshot**,
-a pure function of ``(binding, date)``, so memoising on exactly that pair
-cannot change a byte of what the model sees.  Without a cache every inbound
-group message would re-read the seed-pack YAML off disk
-(``life.resolve_seed_library`` has no cache of its own).
+The adapter retains its existing daily memoization for compatibility. Grantley's
+channel renderer now depends only on the binding, so it is also stable across
+days. Mutable life state is carried separately by the memory provider on the
+current user message; it must not be added back to this system-message frame.
 
 Degradation
 -----------
@@ -72,6 +70,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -112,6 +111,14 @@ _binding_module: Any = _MISSING
 #: Lazily-resolved persona-plugin settings mapping.
 _plugin_settings: Any = _MISSING
 
+#: An empty lookup (no module, no settings) is retried after this many
+#: seconds instead of being kept for the process lifetime: one transient
+#: failure at startup silently dropped every channel frame until restart.
+_EMPTY_RETRY_SECONDS = 60.0
+_binding_module_retry_at = 0.0
+_plugin_settings_retry_at = 0.0
+_settings_empty_warned = False
+
 #: ``(persona_id, chat_id, is_group, day) -> rendered prompt or None``.
 #: Bounded by pruning every entry from a previous day on each miss, so it can
 #: never grow past the number of channels the bot actually talks in.
@@ -121,8 +128,12 @@ _prompt_cache: Dict[Tuple[str, str, bool, str], Optional[str]] = {}
 def reset_state() -> None:
     """Test hook — drop every cached lookup (module, settings, prompts)."""
     global _binding_module, _plugin_settings
+    global _binding_module_retry_at, _plugin_settings_retry_at, _settings_empty_warned
     _binding_module = _MISSING
     _plugin_settings = _MISSING
+    _binding_module_retry_at = 0.0
+    _plugin_settings_retry_at = 0.0
+    _settings_empty_warned = False
     _prompt_cache.clear()
 
 
@@ -133,8 +144,10 @@ def reset_state() -> None:
 
 def _load_binding_module() -> Any:
     """Import ``channel_binding`` from whichever name the persona ships under."""
-    global _binding_module
-    if _binding_module is not _MISSING:
+    global _binding_module, _binding_module_retry_at
+    if _binding_module is not _MISSING and (
+        _binding_module is not None or time.monotonic() < _binding_module_retry_at
+    ):
         return _binding_module
     from importlib import import_module
 
@@ -149,6 +162,7 @@ def _load_binding_module() -> Any:
         "framing is off"
     )
     _binding_module = None
+    _binding_module_retry_at = time.monotonic() + _EMPTY_RETRY_SECONDS
     return None
 
 
@@ -158,8 +172,10 @@ def _load_plugin_settings() -> Mapping[str, Any]:
     Read through the persona package rather than re-deriving the config path,
     so the two cannot drift apart when the path changes.
     """
-    global _plugin_settings
-    if _plugin_settings is not _MISSING:
+    global _plugin_settings, _plugin_settings_retry_at, _settings_empty_warned
+    if _plugin_settings is not _MISSING and (
+        _plugin_settings or time.monotonic() < _plugin_settings_retry_at
+    ):
         return _plugin_settings
     from importlib import import_module
 
@@ -169,12 +185,21 @@ def _load_plugin_settings() -> Mapping[str, Any]:
             if loader is None:
                 continue
             settings = loader()
-            if isinstance(settings, Mapping):
+            if isinstance(settings, Mapping) and settings:
                 _plugin_settings = settings
+                _settings_empty_warned = False
                 return _plugin_settings
         except Exception:  # noqa: BLE001 — config is optional by contract
             continue
+    if not _settings_empty_warned:
+        logger.warning(
+            "OneBot: persona plugin settings are empty — channel frames are off; "
+            "retrying every %.0fs",
+            _EMPTY_RETRY_SECONDS,
+        )
+        _settings_empty_warned = True
     _plugin_settings = {}
+    _plugin_settings_retry_at = time.monotonic() + _EMPTY_RETRY_SECONDS
     return _plugin_settings
 
 
@@ -191,8 +216,8 @@ def bindings_from_extra(extra: Mapping[str, Any]) -> Dict[str, Any]:
     Not cached: ``bindings_from_config`` is a pure dict walk over a handful of
     entries, and caching it would mean an operator's config reconcile stopped
     taking effect until restart — the one behaviour the live-``extra`` reads
-    everywhere else in this adapter exist to avoid.  The expensive half (the
-    daily snapshot) is what :func:`channel_prompt` memoises.
+    everywhere else in this adapter exist to avoid. The rendered channel
+    frame is what :func:`channel_prompt` memoises.
     """
     module = _load_binding_module()
     if module is None:
@@ -210,8 +235,18 @@ def bindings_from_extra(extra: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _today() -> date:
-    """Today's calendar day on the same clock ``life.now_dt()`` uses."""
-    return datetime.now(timezone.utc).astimezone().date()
+    """Today's calendar day on the same clock ``life.now_dt()`` uses.
+
+    That is Hermes's configured timezone, not the host's: production runs on
+    a US host for a bot that lives on Shanghai time, and a host-zone date
+    would hand the frame yesterday's beat for fifteen hours of every day.
+    """
+    try:
+        import hermes_time
+
+        return hermes_time.now().date()
+    except Exception:  # noqa: BLE001 — fall back to the host zone, never fail a frame
+        return datetime.now(timezone.utc).astimezone().date()
 
 
 def channel_prompt(
@@ -232,13 +267,11 @@ def channel_prompt(
     ``group:`` flag when the two disagree.  A config typo must not tell the
     persona it is in a DM while it is posting to a group; the wire knows.
 
-    The sticker menu is appended HERE rather than inside ``_channel_prompt``,
-    and the placement is load-bearing.  ``_channel_prompt`` is memoised on
-    ``(persona, channel, group, day)`` because its own output is documented
-    as a daily frozen snapshot; folding a per-turn dice roll into that would
-    freeze the roll for the day too — stickers available all day or not at
-    all, which is not what a probability means.  Composed outside the cache,
-    the frame stays a daily constant and the menu stays a per-turn decision.
+    The sticker menu is appended here, outside the memoised frame, and is
+    standing: shown whenever stickers are on for the chat. The per-turn
+    probability is rolled on the send side, because a roll here changed the
+    system message between turns and threw away the cached history. *rng* is
+    accepted for compatibility and no longer used.
     """
     try:
         base = _channel_prompt(extra, chat_id=chat_id, is_group=is_group, on=on)
@@ -246,7 +279,7 @@ def channel_prompt(
         logger.warning("OneBot: per-channel persona frame failed", exc_info=True)
         base = None
     try:
-        menu = sticker.offer_menu(extra, rng)
+        menu = sticker.standing_menu(extra, chat_id=chat_id)
     except Exception:  # noqa: BLE001 — a flourish must never cost the frame
         logger.warning("OneBot: sticker menu failed", exc_info=True)
         menu = None
@@ -256,6 +289,11 @@ def channel_prompt(
     # stickers belong to the account, not to a channel's owner framing, and
     # returning ``None`` here would silently confine the feature to
     # configured channels for no reason anyone could find later.
+    #
+    # ``chat_id`` is threaded through so a channel routed to a different
+    # persona is offered ITS pack (``extra.sticker_dirs``) rather than the
+    # account's default one — an unbound channel would otherwise be shown
+    # another character's face.
     return f"{base}\n\n{menu}" if base else menu
 
 

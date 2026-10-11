@@ -74,6 +74,61 @@ def compose_user_api_content(
     """
     if not isinstance(content, str):
         return None
+    injection = _ephemeral_injection(ext_prefetch_cache, plugin_user_context)
+    if not injection:
+        return None
+    return content + "\n\n" + injection
+
+
+def compose_multimodal_api_content(
+    content: Any,
+    ext_prefetch_cache: str,
+    plugin_user_context: str,
+) -> Optional[List[Any]]:
+    """List-content counterpart of :func:`compose_user_api_content`.
+
+    Image turns carry a content-part list, which the string ``api_content``
+    sidecar cannot represent, so the prefetch and plugin context used to drop
+    silently on exactly those turns — taking per-turn facts such as the
+    current wall-clock time with them. Returns a copy of ``content`` with the
+    injection appended as a trailing text part, for the current turn's API
+    copy only. Nothing is stamped or persisted. On the gateway that costs no
+    cache: history is reloaded from the store every turn, where an image turn
+    survives only as flattened text, so its replay diverges from the sent
+    list at this message with or without the injection.
+
+    Returns ``None`` when ``content`` is not a list or nothing is injected.
+    """
+    if not isinstance(content, list):
+        return None
+    injection = _ephemeral_injection(ext_prefetch_cache, plugin_user_context)
+    if not injection:
+        return None
+    return [*content, {"type": "text", "text": injection}]
+
+
+def user_message_text(content: Any) -> str:
+    """The text a memory provider should see for a user message.
+
+    A content-part list (an image turn) yields its text parts joined, so
+    attaching a picture no longer turns the turn into an empty, "trivial"
+    prompt that skips prefetch altogether.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    texts = [
+        part["text"]
+        for part in content
+        if isinstance(part, dict)
+        and part.get("type") in ("text", "input_text")
+        and isinstance(part.get("text"), str)
+    ]
+    return "\n".join(texts)
+
+
+def _ephemeral_injection(ext_prefetch_cache: str, plugin_user_context: str) -> str:
     injections = []
     if ext_prefetch_cache:
         fenced = build_memory_context_block(ext_prefetch_cache)
@@ -81,9 +136,7 @@ def compose_user_api_content(
             injections.append(fenced)
     if plugin_user_context:
         injections.append(plugin_user_context)
-    if not injections:
-        return None
-    return content + "\n\n" + "\n\n".join(injections)
+    return "\n\n".join(injections)
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
@@ -869,6 +922,16 @@ def build_turn_context(
             tools=agent.tools or None,
         )
         _compressor = agent.context_compressor
+        # The rough estimate can undercount real usage (provider tokenizers
+        # on mixed CJK + terminal output), and a turn without tool calls never
+        # reaches the loop's real-usage gate. The previous request's real
+        # prompt count is a floor for this one: history only grows between
+        # compactions. getattr guard: plugin engines lack the method.
+        _real_floor_fn = getattr(_compressor, "real_prompt_floor", None)
+        if callable(_real_floor_fn):
+            _real_floor = _real_floor_fn()
+            if isinstance(_real_floor, int) and _real_floor > _preflight_tokens:
+                _preflight_tokens = _real_floor
         # getattr guard: minimal compressor doubles (SimpleNamespace in the
         # engine-preflight tests) and plugin context engines lack this
         # ContextCompressor-only method — absence means no snapshot, and the
@@ -1265,10 +1328,10 @@ def build_turn_context(
         agent._interrupt_thread_signal_pending = False
 
     # Notify memory providers of the new turn (BEFORE prefetch_all).
+    _turn_text = user_message_text(original_user_message)
     if agent._memory_manager:
         try:
-            _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
-            agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
+            agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_text)
         except Exception:
             pass
 
@@ -1279,9 +1342,8 @@ def build_turn_context(
     ext_prefetch_cache = ""
     if agent._memory_manager:
         try:
-            _query = original_user_message if isinstance(original_user_message, str) else ""
-            if not is_trivial_prompt(_query):
-                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            if not is_trivial_prompt(_turn_text):
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(_turn_text) or ""
         except Exception:
             pass
         # Deterministic, model-independent recall indicator: when memory was

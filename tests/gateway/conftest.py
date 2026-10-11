@@ -552,3 +552,62 @@ def pytest_configure(config):
         else:
             cache_file.write_text("clean", encoding="utf-8")
 
+
+
+@pytest.fixture(autouse=True)
+def _onebot_agent_gate_is_offline_by_default(monkeypatch):
+    """Keep the stage-1 agent gate from reaching the network in tests.
+
+    ``OneBotAdapter.send`` consults an LLM before the deterministic policy
+    table (see ``plugins/platforms/onebot/agent_gate.py``). The gate fails
+    open, so leaving it live would still pass — but every send-path test would
+    pay a real provider round-trip or a 6s timeout first, and the suite would
+    depend on ambient credentials. Stubbing it to the "not consulted"
+    fall-through reproduces exactly what an unreachable provider does, which
+    is the state every pre-existing test was written against.
+
+    Tests that exercise the gate itself opt back in by monkeypatching
+    ``judge_outbound`` again, which takes precedence over this fixture.
+    """
+    try:
+        from plugins.platforms.onebot import adapter as _adapter
+        from plugins.platforms.onebot.agent_gate import AgentVerdict
+    except Exception:  # pragma: no cover — plugin not importable in this env
+        return
+
+    async def _offline(_text, **_kw):
+        return AgentVerdict(safe=True, consulted=False, fallthrough_cause="test_stub")
+
+    monkeypatch.setattr(_adapter, "judge_outbound", _offline, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _onebot_media_gate_is_offline_by_default(monkeypatch):
+    """Keep the media gate from reaching a vision model in tests.
+
+    Unlike the agent gate, this one fails **closed**: an unreachable vision
+    provider blocks the attachment. So leaving it live does not merely make the
+    suite slow, it changes behaviour — every media test would exercise the
+    text-only degradation path instead of the send it was written to check.
+
+    The stub returns the *trusted-asset* verdict rather than a fabricated
+    "consulted and safe": that is a real code path with real semantics
+    (provenance-trusted, no model call), so tests run against something the
+    production module actually produces.
+
+    Tests that exercise the gate itself opt back in by monkeypatching
+    ``judge_media_file`` again, which takes precedence over this fixture.
+    """
+    try:
+        from plugins.platforms.onebot import media_gate as _media_gate
+        from plugins.platforms.onebot.media_gate import MediaVerdict
+    except Exception:  # pragma: no cover — plugin not importable in this env
+        return
+
+    async def _offline(_path, **_kw):
+        return MediaVerdict(
+            safe=True, consulted=False, fallthrough_cause="trusted_asset"
+        )
+
+    monkeypatch.setattr(_media_gate, "judge_media_file", _offline, raising=False)
+    _media_gate._CACHE.clear()

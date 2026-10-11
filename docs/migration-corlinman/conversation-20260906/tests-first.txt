@@ -1,0 +1,185 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 5 test files (~162 tests) under ['tests/gateway/test_onebot_reply_batch.py', 'tests/gateway/test_onebot_bubble_cap.py', 'tests/gateway/test_onebot_reply_context.py', 'tests/gateway/test_onebot_router.py', 'tests/plugins/grantley/test_persona_rendering.py']; running with -j 3
+[ 13.0% |    21/~162 | ✓24 | ✗ 0] ✓ tests/gateway/test_onebot_reply_context.py (24✓, 1.2s)
+[ 44.4% |    72/~162 | ✓83 | ✗ 0] ✓ tests/gateway/test_onebot_router.py (59✓, 1.0s)
+[ 83.3% |   135/~162 | ✓147 | ✗  1] ✗ tests/gateway/test_onebot_bubble_cap.py (64✓ 1✗, 2.6s)
+
+  ╔╍ Failed: tests/gateway/test_onebot_bubble_cap.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║         self,
+  ║     ):
+  ║         code = "print('ok')\n" * 100
+  ║         body = f"```python\n{code}```"
+  ║         expected = code.strip()
+  ║         assert len(expected) > A.FORWARD_TEXT_THRESHOLD
+  ║     
+  ║         ad = make_adapter()
+  ║         res = await ad.send(str(DM_PEER), body)
+  ║     
+  ║         assert res.success is True
+  ║         assert len(ad._client.actions) == 1
+  ║         assert isinstance(ad._client.actions[0], P.SendPrivateForwardMsg)
+  ║         delivered = "".join(card_node_texts(ad))
+  ║ >       assert delivered == expected
+  ║ E       assert "```python\np...nt('ok')\n```" == "print('ok')\...\nprint('ok')"
+  ║ E         
+  ║ E         + ```python
+  ║ E           print('ok')
+  ║ E           print('ok')
+  ║ E           print('ok')
+  ║ E           print('ok')
+  ║ E           print('ok')...
+  ║ E         
+  ║ E         ...Full output truncated (98 lines hidden), use '-vv' to show
+  ║ 
+  ║ tests/gateway/test_onebot_bubble_cap.py:479: AssertionError
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/gateway/test_onebot_bubble_cap.py::TestLongRepliesBecomeOneCard::test_long_code_text_survives_one_dm_card_after_markdown_normalization
+  ║ 1 failed, 64 passed in 0.91s
+  ║
+  ║  Repro: python -m pytest tests/gateway/test_onebot_bubble_cap.py -q
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+[ 88.9% |   144/~162 | ✓160 | ✗  3] ✗ tests/gateway/test_onebot_reply_batch.py (13✓ 2✗, 3.6s)
+
+  ╔╍ Failed: tests/gateway/test_onebot_reply_batch.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║         await asyncio.sleep(0)
+  ║         assert [e.text for e in ad.turns.events] == ["/stop"]
+  ║ >       await drain(ad)
+  ║ 
+  ║ tests/gateway/test_onebot_reply_batch.py:132: 
+  ║ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+  ║ tests/gateway/test_onebot_reply_batch.py:23: in drain
+  ║     await asyncio.gather(*list(ad._reply_batcher.tasks))
+  ║ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+  ║ 
+  ║ self = <plugins.platforms.onebot.reply_batch.ReplyBatcher object at 0x10836a710>
+  ║ key = (100, 'private', None, 536132102)
+  ║ burst = Burst(items=[(MessageEvent(self_id=100, message_type=<MessageType.PRIVATE: 'private'>, user_id=536132102, message_id=1...<ReplyBatcher._run() done, defined at /Users/cornna/project/hermes-agent/plugins/platforms/onebot/reply_batch.py:127>>)
+  ║ 
+  ║ >   async def _run(self, key, burst):
+  ║ E   asyncio.exceptions.CancelledError
+  ║ 
+  ║ plugins/platforms/onebot/reply_batch.py:127: CancelledError
+  ║ _____________ test_yaml_three_second_setting_reaches_real_adapter ______________
+  ║ 
+  ║     def test_yaml_three_second_setting_reaches_real_adapter():
+  ║ >       result = A.apply_yaml_config({"reply_debounce_seconds": 3})
+  ║                  ^^^^^^^^^^^^^^^^^^^
+  ║ E       AttributeError: module 'plugins.platforms.onebot.adapter' has no attribute 'apply_yaml_config'
+  ║ 
+  ║ tests/gateway/test_onebot_reply_batch.py:151: AttributeError
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/gateway/test_onebot_reply_batch.py::test_stop_is_immediate_and_cancels_unsent_burst
+  ║ FAILED tests/gateway/test_onebot_reply_batch.py::test_yaml_three_second_setting_reaches_real_adapter
+  ║ 2 failed, 13 passed in 1.38s
+  ║
+  ║  Repro: python -m pytest tests/gateway/test_onebot_reply_batch.py -q
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+[100.0% |   162/~162 | ✓180 | ✗  3] ✓ tests/plugins/grantley/test_persona_rendering.py (20✓, 4.3s)
+
+=== Summary: 5 files, 180 tests passed, 3 failed (100% complete) in 6.5s (3 workers) ===
+  Durations cached to test_durations.json (5 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   5
+  Total subprocess CPU-wall: 12.6s  (runner wall: 6.5s, parallelism: 3x)
+  P50: 2.56s  P90: 4.34s  P95: 4.34s  P99: 4.34s  Max: 4.34s
+  <1s: 1 files (20%)  <2s: 2 files (40%)
+  Top 10 slowest:
+      4.34s  tests/plugins/grantley/test_persona_rendering.py
+      3.62s  tests/gateway/test_onebot_reply_batch.py
+      2.56s  tests/gateway/test_onebot_bubble_cap.py
+      1.18s  tests/gateway/test_onebot_reply_context.py
+      0.95s  tests/gateway/test_onebot_router.py
+
+=== Failure output ===
+
+--- tests/gateway/test_onebot_bubble_cap.py ---
+................................F................................        [100%]
+=================================== FAILURES ===================================
+_ TestLongRepliesBecomeOneCard.test_long_code_text_survives_one_dm_card_after_markdown_normalization _
+
+self = <tests.gateway.test_onebot_bubble_cap.TestLongRepliesBecomeOneCard object at 0x109c358d0>
+
+    @pytest.mark.asyncio
+    async def test_long_code_text_survives_one_dm_card_after_markdown_normalization(
+        self,
+    ):
+        code = "print('ok')\n" * 100
+        body = f"```python\n{code}```"
+        expected = code.strip()
+        assert len(expected) > A.FORWARD_TEXT_THRESHOLD
+    
+        ad = make_adapter()
+        res = await ad.send(str(DM_PEER), body)
+    
+        assert res.success is True
+        assert len(ad._client.actions) == 1
+        assert isinstance(ad._client.actions[0], P.SendPrivateForwardMsg)
+        delivered = "".join(card_node_texts(ad))
+>       assert delivered == expected
+E       assert "```python\np...nt('ok')\n```" == "print('ok')\...\nprint('ok')"
+E         
+E         + ```python
+E           print('ok')
+E           print('ok')
+E           print('ok')
+E           print('ok')
+E           print('ok')...
+E         
+E         ...Full output truncated (98 lines hidden), use '-vv' to show
+
+tests/gateway/test_onebot_bubble_cap.py:479: AssertionError
+=========================== short test summary info ============================
+FAILED tests/gateway/test_onebot_bubble_cap.py::TestLongRepliesBecomeOneCard::test_long_code_text_survives_one_dm_card_after_markdown_normalization
+1 failed, 64 passed in 0.91s
+
+--- tests/gateway/test_onebot_reply_batch.py ---
+......F.......F                                                          [100%]
+=================================== FAILURES ===================================
+_______________ test_stop_is_immediate_and_cancels_unsent_burst ________________
+
+ad = <plugins.platforms.onebot.adapter.OneBotAdapter object at 0x10836a450>
+
+    @pytest.mark.asyncio
+    async def test_stop_is_immediate_and_cancels_unsent_burst(ad):
+        await ad._on_message_event(private_event("还没说完", message_id=1))
+        await ad._on_message_event(private_event("/stop", message_id=2))
+        await asyncio.sleep(0)
+        assert [e.text for e in ad.turns.events] == ["/stop"]
+>       await drain(ad)
+
+tests/gateway/test_onebot_reply_batch.py:132: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/gateway/test_onebot_reply_batch.py:23: in drain
+    await asyncio.gather(*list(ad._reply_batcher.tasks))
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <plugins.platforms.onebot.reply_batch.ReplyBatcher object at 0x10836a710>
+key = (100, 'private', None, 536132102)
+burst = Burst(items=[(MessageEvent(self_id=100, message_type=<MessageType.PRIVATE: 'private'>, user_id=536132102, message_id=1...<ReplyBatcher._run() done, defined at /Users/cornna/project/hermes-agent/plugins/platforms/onebot/reply_batch.py:127>>)
+
+>   async def _run(self, key, burst):
+E   asyncio.exceptions.CancelledError
+
+plugins/platforms/onebot/reply_batch.py:127: CancelledError
+_____________ test_yaml_three_second_setting_reaches_real_adapter ______________
+
+    def test_yaml_three_second_setting_reaches_real_adapter():
+>       result = A.apply_yaml_config({"reply_debounce_seconds": 3})
+                 ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'plugins.platforms.onebot.adapter' has no attribute 'apply_yaml_config'
+
+tests/gateway/test_onebot_reply_batch.py:151: AttributeError
+=========================== short test summary info ============================
+FAILED tests/gateway/test_onebot_reply_batch.py::test_stop_is_immediate_and_cancels_unsent_burst
+FAILED tests/gateway/test_onebot_reply_batch.py::test_yaml_three_second_setting_reaches_real_adapter
+2 failed, 13 passed in 1.38s
+
+=== 2 files with test failures (3 tests failed) ===
+  tests/gateway/test_onebot_bubble_cap.py  (1 test failed)
+  tests/gateway/test_onebot_reply_batch.py  (2 tests failed)

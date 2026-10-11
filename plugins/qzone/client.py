@@ -10,8 +10,8 @@ helpers straight out of ``publish.py``).
 QQ retired the QZone OpenAPI ``emotion`` interface years ago, so there is no
 supported way to post a 说说. These tools drive the *web* endpoints, which
 need a logged-in session. Rather than running their own QR login they
-**borrow** the session from a running OneBot v11 backend (NapCat /
-Lagrange): ``get_login_info`` yields the uin and ``get_cookies`` yields the
+**borrow** the session from a running OneBot v11 backend (SnowLuma / NapCat /
+Lagrange / go-cqhttp): ``get_login_info`` yields the uin and ``get_cookies`` yields the
 ``*.qq.com`` jar including ``p_skey``. ``g_tk`` is then computed locally.
 
 Transport
@@ -71,7 +71,7 @@ __all__ = [
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Cookie domain to ask OneBot for. NapCat / Lagrange return the whole
+#: Cookie domain to ask OneBot for. SnowLuma / NapCat / Lagrange return the whole
 #: ``*.qq.com`` jar (uin / skey / p_skey / ...) when asked for this one.
 QZONE_COOKIE_DOMAIN: str = "user.qzone.qq.com"
 
@@ -260,7 +260,7 @@ def _login_uin(onebot_call: Callable[..., dict]) -> str:
 
     Prefers the ``self_id`` the running platform adapter has *observed* on a
     live event (disagreement S11: the event's own ``self_id`` is
-    authoritative and survives a NapCat account switch without a config
+    authoritative and survives a backend account switch without a config
     change), and falls back to asking the backend directly. The fallback is
     what makes these tools work from ``hermes cron`` or the CLI, where no
     gateway is running.
@@ -290,7 +290,7 @@ def _cookie_string(onebot_call: Callable[..., dict]) -> str:
     if not cookies:
         raise QZoneError(
             "OneBot get_cookies returned an empty cookie string — the QQ login "
-            "state may be stale; re-login the NapCat/Lagrange client.",
+            "state may be stale; re-login the OneBot backend.",
             "qzone_cookie_stale",
         )
     return cookies
@@ -324,10 +324,10 @@ def qzone_auth(onebot_call: Optional[Callable[..., dict]] = None) -> QZoneAuth:
     if not p_skey:
         raise QZoneError(
             "p_skey not found in OneBot cookies — the QQ login may be stale, or "
-            "NapCat has not fetched the QZone cookie jar yet.",
+            "the backend has not fetched the QZone cookie jar yet.",
             "qzone_cookie_stale",
         )
-    # skey is optional: several NapCat builds omit it and the CGIs accept "".
+    # skey is optional: several backend builds omit it and the CGIs accept "".
     skey = extract_cookie_value(cookie, "skey") or ""
     return QZoneAuth(uin=uin, cookie=cookie, gtk=compute_gtk(p_skey), skey=skey, p_skey=p_skey)
 

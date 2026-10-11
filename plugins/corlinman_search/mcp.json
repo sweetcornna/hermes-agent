@@ -4,11 +4,13 @@
     "search": {
       "type": "stdio",
       "command": "uv",
+      "cwd": "${PLUGIN_DATA}",
       "args": [
         "run",
+        "--no-project",
         "--isolated",
         "--with",
-        "free-search-mcp>=0.8.0,<1",
+        "free-search-mcp==0.11.0",
         "python",
         "${PLUGIN_ROOT}/server.py"
       ],
@@ -17,6 +19,7 @@
         "SEARCH_MCP_CACHE_DIR": "${PLUGIN_DATA}/cache",
         "SEARCH_MCP_CACHE_MAX_MB": "64",
         "SEARCH_MCP_FETCH_STRATEGY": "http",
+        "SEARCH_MCP_DEFAULT_ENGINES": "[\"baidu\",\"anysearch\",\"duckduckgo\",\"mojeek\",\"googlenews\"]",
         "SEARCH_MCP_REQUEST_TIMEOUT": "8",
         "SEARCH_MCP_RESCUE_TIMEOUT": "6",
         "SEARCH_MCP_RATE_LIMIT_PER_MINUTE": "30",

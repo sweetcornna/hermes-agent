@@ -1,0 +1,6 @@
+{"phase": "waiting_for_idle", "active_agents": 1}
+{"phase": "waiting_for_idle", "active_agents": 1}
+{"phase": "waiting_for_idle", "active_agents": 1}
+{"phase": "waiting_for_idle", "active_agents": 1}
+{"phase": "waiting_for_idle", "active_agents": 1}
+{"phase": "waiting_for_idle", "active_agents": 1}

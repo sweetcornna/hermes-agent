@@ -1,0 +1,3 @@
+{"action": "get_version_info", "status": "ok", "data": {"app_name": "SnowLuma native text bridge", "app_version": "0.3.0", "protocol_version": "v11", "native_qq": {"schema": 1, "delivery_confirmation": true, "idempotency": true, "capabilities": ["text", "at", "reply", "recall"], "guard": true}}, "error": null}
+{"action": "get_status", "status": "ok", "data": {"online": false, "good": false}, "error": null}
+{"action": "native_self_check", "status": "failed", "data": null, "error": {"code": "authentication_required", "retryable": false, "not_sent": true, "retry_after_seconds": 0}}

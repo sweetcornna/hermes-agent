@@ -1,0 +1,5 @@
+{
+  "function": "binary_search_leftmost",
+  "inputs_checked": 3234,
+  "passed": true
+}

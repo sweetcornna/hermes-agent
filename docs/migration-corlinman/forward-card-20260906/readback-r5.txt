@@ -1,0 +1,2 @@
+{"status": "ok", "retcode": 0, "data": {"readable": true, "message_id": 180931947278034, "nodes": 1, "has_resource": true, "characters": 1182, "text_sha256": "e29514e2c5b90a10a83e2c1e7a08c1be5cf3039e3fb5a34adce824e07c7f645e", "begins_correctly": true, "ends_correctly": true}, "echo": "4586baa77fa1497d9d819efd9a03a5eb"}
+{"verified": true, "exact_body_sha256": "e29514e2c5b90a10a83e2c1e7a08c1be5cf3039e3fb5a34adce824e07c7f645e"}

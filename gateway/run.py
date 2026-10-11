@@ -5235,6 +5235,15 @@ class TurnRunner:
             combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
         max_iterations = _current_max_iterations()
+        channel_override = _get_channel_override(
+            self._runner.config,
+            ctx.source.platform,
+            ctx.source.chat_id or "",
+            thread_id=getattr(ctx.source, "thread_id", None),
+            parent_id=getattr(ctx.source, "parent_chat_id", None),
+        )
+        if channel_override is not None:
+            max_iterations = channel_override.iteration_limit(max_iterations)
 
         try:
             model, runtime_kwargs = self._runner._resolve_session_agent_runtime(
@@ -5630,6 +5639,14 @@ class TurnRunner:
                 # a single small file, not part of the expensive walk.
                 load_soul_identity=True,
             )
+            # A rebuilt agent (idle eviction, restart) has no provider usage
+            # yet; hand it the session's last real prompt count so its first
+            # preflight is not decided by the rough estimate alone.
+            _seed_real = getattr(getattr(agent, "context_compressor", None), "seed_real_prompt_tokens", None)
+            if callable(_seed_real) and ctx.session_key:
+                _seed_entry = self._runner.session_store._entries.get(ctx.session_key)
+                if _seed_entry is not None and _seed_entry.session_id == ctx.session_id:
+                    _seed_real(_seed_entry.last_prompt_tokens)
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     # Record the session_id the snapshot was taken for

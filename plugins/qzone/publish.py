@@ -166,6 +166,23 @@ def _build_publish_form(
     if pic_infos:
         form["richtype"] = "1"
         form["richval"] = _build_richval(pic_infos)
+        # ``subrichtype`` is what actually makes the pictures appear.
+        #
+        # Without it the CGI still answers ``code: 0`` with a real tid, the
+        # upload still succeeds, and the 说说 still publishes — as text only,
+        # silently dropping the images it was just handed. That is why this
+        # was never caught: every layer reports success and the only evidence
+        # is the rendered feed having no photo node.
+        #
+        # This path had never run anywhere. The C3 port notes record that the
+        # source deployment's own QZone dispatcher also never published an
+        # image (its media policy denied every attachment), so the richval
+        # branch was reverse-engineered, ported byte-for-byte, and never once
+        # exercised end-to-end until now. Verified live 2026-08-28 by reading
+        # the ``feedinfo`` HTML the publish response returns: with this field
+        # the post carries a ``photo.store.qq.com`` node, without it it does
+        # not.
+        form["subrichtype"] = "1"
     return form
 
 
@@ -319,7 +336,12 @@ def _load_image_reference(ref: str) -> Tuple[bytes, str]:
     raise RuntimeError(f"image_generate returned an unusable reference: {ref[:200]}")
 
 
-def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
+def _generate_image(
+    prompt: str,
+    aspect_ratio: str,
+    *,
+    reference_characters: Optional[List[str]] = None,
+) -> Tuple[bytes, str]:
     """Generate a 配图 through hermes's configured image backend.
 
     PORT NOTE: corlinman's character-anchored ``image_with_refs`` path is now
@@ -339,10 +361,11 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
         )
 
     generation_args: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+    explicit_references = reference_characters is not None
     try:
         from hermes_cli.config import cfg_get, load_config
 
-        configured_characters = cfg_get(
+        configured_characters = reference_characters if explicit_references else cfg_get(
             load_config(), "qzone", "reference_characters", default=[]
         )
         reference_characters = (
@@ -357,6 +380,8 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
 
             reference_limit = min(RECOMMENDED_REFERENCE_IMAGES, MAX_REFERENCE_IMAGES)
             if len(reference_characters) > reference_limit:
+                if explicit_references:
+                    raise ValueError(f"select at most {reference_limit} character references")
                 logger.warning(
                     "qzone: limiting %d configured reference characters to %d; "
                     "too many reference images can confuse the model and reduce "
@@ -371,6 +396,8 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
                 character for character in reference_characters if character not in available
             ]
             if missing_characters:
+                if explicit_references:
+                    raise ValueError("reference art unavailable: " + ", ".join(missing_characters))
                 logger.info(
                     "qzone: skipping reference characters with no deployed art: %s",
                     ", ".join(missing_characters),
@@ -381,6 +408,8 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
         if reference_characters:
             terminal_backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
             if terminal_backend not in ("", "local"):
+                if explicit_references:
+                    raise ValueError("selected character references require the local terminal backend")
                 logger.info(
                     "qzone: terminal backend %s does not support character: references; "
                     "using plain generation",
@@ -396,6 +425,8 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
                 f"character:{character}" for character in reference_characters
             ]
     except Exception as exc:  # noqa: BLE001 — references must not block a post
+        if explicit_references:
+            raise RuntimeError(f"selected character references could not be applied: {exc}") from exc
         logger.info("qzone: character references unavailable; using plain generation (%s)", exc)
 
     def _generate_reference(args: Dict[str, Any]) -> str:
@@ -414,22 +445,31 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
 
         if result.get("error"):
             raise RuntimeError(str(result["error"]))
+        if explicit_references and (result.get("reference_fallback") or result.get("missing_characters")):
+            raise RuntimeError("selected character references were not preserved by the image provider")
         image_ref = result.get("image")
         if not image_ref:
             raise RuntimeError("image_generate produced no image.")
         return str(image_ref)
 
     if "reference_image_urls" in generation_args:
-        plain_generation_args = dict(generation_args)
-        plain_generation_args.pop("reference_image_urls")
         try:
             image_ref = _generate_reference(generation_args)
-        except Exception as exc:  # noqa: BLE001 — references are optional
-            logger.warning(
-                "qzone: reference image generation failed; retrying without references (%s)",
-                exc,
-            )
-            image_ref = _generate_reference(plain_generation_args)
+        except Exception as exc:  # noqa: BLE001 — one clean failure for the caller
+            # This used to retry without the references, on the theory that
+            # references are optional decoration.  They are not: they are what
+            # pins the persona's face.  Observed 2026-08-28 — the provider
+            # refused one reference-guided prompt ("Cornna responses returned
+            # no image data"), the retry happily produced a *different
+            # character* (a blond human where the persona is a tiger), and
+            # that stranger went out attached to the persona's post.  A
+            # missing picture is recoverable; an off-model one is a wrong
+            # picture published under someone's name.  Fail the prompt and let
+            # the caller decide.
+            raise RuntimeError(
+                f"reference-guided generation failed and no off-model fallback "
+                f"is allowed: {exc}"
+            ) from exc
     else:
         image_ref = _generate_reference(generation_args)
     return _load_image_reference(image_ref)
@@ -438,6 +478,53 @@ def _generate_image(prompt: str, aspect_ratio: str) -> Tuple[bytes, str]:
 # ---------------------------------------------------------------------------
 # Network steps
 # ---------------------------------------------------------------------------
+
+
+def _classify_images_safe(payloads: List[Tuple[bytes, str]]) -> Optional[bool]:
+    """Vision-screen every image.  ``True`` only if all of them are safe.
+
+    Returns ``None`` — not ``False`` — when the classifier could not reach a
+    verdict, because that is the value ``moderate_media`` reads as "unclassified"
+    and denies by default.  Passing ``False`` would mean the same thing here,
+    but ``None`` says *why*, and keeps the deny-by-default rule owned by the
+    ported policy rather than duplicated in this function.
+
+    The classifier lives in the OneBot plugin because that is where it was
+    built, but it imports nothing from that platform — it takes a file path and
+    an LLM.  The dependency direction is safe: ``plugins.qzone.policy`` is what
+    the OneBot adapter imports, never the reverse, and these QZone tools already
+    require a configured OneBot backend to have a QQ session at all.
+    """
+    import tempfile
+
+    from model_tools import _run_async
+    from plugins.platforms.onebot import media_gate
+
+    cfg = media_gate.resolve_media_gate_config(None)
+    try:
+        with tempfile.TemporaryDirectory(prefix="qzone-mediagate-") as tmp:
+            for index, (blob, filename) in enumerate(payloads):
+                suffix = os.path.splitext(filename)[1] or ".jpg"
+                probe = os.path.join(tmp, f"{index}{suffix}")
+                with open(probe, "wb") as handle:
+                    handle.write(blob)
+                verdict = _run_async(
+                    media_gate.judge_media_file(probe, config=cfg, profile="qzone")
+                )
+                if not verdict.safe:
+                    logger.warning(
+                        "QZone: image %d/%d refused by the media gate "
+                        "(category=%s cause=%s)",
+                        index + 1,
+                        len(payloads),
+                        verdict.category or "unspecified",
+                        verdict.fallthrough_cause or "classified_unsafe",
+                    )
+                    return None
+    except Exception:  # noqa: BLE001 — an unreachable classifier is "unclassified"
+        logger.warning("QZone: media gate unavailable — treating images as unclassified")
+        return None
+    return True
 
 
 def _upload_one_image(
@@ -479,6 +566,51 @@ def _publish_post(
 # ---------------------------------------------------------------------------
 
 
+def _daily_image_prompts(text: str, drafts: List[str]) -> List[str]:
+    """Apply daily art direction to both supplied and fallback scene plans."""
+    if drafts and len(drafts) != 3:
+        raise ValueError("hermes.qzone_daily needs three separate scene prompts in 'generate'")
+    scenes = drafts or [
+        "从今天的日常中选一个运动或体力活动场景，以明确的动作表现格兰的力量。",
+        "换到今天另一个地点，选择与第一张不同的日常活动、姿态和同学互动。",
+        "选择当天第三个不同地点与活动，展现另一种情绪和光线，不延续前两张背景。",
+    ]
+    common = (
+        "角色与画面约束优先于下方场景草稿中冲突的物种、服装或镜头描述。"
+        "这是采用成年形象的骑士学院原创日常插画。每张都必须有格兰本人："
+        "格兰是橙色虎兽人，不是犬或狼；脸型、虎纹、毛色、眼睛、耳朵、体型"
+        "以格兰参考立绘为准。同学只在本场景需要时出现，并使用各自参考图，"
+        "不要混用角色特征，不必把所有参考人物都画进每张。三张保持同一角色"
+        "身份与画风；服装随不同活动合理变化，不要求三张都穿完整制服。"
+        "尺度可以比普通制服照更大胆：至少两张采用胸腹近景或中近景的赤膊、"
+        "敞开上衣或湿衣贴身运动写真构图，清楚可见腹肌、胸肩肌肉和上身动作；"
+        "镜头可以切到胸口至大腿中段，露肤更明显但不裁掉头部与肩颈连接；下身"
+        "可穿短裤、泳裤或简洁运动服，只要隐私部位完全遮挡。表现自信、有力量"
+        "的日常动作，不作性行为、色情"
+        "姿态或生殖器展示。构图要有视觉冲击：明确主体、前中后景、动作线、"
+        "透视缩短、光影对比和环境尺度；不要三张都居中站着或同一个背景换角度。"
+        "三张是三个独立场景，各自是一张完整图片，不做拼图或分格。"
+        "镜头、人物姿态、地点、活动与光线按各自场景区别设计，不使用固定日更模板。"
+        "参考图用于身份一致性，不限制服装必须照搬。不要文字、水印或对话框。\n"
+    )
+    plan = "\n".join(f"场景 {i}: {scene}" for i, scene in enumerate(scenes, 1))
+    out = []
+    for i, scene in enumerate(scenes, 1):
+        emphasis = (
+            "本张以自然的运动或体力活动姿态清楚展现格兰腹肌，可赤膊或敞开上衣；"
+            "表情是兴奋投入、眉眼张开或带笑的呼吸感。\n"
+            if i == 1 else (
+                "本张用与其他两张不同的姿态、构图和活动；表情必须与场景匹配，"
+                "第二张可用专注凝神，第三张可用放松得意或轻微挑眉，三张不能同一张脸。\n"
+            )
+        )
+        out.append(
+            common + f"今日说说：{text}\n本组三个场景规划：\n{plan}\n"
+            f"现在只画第 {i} 张：{scene}\n" + emphasis
+        )
+    return out
+
+
 def handle_qzone_publish(args: Dict[str, Any], **_kw: Any) -> str:
     """Publish one 说说. Returns a JSON string; never raises."""
     from tools.registry import tool_error
@@ -496,12 +628,50 @@ def handle_qzone_publish(args: Dict[str, Any], **_kw: Any) -> str:
             "qzone_publish 'images' must be a list of file paths.", code="invalid_args"
         )
 
-    generate = args.get("generate")
-    if generate is not None and not isinstance(generate, str):
+    # ``generate`` takes one prompt or several. Several is how a post gets
+    # more than one generated picture: each prompt produces one image, and
+    # they are attached in order. A bare string stays valid — every existing
+    # caller passes one.
+    generate_raw = args.get("generate")
+    if generate_raw is None:
+        generate_prompts: List[str] = []
+    elif isinstance(generate_raw, str):
+        generate_prompts = [generate_raw.strip()] if generate_raw.strip() else []
+    elif isinstance(generate_raw, list) and all(
+        isinstance(item, str) for item in generate_raw
+    ):
+        generate_prompts = [item.strip() for item in generate_raw if item.strip()]
+    else:
         return tool_error(
-            "qzone_publish 'generate' must be a text prompt string.", code="invalid_args"
+            "qzone_publish 'generate' must be a prompt string or a list of "
+            "prompt strings.",
+            code="invalid_args",
         )
-    generate = (generate or "").strip()
+
+    references = args.get("reference_characters")
+    if references is not None:
+        from plugins.image_gen.cornna.characters import CHARACTER_KEYS
+
+        if not isinstance(references, list) or any(
+            not isinstance(name, str) or name not in CHARACTER_KEYS for name in references
+        ):
+            return tool_error("reference_characters must contain known character short names", code="invalid_args")
+        references = list(dict.fromkeys(references))
+
+    if job == "hermes.qzone_daily":
+        references = ["grantley"] + [name for name in references or [] if name != "grantley"]
+        if not images:
+            try:
+                generate_prompts = _daily_image_prompts(text, generate_prompts)
+            except ValueError as exc:
+                return tool_error(str(exc), code="invalid_args")
+        elif len(images) + len(generate_prompts) != 3:
+            return tool_error("hermes.qzone_daily requires exactly three pictures", code="invalid_args")
+    if references is not None and len(references) > 3:
+        return tool_error("select Grantley and at most two classmates per post", code="invalid_args")
+    # One joined string for the text policy and the "was anything requested"
+    # checks below, so a refusal names the offending prompt set as a whole.
+    generate = "\n".join(generate_prompts)
     aspect_ratio = (args.get("aspect_ratio") or _DEFAULT_GEN_ASPECT).strip()
 
     if not text and not images and not generate:
@@ -515,31 +685,21 @@ def handle_qzone_publish(args: Dict[str, Any], **_kw: Any) -> str:
     # the "content_policy_blocked" test group).
     policy_cfg = policy.resolve_config(_kw.get("policy_resolver"))
     try:
-        text_decision = policy.moderate_text(text, policy_cfg).decision
+        text_decision = policy.moderate_text_all(text, policy_cfg).decision
         if not text_decision.allowed:
             return _policy_error(text_decision)
-        prompt_decision = policy.moderate_text(generate, policy_cfg).decision
+        prompt_decision = policy.moderate_text_all(generate, policy_cfg).decision
         if not prompt_decision.allowed:
             return _policy_error(prompt_decision)
-        media_requested = bool(images or generate)
-        if media_requested:
-            media_decision = policy.moderate_media(config=policy_cfg)
-            if not media_decision.allowed:
-                if text:
-                    # Identical to corlinman publish.py:721-725: degrade to a
-                    # text-only post rather than failing the whole call over
-                    # unclassified media (this repo has no media classifier,
-                    # so this branch — or the refusal below — is what every
-                    # 'images'/'generate' request hits today; see the C3
-                    # notes judgement-call log).
-                    images = []
-                    generate = ""
-                else:
-                    return _policy_error(media_decision)
+        # The MEDIA decision is deliberately NOT made here — see the block
+        # after the payloads are assembled.  ``moderate_media`` needs a
+        # ``classified_safe`` answer, and nothing can classify an image that
+        # has not been read or generated yet.  Text and the generation prompt
+        # are still judged here, before any I/O, exactly as before.
     except Exception:
         return _policy_error(policy.classifier_failure_decision(text))
 
-    total_images = len(images) + (1 if generate else 0)
+    total_images = len(images) + len(generate_prompts)
     if total_images > _MAX_IMAGES:
         return tool_error(
             f"QZone说说 supports at most {_MAX_IMAGES} images (requested {total_images}).",
@@ -567,11 +727,81 @@ def handle_qzone_publish(args: Dict[str, Any], **_kw: Any) -> str:
         except ValueError as exc:
             return tool_error(f"Image '{path}': {exc}", code="image_not_found")
 
-    if generate:
+    for index, prompt in enumerate(generate_prompts, 1):
         try:
-            image_payloads.append(_generate_image(generate, aspect_ratio))
+            if references is None:
+                image_payloads.append(_generate_image(prompt, aspect_ratio))
+            else:
+                image_payloads.append(_generate_image(prompt, aspect_ratio, reference_characters=references))
         except RuntimeError as exc:
-            return tool_error(f"Image generation failed: {exc}", code="image_generate_failed")
+            # Fail the whole call rather than publishing a partial set: a post
+            # composed around three pictures is a different post with one, and
+            # silently shipping the remainder is not what was asked for.
+            return tool_error(
+                f"Image generation failed for prompt {index}/"
+                f"{len(generate_prompts)}: {exc}",
+                code="image_generate_failed",
+            )
+
+    # ── The media gate ────────────────────────────────────────────────────
+    # ``moderate_media`` has always been able to say yes; it just never had
+    # anything to say yes *about*.  It allows on ``classified_safe=True`` and
+    # denies everything else, and this repo had no classifier — so every
+    # ``images``/``generate`` request silently degraded to a text-only post,
+    # which is what "QZone image publishing is effectively disabled" in the
+    # C3 port notes actually meant.  The classifier now exists (it was built
+    # for the OneBot send path) and this is the wiring the notes prescribed.
+    #
+    # Placed here rather than with the text checks because it needs real
+    # bytes.  The invariant that matters is still held: this is before
+    # ``qzone_auth`` and before any upload, so a refusal here touches no
+    # network and no ``state.py`` record.
+    #
+    # All-or-nothing across the set: one unsafe picture denies the whole
+    # attachment list rather than posting the remainder.  A partial post is a
+    # different post from the one that was composed, and quietly publishing a
+    # subset is how a caption ends up describing a picture that is not there.
+    dropped_by_media_gate = 0
+    if image_payloads:
+        # Fails CLOSED, like every other use of this policy: an exploding
+        # classifier refuses rather than publishing an unscreened picture.
+        # The whole block is guarded, not just the classifier call — this
+        # moved out from under the text checks' ``try``, and losing that
+        # protection on the way would have turned a refusal into a crash.
+        try:
+            classified_safe = _classify_images_safe(image_payloads)
+            media_decision = policy.moderate_media(
+                config=policy_cfg, classified_safe=classified_safe
+            )
+        except Exception:  # noqa: BLE001 — never fail open, never raise
+            # A crash in the policy machinery is NOT the same as "this image
+            # could not be classified", and must not share its outcome.  An
+            # unclassified image is an ordinary deny and degrades to a
+            # text-only post; a classifier that raised means we cannot trust
+            # our own judgement about anything in this call, including the
+            # body, so the whole publish is refused.
+            return _policy_error(policy.classifier_failure_decision(text))
+        if not media_decision.allowed:
+            if job == "hermes.qzone_daily":
+                return _policy_error(media_decision)
+            if text:
+                # Identical to corlinman publish.py:721-725: degrade to a
+                # text-only post rather than failing the whole call.
+                logger.warning(
+                    "QZone: media refused by the content policy — publishing "
+                    "text only (%d image(s) dropped)",
+                    len(image_payloads),
+                )
+                # The degradation has to reach the caller, not just the log.
+                # It did not, and on 2026-08-28 the model reported "已配图三张"
+                # for a post that carried none: the tool answered ``success``
+                # with ``images: 0`` and an unchanged message, which reads as
+                # a plain success to anything that is not diffing counts.  The
+                # only place that knew was a WARNING line no agent can see.
+                dropped_by_media_gate = len(image_payloads)
+                image_payloads = []
+            else:
+                return _policy_error(media_decision)
 
     try:
         auth = qzone_auth(_kw.get("onebot_call"))
@@ -636,18 +866,25 @@ def handle_qzone_publish(args: Dict[str, Any], **_kw: Any) -> str:
         # R5 early-warning: QZone accepted the post but returned no tid,
         # which is what a silent wire-format drift looks like from here.
         logger.warning("qzone_publish: accepted with no tid — check the wire format")
-    return json.dumps(
-        {
-            "success": True,
-            "tid": tid_str,
-            "qzone_url": url,
-            "uin": auth.uin,
-            "images": len(pic_infos),
-            "generated": bool(generate),
-            "message": "说说 published to QQ空间.",
-        },
-        ensure_ascii=False,
-    )
+    message = "说说 published to QQ空间."
+    if dropped_by_media_gate:
+        message = (
+            f"说说 published to QQ空间 as TEXT ONLY — the media gate refused all "
+            f"{dropped_by_media_gate} image(s), so the post carries no pictures. "
+            f"Do not describe it as illustrated."
+        )
+    payload = {
+        "success": True,
+        "tid": tid_str,
+        "qzone_url": url,
+        "uin": auth.uin,
+        "images": len(pic_infos),
+        "generated": bool(generate),
+        "message": message,
+    }
+    if dropped_by_media_gate:
+        payload["images_dropped"] = dropped_by_media_gate
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -659,8 +896,8 @@ QZONE_PUBLISH_SCHEMA = {
     "description": (
         "Publish a 说说 (status update) to the bound QQ account's QQ空间 (QZone). "
         "Supports text, attached local images, and/or one AI-generated image from "
-        "a prompt. The QQ login state is borrowed from the running NapCat / "
-        "Lagrange instance — no QQ password is needed. Returns {tid, qzone_url} on "
+        "a prompt. The QQ login state is borrowed from the running SnowLuma / "
+        "NapCat / Lagrange / go-cqhttp instance — no QQ password is needed. Returns {tid, qzone_url} on "
         "success. This posts publicly to a real social feed and cannot be undone "
         "from here; there is no delete tool. It drives unofficial QZone web "
         "endpoints, so it can fail when the login is stale or Tencent risk control "
@@ -686,10 +923,27 @@ QZONE_PUBLISH_SCHEMA = {
                 ),
             },
             "generate": {
-                "type": "string",
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
                 "description": (
-                    "Optional prompt — generates one image with the configured "
-                    "backend and attaches it. Counts toward the image limit."
+                    "Optional image prompt, or a list of prompts. Each prompt "
+                    "generates one image with the configured backend and they are "
+                    f"attached in order (max {_MAX_IMAGES} images total, shared "
+                    "with 'images'). Generation is slow — roughly 40s per image — "
+                    "so ask for several only when the post genuinely needs them."
+                ),
+            },
+            "reference_characters": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Characters appearing in this post; their deployed portraits anchor likeness. "
+                    "Select at most three. Daily Grantley posts always include grantley; "
+                    "select at most two additional classmates. The scene determines who appears."
+                    " Keys: grantley, algo, oscar, diedrich, paul, theo, julius, "
+                    "hermann, helio, shayat, bating."
                 ),
             },
             "aspect_ratio": {

@@ -1496,6 +1496,10 @@ def restore_primary_runtime(agent) -> bool:
     The gateway caches agents across messages (``_agent_cache`` in
     ``gateway/run.py``), so this restoration IS needed there too.
     """
+    from agent.fallback_recovery import keep_fallback_for_turn
+    if keep_fallback_for_turn(agent):
+        return False
+
     if not agent._fallback_activated:
         # Reset the chain index even when no fallback was activated this
         # turn.  Without this, a turn where _try_activate_fallback() was
@@ -1742,8 +1746,8 @@ def restore_primary_runtime(agent) -> bool:
         # switch_model saves reasoning_config in _primary_runtime. If the
         # snapshot predates that (older sessions), keep the current value.
         saved_reasoning = rt.get("reasoning_config")
-        if saved_reasoning is not None:
-            agent.reasoning_config = dict(saved_reasoning)
+        if "reasoning_config" in rt:
+            agent.reasoning_config = dict(saved_reasoning) if saved_reasoning is not None else None
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False

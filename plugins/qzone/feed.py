@@ -266,7 +266,7 @@ def _redact_feeds(
     def _redact_field(row: Dict[str, Any], key: str) -> None:
         value = str(row.get(key) or "")
         try:
-            decision = policy.moderate_text(value, cfg).decision
+            decision = policy.moderate_text_all(value, cfg).decision
         except Exception:
             decision = policy.classifier_failure_decision(value)
         if decision.allowed:
@@ -498,7 +498,7 @@ def handle_qzone_post_comment(args: Dict[str, Any], **_kw: Any) -> str:
     # the mention-prefixed final body, and runs before OneBot auth, the
     # dedup check, and any network call — a refusal never touches state.py.
     try:
-        comment_decision = policy.moderate_text(
+        comment_decision = policy.moderate_text_all(
             final_content, policy.resolve_config(_kw.get("policy_resolver"))
         ).decision
     except Exception:
@@ -662,7 +662,7 @@ def handle_qzone_list_friends(args: Dict[str, Any], **_kw: Any) -> str:
         for key in ("nickname", "remark"):
             value = str(friend.get(key) or "")
             try:
-                friend_decision = policy.moderate_text(value, policy_cfg).decision
+                friend_decision = policy.moderate_text_all(value, policy_cfg).decision
             except Exception:
                 friend_decision = policy.classifier_failure_decision(value)
             if not friend_decision.allowed:

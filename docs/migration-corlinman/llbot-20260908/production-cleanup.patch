@@ -1,0 +1,429 @@
+--- a/plugins/platforms/onebot/README.md
++++ b/plugins/platforms/onebot/README.md
+@@ -1,13 +1,41 @@
+-# QQ via OneBot v11 (NapCat / SnowLuma / Lagrange / go-cqhttp)
++# QQ via OneBot v11 (LLBot / NapCat / SnowLuma / Lagrange / go-cqhttp)
+ 
+ Platform name: **`onebot`**.
+ 
+-Supported backends are NapCat, SnowLuma, Lagrange and go-cqhttp. The current
+-production deployment uses NapCat; SnowLuma and the other implementations are
+-compatibility targets, not assumptions about the production runtime.
+-
+-For the production deployment, pin the complete NapCat image/runtime version
+-(currently `mlikiowa/napcat-docker:v4.18.19`) instead of tracking `latest`.
++### LuckyLilliaBot (LLBot)
++
++[LuckyLilliaBot](https://github.com/LLOneBot/LuckyLilliaBot) connects through
++the existing OneBot v11 adapter. Enable a **forward WebSocket** in LLBot, use
++`messageFormat: array`, and set the matching endpoint in the active Hermes
++profile's `config.yaml`:
++
++```yaml
++platforms:
++  onebot:
++    enabled: true
++    extra:
++      ws_url: ws://127.0.0.1:3001
++```
++
++Preserve the existing group whitelist, reply switches, persona bindings and
++debounce settings. Store the matching OneBot WebSocket token as
++`ONEBOT_ACCESS_TOKEN` in the profile's `.env`. LLBot accepts the adapter's
++`Authorization: Bearer` header and `access_token` query parameter. LLBot's
++WebUI token and its runtime [Auth Token](https://auth.luckylillia.com) are
++separate from this OneBot connection token. Keep the previous backend stopped when
++reusing its account or port, then restart the Hermes gateway after switching.
++
++LLBot reports `app_name: LLOneBot`; Hermes displays the backend as `llbot`.
++Text, mentions, quotes, images and voice use the standard OneBot path. With a
++remote backend, `enableLocalFile2Url: true` lets `get_record` include base64
++audio for voice recovery. Incoming document segments containing only a
++backend-local `file://` path are not downloaded by Hermes; they require a
++fetchable URL.
++
++Supported backends are LLBot, NapCat, SnowLuma, Lagrange and go-cqhttp.
++
++For NapCat deployments, pin a complete image/runtime version instead of
++tracking `latest`.
+ Keep both backend state
+ directories on persistent storage and do not delete them during an upgrade:
+ the QQ device state under `/app/.config/QQ` and NapCat configuration under
+--- a/plugins/platforms/onebot/adapter.py
++++ b/plugins/platforms/onebot/adapter.py
+@@ -98,7 +98,6 @@
+     set_live_client,
+ )
+ from .rate_limit import SlidingWindowCounter, TokenBucket
+-from .native_backend import NativeQQSettings, native_features
+ from .router import ChannelRouter, parse_group_keywords, looks_like_command
+ 
+ try:  # optional: scope-aware secret reads (multi-profile gateways)
+@@ -128,10 +127,10 @@
+     being treated as a known backend by accident.
+     """
+     name = str(app_name or "").casefold()
+-    if "snowluma native text bridge" in name:
+-        return "qq-native"
+     if "snowluma" in name:
+         return "snowluma"
++    if any(label in name for label in ("llonebot", "luckylilliabot", "llbot")):
++        return "llbot"
+     if "napcat" in name:
+         return "napcat"
+     if "lagrange" in name:
+@@ -1570,9 +1569,6 @@
+         extra = dict(getattr(config, "extra", {}) or {})
+         self._extra = extra
+         self._reply_batcher = reply_batch.ReplyBatcher(self)
+-        self._native_qq = NativeQQSettings.from_extra(extra)
+-        self._native_verified = False
+-        self._native_features: frozenset[str] = frozenset()
+ 
+         self.instance_id = str(extra.get("instance_id") or "default")
+         self.ws_url = str(extra.get("ws_url") or os.getenv("ONEBOT_WS_URL", "")).strip()
+@@ -2077,8 +2073,6 @@
+             "outbound_queue_depth": client.outbound_queue_depth if client else 0,
+             "self_id": self.self_id,
+             "backend": self._backend,
+-            "native_qq_enabled": self._native_qq.enabled,
+-            "native_qq_verified": self._native_verified,
+         }
+ 
+     # ------------------------------------------------------------------
+@@ -2114,8 +2108,6 @@
+                     access_token=self.access_token or None,
+                     self_ids=list(self.self_ids),
+                     token_in_query=self.token_in_query,
+-                    native_delivery=self._native_qq.enabled,
+-                    call_timeout=self._native_qq.send_timeout_seconds if self._native_qq.enabled else 15.0,
+                 ),
+                 on_self_id=self._on_self_id,
+             )
+@@ -2194,8 +2186,6 @@
+         delay inbound message handling or make an otherwise usable channel
+         fail to start.
+         """
+-        self._native_verified = False
+-        self._native_features = frozenset()
+         self._backend = "unknown"
+         self._backend_app_name = None
+         self._backend_app_version = None
+@@ -2209,18 +2199,6 @@
+             self._backend_app_name = str(data.get("app_name") or "").strip()
+             self._backend_app_version = str(data.get("app_version") or "").strip()
+             self._backend = _normalise_backend(self._backend_app_name)
+-            if self._native_qq.enabled:
+-                features = native_features(data)
+-                if features is None:
+-                    raise RuntimeError("Native QQ backend capabilities were not verified")
+-                if self._native_qq.guard:
+-                    policy_result = await client.call_action(protocol.RawAction(
+-                        "set_native_policy", {"policy": self._native_qq.guard}
+-                    ), timeout=10.0)
+-                    if not _response_ok(policy_result):
+-                        raise RuntimeError("Native QQ send policy was not accepted")
+-                self._native_features = features
+-                self._native_verified = True
+             logger.info(
+                 "OneBot: backend identified as %s (app_name=%s app_version=%s)",
+                 self._backend,
+@@ -3524,24 +3502,8 @@
+             raise OneBotTransportError("OneBot adapter is not connected")
+         return await self._client.call_action(action, timeout=timeout)
+ 
+-    async def _ensure_native_backend(self) -> bool:
+-        if not self._native_qq.enabled or self._native_verified:
+-            return True
+-        task = self._backend_identity_task
+-        if task is None or task.done():
+-            if self._client is None:
+-                return False
+-            task = self._backend_identity_task = asyncio.create_task(self._identify_backend(self._client))
+-        await asyncio.shield(task)
+-        return self._native_verified
+-
+-    def _native_supports(self, feature: str) -> bool:
+-        return not self._native_qq.enabled or feature in self._native_features
+-
+-    @staticmethod
+-    def _native_send_failure(reason: str, response: Optional[Dict[str, Any]] = None) -> SendResult:
+-        return SendResult(success=False, error=reason, error_kind="unknown", retryable=False,
+-            raw_response={"onebot_native_delivery_unconfirmed": True, **(response or {})})
++
++
+ 
+     async def _send_segments(
+         self,
+@@ -3565,17 +3527,12 @@
+         account_failure = self._account_send_guard(target, is_group)
+         if account_failure is not None:
+             return False, None, account_failure
+-        if self._native_qq.enabled:
+-            if not await self._ensure_native_backend():
+-                return False, None, self._native_send_failure("Native QQ backend is not verified; nothing was sent")
+-            if any(not isinstance(segment, (protocol.TextSegment, protocol.AtSegment, protocol.ReplySegment)) for segment in segments):
+-                return False, None, self._native_send_failure("This native QQ backend does not support the requested message segment")
+         action: protocol.Action = (
+             protocol.SendGroupMsg(group_id=target, message=segments)
+             if is_group
+             else protocol.SendPrivateMsg(user_id=target, message=segments)
+         )
+-        if not self.wait_for_send_ack and not self._native_qq.enabled:
++        if not self.wait_for_send_ack:
+             if self._client is None:
+                 return (
+                     False,
+@@ -3590,18 +3547,14 @@
+             await self._client.send_action(action)
+             return True, None, None
+         try:
+-            resp = await self._call(action, timeout=self._native_qq.send_timeout_seconds if self._native_qq.enabled else None)
++            resp = await self._call(action)
+         except (asyncio.TimeoutError, TimeoutError):
+-            if self._native_qq.enabled:
+-                return False, None, self._native_send_failure("Native QQ delivery outcome is unknown; no automatic retry")
+             logger.warning(
+                 "OneBot: no send acknowledgement within the timeout — assuming "
+                 "delivery (the backend may not echo responses)"
+             )
+             return True, None, None
+         except OneBotTransportError as exc:
+-            if self._native_qq.enabled:
+-                return False, None, self._native_send_failure("Native QQ transport interrupted; delivery was not assumed and no automatic retry")
+             return (
+                 False,
+                 None,
+@@ -3614,8 +3567,6 @@
+             )
+         if not _response_ok(resp):
+             detail = _response_error(resp)
+-            if self._native_qq.enabled:
+-                return False, None, self._native_send_failure(f"Native QQ did not confirm delivery: {detail}", resp)
+             kind = classify_onebot_error(resp.get("retcode"), detail)
+             return (
+                 False,
+@@ -3632,8 +3583,6 @@
+         mid = None
+         if isinstance(data, dict) and data.get("message_id") is not None:
+             mid = str(data["message_id"])
+-        if self._native_qq.enabled and (resp.get("retcode") != 0 or resp.get("status") != "ok" or not mid or not mid.isdigit() or int(mid) <= 0):
+-            return False, None, self._native_send_failure("Native QQ returned no valid delivery confirmation", resp)
+         return True, mid, None
+ 
+     def _reply_anchor(
+@@ -3704,8 +3653,6 @@
+         small flourish and a wall of stickers is the noise this outbound path
+         has been repeatedly reshaped to prevent.
+         """
+-        if not self._native_supports("image"):
+-            return None
+         live_extra = _gh_live_extra(self)
+         if sticker.probability_from_extra(live_extra, chat_id) <= 0:
+             return None
+@@ -3912,7 +3859,7 @@
+         # degraded path, or a non-terminal forward rejection, reaches the
+         # cap merge below.
+         delivered_as_card = False
+-        cards_enabled = self.forward_threshold > 0 and self._native_supports("forward")
++        cards_enabled = self.forward_threshold > 0
+         too_long = len(content) > self.forward_threshold
+         too_many_bubbles = (
+             self.max_bubbles_per_reply > 0 and len(bubbles) > self.max_bubbles_per_reply
+@@ -3938,16 +3885,9 @@
+                     sent_ids.append(forward_result.message_id)
+             elif (
+                 forward_result.failure is not None
+-                and (
+-                    forward_result.failure.error_kind in ("forbidden", "not_found")
+-                    or (
+-                        self._native_qq.enabled
+-                        and (forward_result.failure.raw_response or {}).get("native_qq", {}).get("not_sent") is not True
+-                    )
+-                )
++                and forward_result.failure.error_kind in ("forbidden", "not_found")
+             ):
+-                # Missing target or uncertain native delivery: chunking can
+-                # either fail again or duplicate a card already delivered.
++                # Chunking cannot recover an unavailable or forbidden target.
+                 return forward_result.failure
+             else:
+                 # Card rejected for any other reason: preserve the answer on
+@@ -4115,16 +4055,10 @@
+             else protocol.SendPrivateForwardMsg(user_id=target, messages=nodes)
+         )
+         try:
+-            resp = await self._call(action, timeout=120.0 if self._native_qq.enabled else None)
++            resp = await self._call(action)
+         except (asyncio.TimeoutError, TimeoutError):
+-            if self._native_qq.enabled:
+-                return _ForwardDeliveryResult(False, self._native_send_failure(
+-                    "Native QQ card delivery outcome is unknown; no automatic retry or text fallback"), lead_sent)
+             return _ForwardDeliveryResult(False, None, lead_sent)
+         except OneBotTransportError as exc:
+-            if self._native_qq.enabled:
+-                return _ForwardDeliveryResult(False, self._native_send_failure(
+-                    "Native QQ card transport interrupted; no automatic retry or text fallback"), lead_sent)
+             return _ForwardDeliveryResult(
+                 False,
+                 SendResult(
+@@ -4136,11 +4070,6 @@
+                 lead_sent,
+             )
+         if _response_ok(resp):
+-            if self._native_qq.enabled:
+-                mid = str((resp.get("data") or {}).get("message_id") or "")
+-                if not mid.isdigit() or int(mid) <= 0:
+-                    return _ForwardDeliveryResult(False, self._native_send_failure(
+-                        "Native QQ returned no valid card delivery confirmation", resp), lead_sent)
+             return _ForwardDeliveryResult(True, None, lead_sent,
+                 str((resp.get("data") or {}).get("message_id") or "") or None)
+         detail = _response_error(resp)
+@@ -4151,7 +4080,6 @@
+                 error=f"OneBot rejected the forward card: {detail}",
+                 error_kind=classify_onebot_error(resp.get("retcode"), detail),
+                 raw_response=resp,
+-                retryable=False if self._native_qq.enabled else None,
+             ),
+             lead_sent,
+         )
+@@ -4513,7 +4441,7 @@
+         extension answers "unsupported action", and a missing typing bubble
+         must never block the reply.
+         """
+-        if not self.typing_indicator or self._client is None or not self._native_supports("typing"):
++        if not self.typing_indicator or self._client is None:
+             return
+         try:
+             is_group, target = parse_chat_id(chat_id)
+@@ -4531,7 +4459,7 @@
+             pass
+ 
+     async def stop_typing(self, chat_id: str) -> None:
+-        if not self.typing_indicator or self._client is None or not self._native_supports("typing"):
++        if not self.typing_indicator or self._client is None:
+             return
+         try:
+             is_group, target = parse_chat_id(chat_id)
+@@ -4866,25 +4794,6 @@
+     token = (
+         os.getenv("ONEBOT_ACCESS_TOKEN") or extra.get("access_token") or ""
+     ).strip()
+-    native = NativeQQSettings.from_extra(extra)
+-    if native.enabled:
+-        if media_files:
+-            return {"error": "Native QQ standalone media delivery is not supported", "retryable": False}
+-        # Reuse the same adapter decisions and confirmed-send path used by
+-        # live conversations. Cron must not retain a fire-and-forget escape.
+-        temporary = OneBotAdapter(pconfig)
+-        client = OneBotClient(OneBotConfig(url=ws_url, access_token=token or None,
+-            token_in_query=temporary.token_in_query, native_delivery=True, call_timeout=native.send_timeout_seconds))
+-        temporary._client = client
+-        try:
+-            await client.connect()
+-            await temporary._identify_backend(client)
+-            result = await temporary.send(chat_id, message)
+-            if not result.success:
+-                return {"error": result.error, "retryable": False, **(result.raw_response or {})}
+-            return {"success": True, "platform": PLATFORM_NAME, "chat_id": chat_id, "message_id": result.message_id}
+-        finally:
+-            await client.close()
+     try:
+         is_group, target = parse_chat_id(chat_id)
+     except ValueError as exc:
+--- a/plugins/platforms/onebot/client.py
++++ b/plugins/platforms/onebot/client.py
+@@ -34,7 +34,6 @@
+ import json
+ import logging
+ import time
+-import uuid
+ from collections import deque
+ from contextlib import suppress
+ from dataclasses import dataclass, field
+@@ -57,7 +56,6 @@
+     action_to_wire,
+     parse_event,
+ )
+-from .native_backend import WRITE_ACTIONS
+ 
+ if TYPE_CHECKING:  # pragma: no cover — typing only, see the live-adapter registry
+     from .adapter import OneBotAdapter
+@@ -99,10 +97,6 @@
+     """Transient transport failure — the reconnect ladder handles it."""
+ 
+ 
+-class OneBotDeliveryUnknown(OneBotTransportError):
+-    """A native send may have crossed the socket; it must not be replayed."""
+-
+-
+ @dataclass
+ class OneBotConfig:
+     """Connection settings for :class:`OneBotClient`.
+@@ -124,7 +118,6 @@
+     token_in_query: bool = True
+     #: Seconds to wait for a ``call_action`` response envelope by default.
+     call_timeout: float = 15.0
+-    native_delivery: bool = False
+ 
+ 
+ @dataclass
+@@ -137,7 +130,6 @@
+     # times out or is cancelled after enqueueing, the writer must not later
+     # turn the abandoned request into a ghost wire action after reconnect.
+     cancelled: bool = False
+-    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+ 
+ 
+ @dataclass
+@@ -408,8 +400,6 @@
+         timeout_seconds = (
+             timeout if timeout is not None else self._cfg.call_timeout
+         )
+-        if self._cfg.native_delivery and action_to_wire(action)["action"] in WRITE_ACTIONS:
+-            timeout_seconds = max(float(timeout_seconds), self._cfg.call_timeout)
+         deadline_task = asyncio.create_task(
+             asyncio.sleep(max(0.0, float(timeout_seconds))),
+             name=f"onebot-call-deadline-{echo}",
+@@ -785,26 +775,15 @@
+                 if isinstance(action, _EchoedAction):
+                     wire = action_to_wire(action.action)
+                     wire["echo"] = action.echo
+-                    if self._cfg.native_delivery:
+-                        wire["_hermes_request_id"] = action.request_id
+                 else:
+                     wire = action_to_wire(action)
+-                    if self._cfg.native_delivery:
+-                        wire["_hermes_request_id"] = uuid.uuid4().hex
+                 payload = json.dumps(wire)
+-                native_write = self._cfg.native_delivery and wire["action"] in WRITE_ACTIONS
+                 try:
+                     await ws.send(payload)
+                 except asyncio.CancelledError:
+-                    if native_write:
+-                        self._fail_uncertain_native_action(action)
+-                    else:
+-                        self._outbound_front.appendleft(action)
++                    self._outbound_front.appendleft(action)
+                     raise
+                 except Exception as exc:  # noqa: BLE001 — classified below
+-                    if native_write:
+-                        self._fail_uncertain_native_action(action)
+-                        raise OneBotTransportError("Native QQ socket write failed; operation was not replayed") from exc
+                     inner = (
+                         action.action if isinstance(action, _EchoedAction) else action
+                     )
+@@ -835,13 +814,6 @@
+             finally:
+                 lease.release()
+ 
+-    def _fail_uncertain_native_action(self, action: Any) -> None:
+-        self._outbound_retries.pop(id(action), None)
+-        if isinstance(action, _EchoedAction):
+-            action.cancelled = True
+-            future = self._pending_responses.get(action.echo)
+-            if future is not None and not future.done():
+-                future.set_exception(OneBotDeliveryUnknown("Native QQ delivery outcome is unknown; no automatic retry"))
+ 
+ 
+ # ---------------------------------------------------------------------------

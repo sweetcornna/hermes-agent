@@ -1,0 +1,5 @@
+{"ok": false, "rolled_back_image": true, "retained_new_history": true}
+Traceback (most recent call last):
+  File "/opt/hermes-cloud/data/.deployments/search-repair-20260906/deploy_host.py", line 155, in <module>
+    assert search_registered, 'Live gateway did not confirm search tool registration'
+AssertionError: Live gateway did not confirm search tool registration

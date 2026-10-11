@@ -803,7 +803,7 @@ class TestFrameComposition:
         def boom(*a, **kw):
             raise RuntimeError("catalogue on fire")
 
-        monkeypatch.setattr(S, "offer_menu", boom)
+        monkeypatch.setattr(S, "standing_menu", boom)
         assert (
             PB.channel_prompt(
                 {**NO_BINDINGS, "sticker_probability": 1},
@@ -812,6 +812,38 @@ class TestFrameComposition:
             )
             is None
         )
+
+    def test_the_frame_is_byte_identical_across_turns_at_a_partial_rate(self):
+        """The prompt carries no dice: a per-turn roll there changed the
+        system message on ~30% of consecutive turns and discarded the cached
+        history each time. The roll lives on the send side instead."""
+        extra = {**NO_BINDINGS, "sticker_probability": 0.18}
+        frames = {
+            PB.channel_prompt(extra, chat_id=DM_PEER, is_group=False, rng=random.Random(seed))
+            for seed in range(200)
+        }
+        assert len(frames) == 1
+        (frame,) = frames
+        assert frame is not None and "## 可用表情" in frame
+
+    @pytest.mark.asyncio
+    async def test_a_lost_send_side_roll_sends_the_text_without_the_image(self, monkeypatch):
+        ad = make_adapter({"sticker_probability": 0.18})
+        monkeypatch.setattr(S, "should_offer", lambda probability, rng=None: False)
+
+        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+
+        assert image_segments(ad) == []
+        assert text_messages(ad) == ["在的"]
+
+    @pytest.mark.asyncio
+    async def test_a_won_send_side_roll_sends_the_image(self, monkeypatch):
+        ad = make_adapter({"sticker_probability": 0.18})
+        monkeypatch.setattr(S, "should_offer", lambda probability, rng=None: True)
+
+        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+
+        assert len(image_segments(ad)) == 1
 
     def test_the_menu_is_rerolled_per_turn_not_frozen_for_the_day(self):
         """``_channel_prompt`` is day-cached; the roll must sit outside it."""

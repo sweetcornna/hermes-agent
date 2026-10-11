@@ -7,7 +7,7 @@ label: QQ空间 (QZone)
 kind: backend
 description: >
   QQ空间 (QZone) tools for a QQ account already bridged through OneBot v11
-  (NapCat / Lagrange): publish a 说说, read the 好友动态 timeline, fetch one
+  (SnowLuma / NapCat / Lagrange / go-cqhttp): publish a 说说, read the 好友动态 timeline, fetch one
   post with its comments, comment or reply under a post, and list QQ friends.
 
   No credentials of its own — the logged-in session is borrowed from the
@@ -32,12 +32,13 @@ requires_env:
       Forward WebSocket of the OneBot v11 backend, e.g. ws://127.0.0.1:3001.
       ONEBOT_HTTP_URL works instead and takes precedence when both are set.
       Shared with the OneBot platform plugin; do not configure a second
-      NapCat instance.
+      OneBot backend.
 optional_env:
   - name: ONEBOT_ACCESS_TOKEN
     description: >
-      OneBot access token. NOT the NapCat WebUI token — they are separate
-      secrets and swapping them gives a permanent 401.
+      OneBot access token. NOT the NapCat WebUI token or SnowLuma WebUI
+      password — they are separate secrets and swapping them gives a
+      permanent 401.
   - name: QZONE_STATE_DIR
     description: >
       Directory holding qzone_post_log/, qzone_seen_comments/ and

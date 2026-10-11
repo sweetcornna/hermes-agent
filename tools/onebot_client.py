@@ -1,7 +1,7 @@
 """Shared OneBot v11 client for QQ-backed tools (HTTP or WebSocket).
 
-Several tools need to talk to a running OneBot v11 backend (NapCat /
-Lagrange): a QQ voice tool sends synthesized speech as a native voice
+Several tools need to talk to a running OneBot v11 backend (SnowLuma / NapCat /
+Lagrange / go-cqhttp): a QQ voice tool sends synthesized speech as a native voice
 message, and the QQ空间 (Qzone) tools borrow the logged-in QQ session —
 ``get_login_info`` for the uin and ``get_cookies`` for the browser cookie
 jar — because Qzone's own API was retired years ago.  All of them need the
@@ -21,20 +21,23 @@ Transport is picked in this order:
    calls do not justify a persistent connection of their own, and this keeps
    the API synchronous and stateless for tool handlers.
 
-Configuration (environment):
+Configuration:
 
-* ``ONEBOT_WS_URL``       — forward WebSocket URL (the usual deployment).
-* ``ONEBOT_HTTP_URL``     — HTTP API base; takes precedence when set.
-* ``ONEBOT_ACCESS_TOKEN`` — access token.  This is NOT the NapCat WebUI
-  token; they are two independent secrets and mixing them up produces a
-  permanent 401.
+* ``platforms.onebot.extra.ws_url`` / ``http_url`` in the active profile's
+  config.yaml select the backend, as they do for the gateway adapter.
+* ``ONEBOT_WS_URL`` / ``ONEBOT_HTTP_URL`` remain legacy fallbacks. HTTP wins
+  when both transports are configured at the same level.
+* ``ONEBOT_ACCESS_TOKEN`` — access token.  This is NOT the NapCat WebUI token
+  or the SnowLuma WebUI password; they are two independent secrets and mixing
+  them up produces a permanent 401.
 
-The client never retries.  A tool handler turns the raised ``RuntimeError``
-into a tool error the model can read and act on; silently retrying a
-send would risk double-posting.
+Known read-only queries can fall back after a live connection fails. Writes
+and unknown actions never fall back after dispatch: an absent response does
+not prove that the backend did not act, and retrying could double-post.
 """
 
 import asyncio
+from contextvars import copy_context
 import json
 import logging
 import os
@@ -48,27 +51,60 @@ logger = logging.getLogger(__name__)
 #: upload) may pass a larger value.
 ONEBOT_TIMEOUT = 15
 
+# Only queries used by the QQ tool family (plus connection health) are
+# eligible for retry on another transport. An unrecognized extension may
+# mutate state even if its name sounds like a query, so default to no replay.
+_READ_ONLY_ACTIONS = frozenset({
+    "get_login_info", "get_cookies", "get_friend_list", "get_ai_characters",
+    "get_status", "get_version_info",
+})
+
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 
+def _onebot_settings() -> dict:
+    """Read the active profile's platform settings without changing config."""
+    from hermes_cli.config import load_config_readonly
+
+    config = load_config_readonly()
+    platforms = config.get("platforms", {})
+    platform = platforms.get("onebot", {}) if isinstance(platforms, dict) else {}
+    if not isinstance(platform, dict):
+        return {}
+    extra = platform.get("extra", {})
+    return {**platform, **(extra if isinstance(extra, dict) else {})}
+
+
 def onebot_base_url() -> str:
     """The configured OneBot endpoint (no trailing slash).
 
-    Prefers ``ONEBOT_HTTP_URL`` and falls back to ``ONEBOT_WS_URL`` so a
-    WebSocket-only deployment configures just the one URL it has.
+    Explicit YAML wins over legacy environment settings, matching the
+    adapter. Credential-shaped legacy settings use the existing profile
+    resolver, including its .env support and multiplex isolation.
     """
-    url = os.getenv("ONEBOT_HTTP_URL", "").strip()
-    if not url:
-        url = os.getenv("ONEBOT_WS_URL", "").strip()
-    return url.rstrip("/")
+    from hermes_cli.config import get_env_value
+
+    settings = _onebot_settings()
+    for key in ("http_url", "ws_url"):
+        url = str(settings.get(key) or "").strip()
+        if url:
+            return url.rstrip("/")
+    for key in ("ONEBOT_HTTP_URL", "ONEBOT_WS_URL"):
+        url = str(get_env_value(key) or "").strip()
+        if url:
+            return url.rstrip("/")
+    return ""
 
 
 def onebot_access_token() -> str:
     """The optional OneBot access token."""
-    return os.getenv("ONEBOT_ACCESS_TOKEN", "").strip()
+    from hermes_cli.config import get_env_value
+
+    return str(_onebot_settings().get("access_token")
+               or get_env_value("ONEBOT_ACCESS_TOKEN") or "").strip()
 
 
 def onebot_configured() -> bool:
@@ -131,7 +167,8 @@ def onebot_call(
     base = onebot_base_url()
     if not base:
         raise RuntimeError(
-            "ONEBOT_WS_URL (or ONEBOT_HTTP_URL) is not configured."
+            "OneBot endpoint is not configured: set platforms.onebot.extra.ws_url "
+            "in config.yaml (or legacy ONEBOT_WS_URL / ONEBOT_HTTP_URL)."
         )
     if _is_ws_url(base):
         return _onebot_call_ws(base, action, params or {}, timeout)
@@ -169,15 +206,24 @@ def _try_live_client(action: str, params: dict, timeout: int) -> dict | None:
         # Let the caller fall back to the thread-isolated transport.
         return None
 
+    coroutine = client.call_action(RawAction(action, dict(params)), timeout=float(timeout))
+    future = None
     try:
-        future = asyncio.run_coroutine_threadsafe(
-            client.call_action(RawAction(action, dict(params)), timeout=float(timeout)),
-            loop,
-        )
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
         payload = future.result(timeout=timeout + 5)
-    except Exception as exc:  # noqa: BLE001 — fall back rather than fail hard
-        logger.debug("OneBot: live-adapter call failed (%s); using direct transport", exc)
-        return None
+    except Exception as exc:  # noqa: BLE001 — classify before considering replay
+        if future is not None:
+            future.cancel()
+        else:
+            coroutine.close()
+        if action in _READ_ONLY_ACTIONS:
+            logger.debug("OneBot: live query %s failed (%s); using direct transport",
+                         action, type(exc).__name__)
+            return None
+        raise RuntimeError(
+            f"OneBot action '{action}' has an unknown outcome after live dispatch; "
+            "it was not retried. Check the target before sending it again."
+        ) from exc
     return _check_onebot_payload(payload, action)
 
 
@@ -208,7 +254,8 @@ def _onebot_call_http(base: str, action: str, params: dict, timeout: int) -> dic
         ) from e
     except urllib.error.URLError as e:
         raise RuntimeError(
-            f"Cannot reach OneBot at {base} — is NapCat/Lagrange running? ({e.reason})"
+            f"Cannot reach OneBot at {base} — is SnowLuma/NapCat/Lagrange/"
+            f"go-cqhttp running? ({e.reason})"
         ) from e
 
     try:
@@ -239,8 +286,9 @@ def _onebot_call_ws(base: str, action: str, params: dict, timeout: int) -> dict:
     import concurrent.futures  # noqa: PLC0415 — only needed on this path
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        context = copy_context()
         future = pool.submit(
-            lambda: asyncio.run(_ws_roundtrip(base, action, params, timeout))
+            context.run, lambda: asyncio.run(_ws_roundtrip(base, action, params, timeout))
         )
         return future.result(timeout=timeout + 15)
 
@@ -295,7 +343,8 @@ async def _ws_roundtrip(base: str, action: str, params: dict, timeout: int) -> d
         raise
     except (OSError, asyncio.TimeoutError, TimeoutError) as e:
         raise RuntimeError(
-            f"Cannot reach OneBot at {base} — is NapCat/Lagrange running? ({e})"
+            f"Cannot reach OneBot at {base} — is SnowLuma/NapCat/Lagrange/"
+            f"go-cqhttp running? ({e})"
         ) from e
     except Exception as e:  # noqa: BLE001 — surface one clear message
         raise RuntimeError(f"OneBot WebSocket action '{action}' failed: {e}") from e

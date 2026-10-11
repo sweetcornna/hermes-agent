@@ -15,6 +15,7 @@ network, no NapCat. What is pinned here:
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Dict, List
@@ -350,6 +351,137 @@ class TestIntegration:
                         UploadGroupFile(group_id=1, file="base64://x"), timeout=0.3)
 
     @pytest.mark.asyncio
+    async def test_call_action_timeout_includes_waiting_for_queue_capacity(self):
+        client = OneBotClient(OneBotConfig(url="ws://127.0.0.1:1"))
+        client._outbound_q = asyncio.Queue(maxsize=1)
+        blocker = RawAction("already_queued")
+        await client._outbound_q.put(blocker)
+
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await client.call_action(RawAction("get_status"), timeout=0.01)
+
+        assert client._outbound_q.qsize() == 1
+        assert client._outbound_q.get_nowait() is blocker
+        client._outbound_q.task_done()
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
+        assert client._pending_responses == {}
+
+    @pytest.mark.asyncio
+    async def test_successful_call_settles_its_queue_lease(self):
+        client = OneBotClient(OneBotConfig(url="ws://127.0.0.1:1"))
+
+        class ImmediateReplyWs:
+            async def send(self, payload: str) -> None:
+                echo = json.loads(payload)["echo"]
+                client._pending_responses[echo].set_result(
+                    {"status": "ok", "retcode": 0, "data": {"online": True}}
+                )
+
+        writer = asyncio.create_task(client._writer_loop(ImmediateReplyWs()))
+        response = await client.call_action(RawAction("get_status"), timeout=1.0)
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
+        writer.cancel()
+        await writer
+
+        assert response["data"]["online"] is True
+        assert client._pending_responses == {}
+
+    @pytest.mark.asyncio
+    async def test_timed_out_queued_call_is_never_sent_later(self):
+        client = OneBotClient(OneBotConfig(url="ws://127.0.0.1:1"))
+
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await client.call_action(RawAction("get_status"), timeout=0.01)
+
+        assert client._outbound_q.qsize() == 1
+        assert client._pending_responses == {}
+
+        class RecordingWs:
+            def __init__(self):
+                self.sent: List[str] = []
+
+            async def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        ws = RecordingWs()
+        writer = asyncio.create_task(client._writer_loop(ws))
+        for _ in range(10):
+            if client._outbound_q.empty():
+                break
+            await asyncio.sleep(0)
+        assert client._outbound_q.empty()
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
+        writer.cancel()
+        await writer
+        assert ws.sent == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_queued_call_is_never_sent_later(self):
+        client = OneBotClient(OneBotConfig(url="ws://127.0.0.1:1"))
+        task = asyncio.create_task(
+            client.call_action(RawAction("get_status"), timeout=30.0)
+        )
+        for _ in range(10):
+            if client._outbound_q.qsize() == 1:
+                break
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client._pending_responses == {}
+
+        class NoWireWs:
+            async def send(self, _payload: str) -> None:
+                raise AssertionError("cancelled call reached the wire")
+
+        writer = asyncio.create_task(client._writer_loop(NoWireWs()))
+        for _ in range(10):
+            if client._outbound_q.empty():
+                break
+            await asyncio.sleep(0)
+        assert client._outbound_q.empty()
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
+        writer.cancel()
+        await writer
+
+    @pytest.mark.asyncio
+    async def test_close_abandons_queued_call_without_a_ghost_send(self):
+        client = OneBotClient(OneBotConfig(url="ws://127.0.0.1:1"))
+        client._outbound_q = asyncio.Queue(maxsize=1)
+        blocker = RawAction("already_queued")
+        await client._outbound_q.put(blocker)
+        loop = asyncio.get_running_loop()
+        old_handler = loop.get_exception_handler()
+        unhandled: List[Dict[str, Any]] = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        try:
+            task = asyncio.create_task(
+                client.call_action(RawAction("get_status"), timeout=30.0)
+            )
+            for _ in range(10):
+                if client._pending_responses:
+                    break
+                await asyncio.sleep(0)
+            assert client._pending_responses
+
+            await client.close()
+            with pytest.raises(OneBotTransportError):
+                await asyncio.wait_for(task, timeout=1.0)
+            assert client._pending_responses == {}
+
+            # The cancelled put task was joined: no action appears later when
+            # capacity opens, and the original queue lease can settle.
+            assert client._outbound_q.get_nowait() is blocker
+            client._outbound_q.task_done()
+            await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
+            await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+            assert unhandled == []
+        finally:
+            loop.set_exception_handler(old_handler)
+
+    @pytest.mark.asyncio
     async def test_close_fails_inflight_callers_immediately(self):
         async def handler(ws):
             try:
@@ -384,10 +516,12 @@ class TestHeartbeatStatus:
         ({"online": True}, True),
         ({"online": 1}, True),
         ({"online": False}, False),
+        ({"online": "false"}, False),
+        ({"online": "0"}, False),
         ({"app": {"online": True}}, True),
         ({"good": True}, True),
-        ({}, False),          # heartbeat with no flag at all
-        (None, False),
+        ({}, None),           # no optional flag => account state is unknown
+        (None, None),
     ])
     def test_status_shapes(self, status, expected):
         c = OneBotClient(OneBotConfig(url="ws://x"))
@@ -396,12 +530,57 @@ class TestHeartbeatStatus:
             frame["status"] = status
         c._absorb_status(frame, 1234)
         assert c.last_status_online is expected
-        assert c.last_status_online_at_ms == 1234
+        assert c.last_heartbeat_at_ms == 1234
+        assert c.last_status_online_at_ms == (1234 if expected is not None else None)
+        assert c.last_status_reason == ("heartbeat" if expected is not None else None)
 
-    def test_a_real_message_implies_the_account_is_up(self):
+    def test_a_real_message_does_not_conflate_transport_with_account(self):
         c = OneBotClient(OneBotConfig(url="ws://x"))
         c._absorb_status({"post_type": "message"}, 99)
-        assert c.last_status_online is True
+        assert c.last_status_online is None
+
+    def test_bot_offline_notice_marks_auth_required(self):
+        c = OneBotClient(OneBotConfig(url="ws://x"))
+        c._absorb_status(
+            {"post_type": "notice", "notice_type": "bot_offline"}, 99
+        )
+        assert c.last_status_online is False
+        assert c.last_status_reason == "bot_offline_notice"
+        assert c.last_status_online_at_ms == 99
+
+    def test_unknown_heartbeat_does_not_erase_known_offline_state(self):
+        c = OneBotClient(OneBotConfig(url="ws://x"))
+        c._absorb_status(
+            {
+                "post_type": "meta_event",
+                "meta_event_type": "heartbeat",
+                "status": {"online": False},
+            },
+            1,
+        )
+        c._absorb_status(
+            {"post_type": "meta_event", "meta_event_type": "heartbeat", "status": {}},
+            2,
+        )
+        assert c.last_status_online is False
+        assert c.last_status_online_at_ms == 1
+        assert c.last_status_reason == "heartbeat"
+        assert c.last_heartbeat_at_ms == 2
+
+    def test_invalid_heartbeat_only_updates_heartbeat_timestamp(self):
+        c = OneBotClient(OneBotConfig(url="ws://x"))
+        c._absorb_status(
+            {
+                "post_type": "meta_event",
+                "meta_event_type": "heartbeat",
+                "status": {"online": "maybe"},
+            },
+            9,
+        )
+        assert c.last_heartbeat_at_ms == 9
+        assert c.last_status_online is None
+        assert c.last_status_online_at_ms is None
+        assert c.last_status_reason is None
 
     def test_non_heartbeat_meta_event_leaves_status_untouched(self):
         c = OneBotClient(OneBotConfig(url="ws://x"))
@@ -456,6 +635,9 @@ class TestWriterRequeue:
             await client._writer_loop(ws)
         assert list(client._outbound_front) == [action]
         assert client._outbound_retries.get(id(action)) == 1
+        # Moving from Queue to the retry front settles the Queue lease now;
+        # the front item does not own a second task_done call.
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
 
         task = asyncio.create_task(client._writer_loop(ws))
         for _ in range(40):
@@ -470,6 +652,7 @@ class TestWriterRequeue:
         assert len(ws.sent) == 1, f"expected exactly one wire send, got {ws.sent}"
         assert json.loads(ws.sent[0])["params"]["group_id"] == 42
         assert id(action) not in client._outbound_retries
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
 
     @pytest.mark.asyncio
     async def test_two_failures_drop_the_poison_action(self):
@@ -496,6 +679,7 @@ class TestWriterRequeue:
         assert ws.sent, "the non-poison action must still land"
         assert json.loads(ws.sent[0])["params"]["group_id"] == 2
         assert id(poison) not in client._outbound_retries
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
 
     @pytest.mark.asyncio
     async def test_cancellation_requeues_without_counting_a_retry(self):
@@ -511,6 +695,18 @@ class TestWriterRequeue:
             await client._writer_loop(_CancellingWs())
         assert list(client._outbound_front) == [action]
         assert id(action) not in client._outbound_retries
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
+
+        ws = self._FailingWs(lambda _payload: False)
+        writer = asyncio.create_task(client._writer_loop(ws))
+        for _ in range(10):
+            if ws.sent:
+                break
+            await asyncio.sleep(0)
+        writer.cancel()
+        await writer
+        assert len(ws.sent) == 1
+        await asyncio.wait_for(client._outbound_q.join(), timeout=1.0)
 
 
 class TestLiveClientRegistry:

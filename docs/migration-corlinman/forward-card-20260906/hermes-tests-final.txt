@@ -1,0 +1,21 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 3 test files (~87 tests) under ['tests/gateway/test_onebot_native_backend.py', 'tests/gateway/test_onebot_bubble_cap.py', 'tests/gateway/test_onebot_reply_batch.py']; running with -j 3
+[ 11.5% |    10/~87 | ✓14 | ✗ 0] ✓ tests/gateway/test_onebot_native_backend.py (14✓, 0.8s)
+[ 86.2% |    75/~87 | ✓82 | ✗ 0] ✓ tests/gateway/test_onebot_bubble_cap.py (68✓, 1.2s)
+[100.0% |    87/~87 | ✓100 | ✗  0] ✓ tests/gateway/test_onebot_reply_batch.py (18✓, 5.1s)
+
+=== Summary: 3 files, 100 tests passed, 0 failed (100% complete) in 5.1s (3 workers) ===
+  Durations cached to test_durations.json (3 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   3
+  Total subprocess CPU-wall: 7.0s  (runner wall: 5.1s, parallelism: 3x)
+  P50: 1.15s  P90: 5.09s  P95: 5.09s  P99: 5.09s  Max: 5.09s
+  <1s: 1 files (33%)  <2s: 2 files (67%)
+  Top 10 slowest:
+      5.09s  tests/gateway/test_onebot_reply_batch.py
+      1.15s  tests/gateway/test_onebot_bubble_cap.py
+      0.77s  tests/gateway/test_onebot_native_backend.py

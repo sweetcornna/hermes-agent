@@ -19,7 +19,7 @@ from plugins.grantley.persona import (
     resolve_placeholder,
     split_persona_document,
 )
-from plugins.grantley.state import PersonaState
+from plugins.grantley.state import PersonaState, bucket_fatigue
 
 def _prompt_with_registered_grantley(
     monkeypatch,
@@ -304,24 +304,39 @@ def test_split_refuses_a_document_without_the_volatile_heading():
 
 def test_fatigue_never_renders_as_a_float():
     """Bucket labels only — the [0,1] range is an implementation detail."""
-    for value, expected in (
-        (0.0, "rested"),
-        (0.14, "rested"),
-        (0.15, "fresh"),
-        (0.39, "fresh"),
-        (0.4, "mild fatigue"),
-        (0.74, "mild fatigue"),
-        (0.75, "tired"),
-        (1.0, "tired"),
+    for value, bucket, shown in (
+        (0.0, "rested", "精神很好"),
+        (0.14, "rested", "精神很好"),
+        (0.15, "fresh", "还挺精神"),
+        (0.39, "fresh", "还挺精神"),
+        (0.4, "mild fatigue", "有点累"),
+        (0.74, "mild fatigue", "有点累"),
+        (0.75, "tired", "很累"),
+        (1.0, "tired", "很累"),
     ):
         state = PersonaState(persona_id="grantley", fatigue=value)
-        assert resolve_placeholder(state, "fatigue") == expected
+        assert bucket_fatigue(value) == bucket
+        assert resolve_placeholder(state, "fatigue") == shown
 
 
 def test_fatigue_bucket_boundaries_are_inclusive_lower():
     """0.4 reads as 'mild fatigue', not 'fresh' — ported boundary semantics."""
     state = PersonaState(persona_id="grantley", fatigue=0.4)
-    assert resolve_placeholder(state, "fatigue") == "mild fatigue"
+    assert resolve_placeholder(state, "fatigue") == "有点累"
+
+
+def test_machine_state_values_reach_the_model_in_chinese():
+    """He repeats what he reads, so storage vocabulary never reaches the block."""
+    state = PersonaState(
+        persona_id="grantley",
+        mood="neutral",
+        state_json={"life_state": "on_mission"},
+    )
+    assert resolve_placeholder(state, "mood") == "平常"
+    assert resolve_placeholder(state, "life_state") == "在外面办事"
+    custom = PersonaState(persona_id="grantley", mood="犯困", state_json={"life_state": "其他"})
+    assert resolve_placeholder(custom, "mood") == "犯困"
+    assert resolve_placeholder(custom, "life_state") == "其他"
 
 
 def test_recent_topics_render_newest_first_capped_at_five():
@@ -371,7 +386,8 @@ def test_render_placeholders_substitutes_every_key():
     out = render_placeholders(doc.volatile, state)
     assert "{{" not in out
     assert "兴奋" in out
-    assert "tired" in out
+    assert "很累" in out
+    assert "tired" not in out
     assert "剑术场训练" in out
 
 

@@ -1,0 +1,12 @@
+[
+  {
+    "version": "before",
+    "inputs": 3234,
+    "passed": true
+  },
+  {
+    "version": "after",
+    "inputs": 3234,
+    "passed": true
+  }
+]

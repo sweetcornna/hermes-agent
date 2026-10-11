@@ -1,0 +1,1 @@
+{"applied": false, "target": "-1003990634877", "checks": [{"topic": 11, "before": false, "after": true}, {"topic": 12, "before": false, "after": true}, {"topic": 13, "before": false, "after": true}, {"topic": 680, "before": false, "after": true}], "separate_topic_sessions": true, "unrelated_group_still_requires_mention": true, "no_messages_sent": true}

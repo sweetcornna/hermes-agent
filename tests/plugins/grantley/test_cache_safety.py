@@ -144,7 +144,7 @@ def test_prefetch_reflects_state_and_lands_in_api_content(provider):
 
     block = provider.prefetch("今天在干嘛")
     assert "兴奋" in block
-    assert "tired" in block  # bucketed, never the raw 0.9
+    assert "很累" in block  # bucketed, never the raw 0.9
     assert "0.9" not in block
     assert "剑术场训练" in block
 
@@ -191,6 +191,20 @@ def test_decayed_life_events_ride_the_sidecar_not_the_prompt(provider):
     block = provider.prefetch("最近怎么样")
     assert "调查山村的孩子失踪案" in block
     assert "调查山村的孩子失踪案" not in load_persona_document().stable
+    # Order carries salience; the weight itself never reaches the model.
+    assert "- 调查山村的孩子失踪案" in block
+    assert "[1.00]" not in block
+
+
+def test_the_wall_clock_rides_the_sidecar_not_the_prompt(provider, monkeypatch):
+    from plugins.grantley import life
+
+    monkeypatch.setattr(
+        life, "now_dt", lambda: datetime(2026, 10, 4, 21, 5, tzinfo=timezone.utc)
+    )
+    block = provider.prefetch("还没睡")
+    assert "现在：10月4日 周日 21:05" in block
+    assert "21:05" not in load_persona_document().stable
 
 
 def test_life_nudge_rides_the_sidecar(provider):

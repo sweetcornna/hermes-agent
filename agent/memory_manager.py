@@ -25,10 +25,11 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import logging
 import re
-import inspect
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
@@ -371,6 +372,7 @@ class MemoryManager:
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
+        self._tool_schemas: List[Dict[str, Any]] = []
         self._has_external: bool = False  # True once a non-builtin provider is added
         self._external_prefetch_timeout = (
             _EXTERNAL_PREFETCH_TIMEOUT_S
@@ -426,6 +428,30 @@ class MemoryManager:
             self._has_external = True
 
         self._providers.append(provider)
+        self._rebuild_tool_index()
+
+        logger.info(
+            "Memory provider '%s' registered (%d tools)",
+            provider.name,
+            sum(
+                1
+                for routed_provider in self._tool_to_provider.values()
+                if routed_provider is provider
+            ),
+        )
+
+    def _rebuild_tool_index(self) -> None:
+        """Freeze provider tools for the manager's initialized session.
+
+        Providers are added before ``initialize_all()`` so legacy providers
+        can expose static schemas immediately. Session-aware providers may
+        return no schemas until initialization binds their platform/chat.
+        Rebuilding once after initialization gives both shapes a stable,
+        per-AIAgent tool surface; later provider state changes cannot mutate
+        the schema/index halfway through the logical session.
+        """
+        self._tool_to_provider.clear()
+        self._tool_schemas.clear()
 
         # Core tool names are reserved — a memory provider must never register
         # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_task``).
@@ -438,36 +464,48 @@ class MemoryManager:
 
         _core_tool_names = set(_HERMES_CORE_TOOLS)
 
-        # Index tool names → provider for routing
-        for raw_schema in provider.get_tool_schemas():
-            schema = normalize_tool_schema(raw_schema)
-            if schema is None:
-                continue
-            tool_name = schema["name"]
-            if tool_name in _core_tool_names:
+        for provider in self._providers:
+            try:
+                raw_schemas = list(provider.get_tool_schemas() or [])
+            except Exception as exc:
                 logger.warning(
-                    "Memory provider '%s' tool '%s' shadows a reserved core "
-                    "tool name; registration ignored. Core tools always win — "
-                    "rename the provider's tool to something unique.",
-                    provider.name, tool_name,
-                )
-                continue
-            if tool_name and tool_name not in self._tool_to_provider:
-                self._tool_to_provider[tool_name] = provider
-            elif tool_name in self._tool_to_provider:
-                logger.warning(
-                    "Memory tool name conflict: '%s' already registered by %s, "
-                    "ignoring from %s",
-                    tool_name,
-                    self._tool_to_provider[tool_name].name,
+                    "Memory provider '%s' get_tool_schemas() failed: %s",
                     provider.name,
+                    exc,
                 )
-
-        logger.info(
-            "Memory provider '%s' registered (%d tools)",
-            provider.name,
-            len(provider.get_tool_schemas()),
-        )
+                continue
+            for raw_schema in raw_schemas:
+                normalized_schema = normalize_tool_schema(raw_schema)
+                if normalized_schema is None:
+                    logger.warning(
+                        "Memory provider '%s' returned a tool schema with no "
+                        "resolvable name; skipping (%r)",
+                        provider.name,
+                        raw_schema,
+                    )
+                    continue
+                schema = copy.deepcopy(normalized_schema)
+                tool_name = schema["name"]
+                if tool_name in _core_tool_names:
+                    logger.warning(
+                        "Memory provider '%s' tool '%s' shadows a reserved core "
+                        "tool name; registration ignored. Core tools always win — "
+                        "rename the provider's tool to something unique.",
+                        provider.name,
+                        tool_name,
+                    )
+                    continue
+                if tool_name in self._tool_to_provider:
+                    logger.warning(
+                        "Memory tool name conflict: '%s' already registered by %s, "
+                        "ignoring from %s",
+                        tool_name,
+                        self._tool_to_provider[tool_name].name,
+                        provider.name,
+                    )
+                    continue
+                self._tool_to_provider[tool_name] = provider
+                self._tool_schemas.append(schema)
 
     @property
     def providers(self) -> List[MemoryProvider]:
@@ -480,6 +518,39 @@ class MemoryManager:
             if p.name == name:
                 return p
         return None
+
+    def context_compression_policy(self) -> Dict[str, Any]:
+        """Return the active external provider's compression overrides.
+
+        Policy resolution happens after ``initialize_all()`` because a
+        provider may scope its answer to the initialized platform/chat lane.
+        Fail open to the ordinary global compression config: a persona plugin
+        must never make agent construction fail merely because its optional
+        policy is malformed or raises.
+        """
+        for provider in self._providers:
+            if provider.name == "builtin":
+                continue
+            try:
+                policy = provider.context_compression_policy()
+            except Exception as exc:
+                logger.warning(
+                    "Memory provider '%s' context compression policy failed: %s",
+                    provider.name,
+                    exc,
+                )
+                return {}
+            if policy is None:
+                return {}
+            if not isinstance(policy, dict):
+                logger.warning(
+                    "Memory provider '%s' returned a non-mapping context "
+                    "compression policy; ignoring it",
+                    provider.name,
+                )
+                return {}
+            return dict(policy)
+        return {}
 
     # -- System prompt -------------------------------------------------------
 
@@ -501,6 +572,19 @@ class MemoryManager:
                     provider.name, e,
                 )
         return "\n\n".join(blocks)
+
+    def system_prompt_stable_across_compression(self) -> bool:
+        """Whether every active external provider opts into byte retention."""
+        external = [p for p in self._providers if p.name != "builtin"]
+        if not external:
+            return False
+        for provider in external:
+            try:
+                if not provider.system_prompt_stable_across_compression():
+                    return False
+            except Exception:
+                return False
+        return True
 
     # -- Prefetch / recall ---------------------------------------------------
 
@@ -832,41 +916,13 @@ class MemoryManager:
     # -- Tools ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Collect tool schemas from all providers.
+        """Return the tool schemas frozen for this manager's session.
 
         Reserved core tool names (``clarify``, ``delegate_task``, etc.) are
-        skipped — they are rejected from the routing table in
-        :meth:`add_provider`, so the manager must not advertise a schema it
-        will never route. Built-ins always win (#40466).
+        rejected while rebuilding the routing table. A deep copy prevents an
+        injection caller from mutating the frozen snapshot.
         """
-        from toolsets import _HERMES_CORE_TOOLS
-
-        _core_tool_names = set(_HERMES_CORE_TOOLS)
-        schemas = []
-        seen = set()
-        for provider in self._providers:
-            try:
-                for raw_schema in provider.get_tool_schemas():
-                    schema = normalize_tool_schema(raw_schema)
-                    if schema is None:
-                        logger.warning(
-                            "Memory provider '%s' returned a tool schema with "
-                            "no resolvable name; skipping (%r)",
-                            provider.name, raw_schema,
-                        )
-                        continue
-                    name = schema["name"]
-                    if name in _core_tool_names:
-                        continue
-                    if name not in seen:
-                        schemas.append(schema)
-                        seen.add(name)
-            except Exception as e:
-                logger.warning(
-                    "Memory provider '%s' get_tool_schemas() failed: %s",
-                    provider.name, e,
-                )
-        return schemas
+        return copy.deepcopy(self._tool_schemas)
 
     def get_all_tool_names(self) -> set:
         """Return set of all tool names across all providers."""
@@ -1289,3 +1345,7 @@ class MemoryManager:
                     "Memory provider '%s' initialize failed: %s",
                     provider.name, e,
                 )
+        # ``add_provider`` necessarily runs before providers know the active
+        # platform/chat. Rebuild exactly after initialization, before
+        # agent_init injects schemas into the request tool surface.
+        self._rebuild_tool_index()

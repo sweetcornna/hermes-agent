@@ -57,13 +57,17 @@ __all__ = [
     "PolicyDecision",
     "TencentPolicyConfig",
     "TencentTopicCategory",
+    "COMBINED_RULESET_VERSION",
     "classifier_failure_decision",
     "classify_text",
+    "classify_text_all",
     "moderate_media",
     "moderate_text",
+    "moderate_text_all",
     "normalize_text",
     # hermes wiring (not present in the source package; see module docstring)
     "policy_error_payload",
+    "resolve_cn_config",
     "resolve_config",
 ]
 
@@ -416,3 +420,101 @@ def policy_error_payload(decision: PolicyDecision) -> dict[str, object]:
         "rule_ids": list(decision.rule_ids),
         "ruleset_version": decision.ruleset_version,
     }
+
+
+# ---------------------------------------------------------------------------
+# --- composed classifier (ported table + CN platform-risk table) ---
+#
+# Still below the port marker, so nothing above this line changed. The ported
+# ruleset has no political category, and on a mainland QQ account 涉政 content
+# is the fastest route to a permanent freeze — so `plugins/qzone/policy_cn.py`
+# adds a second, independently versioned table and these two functions run
+# both. Call sites that face QQ should prefer `moderate_text_all`;
+# `moderate_text` remains exactly as ported for anything that must reproduce
+# the source classifier's verdict on its own.
+# ---------------------------------------------------------------------------
+
+from plugins.qzone import policy_cn as _policy_cn  # noqa: E402  (after the port)
+
+COMBINED_RULESET_VERSION: Final[str] = (
+    f"{RULESET_VERSION}+{_policy_cn.CN_RULESET_VERSION}"
+)
+
+
+def resolve_cn_config(snapshot: object = None) -> "_policy_cn.CnPolicyConfig":
+    """Resolve the CN-table config, fail-safe to fully enabled.
+
+    Mirrors :func:`resolve_config`'s posture: a malformed snapshot must not
+    quietly disable the strictest half of the classifier, so anything that is
+    not a well-formed mapping yields the all-on default.
+    """
+    try:
+        return _policy_cn.CnPolicyConfig.from_mapping(snapshot)
+    except Exception:
+        return _policy_cn.CnPolicyConfig()
+
+
+def classify_text_all(
+    text: str,
+    config: TencentPolicyConfig | None = None,
+    cn_config: "_policy_cn.CnPolicyConfig | None" = None,
+) -> PolicyDecision:
+    """Classify against BOTH rule tables and merge the verdict.
+
+    Blocked if either table objects. Category codes and rule ids from the two
+    tables are concatenated (ported first, CN second) so an audit record shows
+    every rule that fired, and ``ruleset_version`` names both tables.
+
+    ``config.enabled is False`` disables the whole composed classifier, not
+    just the ported half — it is the master switch the ported module already
+    documents, and splitting its meaning here would be a trap.
+    """
+    base = classify_text(text, config)
+    cfg = config or TencentPolicyConfig()
+    if not cfg.enabled:
+        return base
+
+    cn_categories, cn_rule_ids = _policy_cn.classify_cn_text(
+        text, cn_config or _policy_cn.CnPolicyConfig()
+    )
+    if not cn_categories and not cn_rule_ids:
+        return PolicyDecision(
+            allowed=base.allowed,
+            category_codes=base.category_codes,
+            rule_ids=base.rule_ids,
+            ruleset_version=COMBINED_RULESET_VERSION,
+            message_length=base.message_length,
+            content_digest=base.content_digest,
+        )
+    return PolicyDecision(
+        allowed=False,
+        category_codes=tuple(dict.fromkeys(base.category_codes + cn_categories)),
+        rule_ids=tuple(dict.fromkeys(base.rule_ids + cn_rule_ids)),
+        ruleset_version=COMBINED_RULESET_VERSION,
+        message_length=base.message_length,
+        content_digest=base.content_digest,
+    )
+
+
+def moderate_text_all(
+    text: str,
+    config: TencentPolicyConfig | None = None,
+    cn_config: "_policy_cn.CnPolicyConfig | None" = None,
+) -> ModerationResult:
+    """``moderate_text`` over the composed classifier. Fails closed."""
+    cfg = config or TencentPolicyConfig()
+    try:
+        decision = classify_text_all(text, cfg, cn_config)
+    except Exception:
+        if not cfg.enabled:
+            decision = PolicyDecision(
+                allowed=True,
+                message_length=len(text or ""),
+                content_digest=_digest(text or ""),
+            )
+        else:
+            decision = classifier_failure_decision(text)
+    return ModerationResult(
+        decision=decision,
+        text=text if decision.allowed else QQ_SAFE_REFUSAL_TEXT,
+    )

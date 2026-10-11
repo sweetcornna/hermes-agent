@@ -138,7 +138,7 @@ class TestOutboundPublishBodyModeration:
         assert transport.calls == [], "a refused body must never be sent"
         assert "tencent_freeze_risk" in out["category_codes"]
         assert out["rule_ids"]
-        assert out["ruleset_version"] == policy.RULESET_VERSION
+        assert out["ruleset_version"] == policy.COMBINED_RULESET_VERSION
 
     def test_allowed_text_is_unaffected(self):
         out = _run_publish({"text": _CLEAN_TEXT})
@@ -175,23 +175,62 @@ class TestImageGenerationPromptModeration:
         out = _run_publish({"generate": _BLOCKED_TEXT})
         assert out["code"] == "content_policy_blocked"
 
-    def test_clean_prompt_still_hits_the_media_deny_by_default(self, monkeypatch):
-        """No media classifier is wired in this port (same as corlinman's own
-        qzone dispatcher — see C3 notes judgement-call log): moderate_media()
-        is always called with classified_safe=None, so an allowed *prompt*
-        still cannot generate an image; text-only publish proceeds instead."""
+    def test_a_clean_prompt_now_generates_and_publishes_a_safe_image(
+        self, monkeypatch
+    ):
+        """The media classifier exists now, so an allowed prompt can publish.
+
+        This is the behaviour the C3 port notes named as the prerequisite for
+        "restoring image publishing": ``moderate_media`` could always say yes
+        on ``classified_safe=True``, there was simply never anything able to
+        supply that argument. There is now.
+        """
         called = []
         monkeypatch.setattr(
-            publish, "_generate_image", lambda *a, **k: called.append(1) or (b"x", "g.png")
+            publish, "_generate_image", lambda *a, **k: called.append(1) or (_PNG, "g.png")
         )
+        monkeypatch.setattr(publish, "_classify_images_safe", lambda _p: True)
+        transport = _publish_transport()
+        out = _run_publish(
+            {"text": _CLEAN_TEXT, "generate": "一只猫"}, transport=transport
+        )
+        assert out["success"] is True
+        assert out["images"] == 1
+        assert called, "an allowed prompt must actually generate now"
+        assert any("cgi_upload_image" in c["url"] for c in transport.calls)
+
+    def test_an_unclassifiable_image_still_degrades_to_text_only(self, monkeypatch):
+        """Deny-by-default survives: no verdict still means no picture.
+
+        ``None`` is what the classifier returns when it could not reach a
+        verdict — an outage, a timeout, an unreadable file. The ported policy
+        denies that exactly as it always did, and the post degrades to text
+        rather than failing, which is corlinman's documented behaviour.
+        """
+        monkeypatch.setattr(
+            publish, "_generate_image", lambda *a, **k: (_PNG, "g.png")
+        )
+        monkeypatch.setattr(publish, "_classify_images_safe", lambda _p: None)
         transport = _publish_transport()
         out = _run_publish(
             {"text": _CLEAN_TEXT, "generate": "一只猫"}, transport=transport
         )
         assert out["success"] is True
         assert out["images"] == 0
-        assert not called, "media is denied by default, so generation is skipped"
         assert all("cgi_upload_image" not in c["url"] for c in transport.calls)
+
+    def test_an_unsafe_image_with_no_body_text_is_refused_outright(
+        self, monkeypatch
+    ):
+        """Nothing left to degrade to, so the refusal stands."""
+        monkeypatch.setattr(
+            publish, "_generate_image", lambda *a, **k: (_PNG, "g.png")
+        )
+        monkeypatch.setattr(publish, "_classify_images_safe", lambda _p: None)
+        transport = _publish_transport()
+        out = _run_publish({"generate": "一只猫"}, transport=transport)
+        assert out["code"] == "content_policy_blocked"
+        assert transport.calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +249,58 @@ class TestMediaDeniedByDefault:
         assert all("cgi_upload_image" not in c["url"] for c in transport.calls), (
             "unclassified media must never be uploaded"
         )
+
+    def test_the_classifier_is_asked_on_the_qzone_profile(self, tmp_path, monkeypatch):
+        """The 说说 lane must not be screened by the chat prompt.
+
+        They are different risk models — see ``_QZONE_SYSTEM_PROMPT``. If this
+        call ever loses its ``profile`` the gate silently reverts to reading
+        the persona's own shirtless art as pornography, which is exactly the
+        2026-08-28 failure.
+        """
+        from plugins.platforms.onebot import media_gate
+
+        seen = []
+
+        async def _judge(_path, **kwargs):
+            seen.append(kwargs.get("profile"))
+            return media_gate.MediaVerdict(safe=True, consulted=True)
+
+        monkeypatch.setattr(media_gate, "judge_media_file", _judge, raising=False)
+        assert publish._classify_images_safe([(_PNG, "a.png")]) is True
+        assert seen == ["qzone"]
+
+    def test_dropping_images_is_reported_to_the_caller(self, tmp_path):
+        """A text-only degradation must be legible without reading the log.
+
+        Regression from 2026-08-28: the gate refused all three pictures on a
+        scheduled post, the tool answered ``{"success": true, "images": 0}``
+        with the ordinary success message, and the model — which cannot see
+        the WARNING that recorded the drop — told the user it had published
+        an illustrated post.  ``images: 0`` alone is not a signal; something
+        has to *say* the pictures are gone.
+        """
+        path = tmp_path / "a.png"
+        path.write_bytes(_PNG)
+        out = _run_publish(
+            {"text": _CLEAN_TEXT, "images": [str(path)]}, transport=_publish_transport()
+        )
+        assert out["success"] is True
+        assert out["images"] == 0
+        assert out["images_dropped"] == 1
+        assert "TEXT ONLY" in out["message"]
+
+    def test_successful_image_post_carries_no_drop_marker(self, tmp_path):
+        path = tmp_path / "a.png"
+        path.write_bytes(_PNG)
+        out = _run_publish(
+            {"text": _CLEAN_TEXT, "images": [str(path)]},
+            transport=_publish_transport(),
+            policy_resolver=lambda: False,
+        )
+        assert out["images"] == 1
+        assert "images_dropped" not in out
+        assert "TEXT ONLY" not in out["message"]
 
     def test_images_with_no_text_are_refused_outright(self, tmp_path):
         path = tmp_path / "a.png"
@@ -358,7 +449,7 @@ class TestInboundFeedRedaction:
 class TestFailClosed:
     def test_publish_text_moderation_exception_is_refused(self, monkeypatch):
         monkeypatch.setattr(
-            policy, "moderate_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+            policy, "moderate_text_all", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
         )
         transport = _publish_transport()
         out = _run_publish({"text": _CLEAN_TEXT}, transport=transport)
@@ -378,7 +469,7 @@ class TestFailClosed:
 
     def test_comment_moderation_exception_is_refused(self, monkeypatch):
         monkeypatch.setattr(
-            policy, "moderate_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+            policy, "moderate_text_all", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
         )
         transport = _comment_transport()
         out = _run_comment(
@@ -392,7 +483,7 @@ class TestFailClosed:
         comment.py:411-414) — a classifier crash must still redact the
         field, not pass the original text through."""
         monkeypatch.setattr(
-            policy, "moderate_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+            policy, "moderate_text_all", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
         )
         out = json.loads(
             handle_qzone_list_feed(
@@ -475,3 +566,107 @@ class TestPolicyRefusalDoesNotPoisonRetryLedger:
             policy_resolver=lambda: False,
         )
         assert out["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Image attachment: the wire format, and generating more than one
+# ---------------------------------------------------------------------------
+
+
+class TestImagesActuallyAttach:
+    """``subrichtype`` is what makes the pictures appear.
+
+    Without it the upload succeeds, the CGI answers ``code: 0`` with a real
+    tid, and the 说说 publishes — as text only, silently dropping the images.
+    Every layer reports success; the only evidence is the rendered feed having
+    no photo node. That is exactly how it went unnoticed, so it is pinned here
+    on the form itself rather than on any status code.
+    """
+
+    def test_a_post_with_pictures_sets_subrichtype(self):
+        form = publish._build_publish_form(
+            "text", "10001", [{"albumid": "A", "lloc": "L", "sloc": "S"}]
+        )
+        assert form["richtype"] == "1"
+        assert form["subrichtype"] == "1"
+        assert form["richval"].startswith(",A,L,S,")
+
+    def test_a_text_only_post_leaves_both_empty(self):
+        form = publish._build_publish_form("text", "10001", None)
+        assert form["richtype"] == ""
+        assert form["subrichtype"] == ""
+        assert form["richval"] == ""
+
+    def test_richval_joins_several_images_with_tabs(self):
+        form = publish._build_publish_form(
+            "text",
+            "10001",
+            [{"albumid": "A1", "lloc": "L1", "sloc": "S1"},
+             {"albumid": "A2", "lloc": "L2", "sloc": "S2"}],
+        )
+        assert form["richval"].count("\t") == 1
+        assert ",A1,L1,S1," in form["richval"]
+        assert ",A2,L2,S2," in form["richval"]
+
+
+class TestGenerateAcceptsSeveralPrompts:
+    def test_a_list_of_prompts_generates_one_image_each(self, monkeypatch):
+        prompts = []
+        monkeypatch.setattr(
+            publish,
+            "_generate_image",
+            lambda p, _ar: prompts.append(p) or (_PNG, f"{len(prompts)}.png"),
+        )
+        monkeypatch.setattr(publish, "_classify_images_safe", lambda _p: True)
+        transport = _publish_transport()
+        out = _run_publish(
+            {"text": _CLEAN_TEXT, "generate": ["剑", "马", "食堂"]}, transport=transport
+        )
+        assert out["success"] is True
+        assert out["images"] == 3
+        assert prompts == ["剑", "马", "食堂"]
+
+    def test_a_bare_string_still_works(self, monkeypatch):
+        monkeypatch.setattr(
+            publish, "_generate_image", lambda *a, **k: (_PNG, "g.png")
+        )
+        monkeypatch.setattr(publish, "_classify_images_safe", lambda _p: True)
+        out = _run_publish(
+            {"text": _CLEAN_TEXT, "generate": "一只猫"}, transport=_publish_transport()
+        )
+        assert out["success"] is True
+        assert out["images"] == 1
+
+    def test_every_prompt_is_moderated_not_just_the_first(self):
+        out = _run_publish({"text": _CLEAN_TEXT, "generate": ["一只猫", _BLOCKED_TEXT]})
+        assert out["code"] == "content_policy_blocked"
+
+    def test_a_failed_generation_fails_the_whole_post(self, monkeypatch):
+        """No partial sets: a post built around three pictures is not that
+        post with two."""
+        calls = []
+
+        def _gen(prompt, _ar):
+            calls.append(prompt)
+            if len(calls) == 2:
+                raise RuntimeError("backend exploded")
+            return (_PNG, "g.png")
+
+        monkeypatch.setattr(publish, "_generate_image", _gen)
+        transport = _publish_transport()
+        out = _run_publish(
+            {"text": _CLEAN_TEXT, "generate": ["a", "b", "c"]}, transport=transport
+        )
+        assert out["code"] == "image_generate_failed"
+        assert transport.calls == []
+
+    def test_junk_in_the_list_is_rejected(self):
+        out = _run_publish({"text": _CLEAN_TEXT, "generate": ["ok", 42]})
+        assert out["code"] == "invalid_args"
+
+    def test_too_many_images_is_refused(self, monkeypatch):
+        monkeypatch.setattr(
+            publish, "_generate_image", lambda *a, **k: (_PNG, "g.png")
+        )
+        out = _run_publish({"text": _CLEAN_TEXT, "generate": ["x"] * 10})
+        assert out["code"] == "too_many_images"

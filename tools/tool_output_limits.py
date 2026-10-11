@@ -23,6 +23,7 @@ Example ``config.yaml``::
       max_bytes: 100000        # terminal output cap (chars)
       max_lines: 5000          # read_file pagination + truncation cap
       max_line_length: 2000    # per-line length cap before '... [truncated]'
+      max_result_chars: 16000  # optional: spill any larger tool result to disk
 
 The limits reader is defensive: any error (missing config file, invalid
 value type, etc.) falls back to the built-in defaults so tools never
@@ -85,6 +86,8 @@ def get_tool_output_limits() -> Dict[str, int]:
         "max_line_length": _coerce_positive_int(
             section.get("max_line_length"), DEFAULT_MAX_LINE_LENGTH
         ),
+        # No default: absent keeps the context-scaled persistence threshold.
+        "max_result_chars": _coerce_positive_int(section.get("max_result_chars"), 0) or None,
     }
     return _cached_limits
 

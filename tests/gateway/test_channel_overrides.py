@@ -14,6 +14,29 @@ from gateway.run import _get_channel_override, GatewayRunner
 from gateway.session import SessionSource
 
 
+def test_channel_turn_cap_loads_from_yaml_without_affecting_other_chats(tmp_path, monkeypatch):
+    from gateway.config import load_gateway_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "platforms:\n  discord:\n    enabled: true\n    channel_overrides:\n"
+        "      group-room:\n        max_turns: 7\n"
+    )
+    config = load_gateway_config()
+    override = _get_channel_override(config, Platform.DISCORD, "group-room")
+    assert override.iteration_limit(50) == 7
+    assert override.iteration_limit(4) == 4
+    assert _get_channel_override(config, Platform.DISCORD, "private-chat") is None
+    assert _get_channel_override(config, Platform.TELEGRAM, "group-room") is None
+    restored = ChannelOverride.from_dict(override.to_dict())
+    assert restored.iteration_limit(50) == override.iteration_limit(50)
+
+
+@pytest.mark.parametrize("value", [None, 0, -3, True, "12", 1.5])
+def test_invalid_channel_turn_cap_retains_existing_budget(value):
+    assert ChannelOverride.from_dict({"max_turns": value}).iteration_limit(20) == 20
+
+
 class TestGetChannelOverride:
 
 
@@ -152,5 +175,4 @@ class TestResolveSessionAgentRuntimePriority:
             )
         assert model == "channel/model"
         assert runtime["provider"] == "openrouter"
-
 

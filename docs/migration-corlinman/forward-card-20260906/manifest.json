@@ -1,0 +1,8 @@
+{
+  "native/kernel-operations.cjs": "5c171c3be5dceb70933f389ae80d23eae1b09a7f82d1b1bc02c89fa9c3942ba6",
+  "native/onebot/gateway.cjs": "2a0806bffeaca94ad48b9a4f64ad60500863300d7e561e69f92af54db381c277",
+  "native/onebot/send-guard.cjs": "0b588be879111432f0058b869ecd793ecf7d803b2527e5355622af8d2ddc185c",
+  "native/onebot/forward.cjs": "ccac631f3b5fb304d64672ff02a3f321c4567c455866a2d6457f74561613a52e",
+  "hermes/adapter.py": "f075820b0ea6c8a464c1daebe1b2651c1f08d32536eb64f27f0e6051ca7bce3a",
+  "hermes/native_backend.py": "643d70f63bded8032e9b23b27fc38a52e96b38720d5499b9a34c0ef39db0fd72"
+}

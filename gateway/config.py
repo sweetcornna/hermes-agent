@@ -588,7 +588,7 @@ class SessionResetPolicy:
 @dataclass
 class ChannelOverride:
     """
-    Per-channel override for model, provider, and system prompt.
+    Per-channel model, provider, prompt, and optional iteration cap.
 
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
@@ -597,6 +597,14 @@ class ChannelOverride:
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    max_turns: Optional[int] = None
+
+    def iteration_limit(self, default: int) -> int:
+        """A channel may cap its turn budget without raising the global limit."""
+        value = self.max_turns
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return min(default, value)
+        return default
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -606,6 +614,8 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.max_turns is not None:
+            out["max_turns"] = self.max_turns
         return out
 
     @classmethod
@@ -616,6 +626,7 @@ class ChannelOverride:
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            max_turns=data.get("max_turns"),
         )
 
 

@@ -426,6 +426,179 @@ class TestTranscribeLocalExtended:
 
 
 # ============================================================================
+# faster-whisper device / compute_type policy
+#
+# ``_resolve_faster_whisper_load_params`` takes the host probe's answer as an
+# ARGUMENT (``force_cpu``), so these are input→output tests of a pure
+# function — no test here needs the interpreter to believe it is on another
+# OS, and every branch runs on Linux, macOS and Windows alike.
+# ============================================================================
+
+class TestFasterWhisperLoadParamPolicy:
+    def test_unforced_host_passes_configured_values_through(self):
+        """Off the forcing hosts, config reaches ctranslate2 verbatim."""
+        from tools.transcription_tools import _resolve_faster_whisper_load_params
+
+        assert _resolve_faster_whisper_load_params(
+            "cuda", "float16", force_cpu=False
+        ) == ("cuda", "float16")
+        assert _resolve_faster_whisper_load_params(
+            "auto", "auto", force_cpu=False
+        ) == ("auto", "auto")
+
+    def test_forced_host_never_leaves_device_on_auto(self):
+        """The actual hazard: ctranslate2's device autodetection aborting.
+
+        ``device`` must be pinned to CPU on a forcing host, whatever the
+        config asked for — that is the whole safety property.
+        """
+        from tools.transcription_tools import _resolve_faster_whisper_load_params
+
+        for configured in ("auto", "", "AUTO", "cuda", "cuda:0"):
+            device, _ = _resolve_faster_whisper_load_params(
+                configured, "auto", force_cpu=True
+            )
+            assert device == "cpu", configured
+
+    def test_forced_host_honours_explicit_compute_type(self):
+        """#8319 on a forcing host: an explicit compute_type is NOT overridden.
+
+        This is the regression guard against reinstating the unconditional
+        ``compute_type="int8"`` that used to ride along with the Apple
+        Silicon device pin.  ``device`` is still forced to CPU.
+        """
+        from tools.transcription_tools import _resolve_faster_whisper_load_params
+
+        assert _resolve_faster_whisper_load_params(
+            "cpu", "float32", force_cpu=True
+        ) == ("cpu", "float32")
+        # ...even when the configured device had to be overridden.
+        assert _resolve_faster_whisper_load_params(
+            "cuda", "int16", force_cpu=True
+        ) == ("cpu", "int16")
+
+    def test_forced_host_defaults_only_auto_compute_type_to_int8(self):
+        """int8 is the default for an unset compute_type, not a blanket override."""
+        from tools.transcription_tools import _resolve_faster_whisper_load_params
+
+        assert _resolve_faster_whisper_load_params(
+            "auto", "auto", force_cpu=True
+        ) == ("cpu", "int8")
+        assert _resolve_faster_whisper_load_params(
+            "auto", "", force_cpu=True
+        ) == ("cpu", "int8")
+
+    def test_forced_host_warns_when_it_overrides_an_explicit_device(self):
+        """A discarded user setting must be announced, never silent."""
+        from tools.transcription_tools import _resolve_faster_whisper_load_params
+
+        with patch("tools.transcription_tools.logger") as mock_logger:
+            assert _resolve_faster_whisper_load_params(
+                "cuda", "auto", force_cpu=True
+            ) == ("cpu", "int8")
+        assert mock_logger.warning.call_count == 1
+        assert "stt.local.device" in mock_logger.warning.call_args[0][0]
+
+    def test_forced_host_stays_quiet_when_nothing_is_discarded(self):
+        """No warning when the config asked for CPU (or asked for nothing)."""
+        from tools.transcription_tools import _resolve_faster_whisper_load_params
+
+        with patch("tools.transcription_tools.logger") as mock_logger:
+            _resolve_faster_whisper_load_params("cpu", "float32", force_cpu=True)
+            _resolve_faster_whisper_load_params("auto", "auto", force_cpu=True)
+        assert mock_logger.warning.call_count == 0
+
+
+class TestFasterWhisperForcedCpuLoad:
+    """End-to-end loader behaviour with the host probe's answer injected."""
+
+    @staticmethod
+    def _mock_model():
+        seg = MagicMock()
+        seg.text = "safe"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+        model = MagicMock()
+        model.transcribe.return_value = ([seg], info)
+        return model
+
+    def test_forced_host_forwards_configured_compute_type(self, tmp_path):
+        """#8319 must hold on Apple Silicon too, not just on non-forcing hosts."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        mock_whisper_cls = MagicMock(return_value=self._mock_model())
+        fake_config = {"local": {"compute_type": "float32"}}
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu",
+                   return_value=True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        mock_whisper_cls.assert_called_once_with(
+            "base", device="cpu", compute_type="float32"
+        )
+
+    def test_forced_host_pins_cpu_int8_without_config(self, tmp_path):
+        """Apple Silicon/Rosetta default: CPU + int8, never device='auto'."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        mock_whisper_cls = MagicMock(return_value=self._mock_model())
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu",
+                   return_value=True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config",
+                   return_value={"local": {"device": "cuda"}}):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        mock_whisper_cls.assert_called_once_with(
+            "base", device="cpu", compute_type="int8"
+        )
+
+    def test_forced_host_retries_on_int8_when_pinned_compute_type_fails(self, tmp_path):
+        """Honouring the config can't make gateway voice less reliable.
+
+        A pinned compute_type that ctranslate2 refuses falls back to int8 —
+        once, loudly — instead of failing the transcription.
+        """
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        model = self._mock_model()
+        mock_whisper_cls = MagicMock(
+            side_effect=[ValueError("unsupported compute type float16"), model]
+        )
+        fake_config = {"local": {"device": "cpu", "compute_type": "float16"}}
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu",
+                   return_value=True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert mock_whisper_cls.call_args_list == [
+            call("base", device="cpu", compute_type="float16"),
+            call("base", device="cpu", compute_type="int8"),
+        ]
+
+
+# ============================================================================
 # Model auto-correction
 # ============================================================================
 

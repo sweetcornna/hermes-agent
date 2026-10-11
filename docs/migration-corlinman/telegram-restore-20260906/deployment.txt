@@ -1,0 +1,1 @@
+{"restored": true, "chat": "Corn Agents", "chat_id": -1003990634877, "telegram": "connected", "onebot": "connected", "started_at": "2026-09-06T15:49:57.011570694Z", "history_preserved": true, "no_messages_sent": true}

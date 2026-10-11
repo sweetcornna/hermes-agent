@@ -1,12 +1,13 @@
 """OneBot v11 forward-WebSocket client.
 
-Hermes is the **client**: it dials out to a running NapCat / Lagrange /
-go-cqhttp instance that exposes an OneBot v11 *forward* WebSocket server.
+Hermes is the **client**: it dials out to a running SnowLuma / NapCat /
+Lagrange / go-cqhttp instance that exposes an OneBot v11 *forward* WebSocket
+server.
 Nothing here binds a listening port.
 
 ::
 
-    NapCat  <── ws ──>  OneBotClient
+    SnowLuma / NapCat  <── ws ──>  OneBotClient
                             │   ▲
                     inbound │   │ outbound actions
                             ▼   │
@@ -36,7 +37,17 @@ import time
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Deque, Dict, List, Optional, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Callable,
+    Deque,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+)
 
 from .protocol import (
     Action,
@@ -45,6 +56,9 @@ from .protocol import (
     action_to_wire,
     parse_event,
 )
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, see the live-adapter registry
+    from .adapter import OneBotAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +71,9 @@ __all__ = [
     "OneBotClient",
     "OneBotConfig",
     "OneBotTransportError",
+    "get_live_adapter",
     "get_live_client",
+    "set_live_adapter",
     "set_live_client",
 ]
 
@@ -65,7 +81,7 @@ __all__ = [
 #: Backoff ladder (seconds) between reconnect attempts; the last entry repeats.
 RECONNECT_SCHEDULE: Tuple[float, ...] = (1.0, 2.0, 5.0, 10.0, 30.0)
 
-#: WebSocket protocol ping interval — matches NapCat's idle expectation.
+#: WebSocket protocol ping interval — matches the backend's idle expectation.
 PING_INTERVAL: float = 30.0
 
 #: Bounded queues.  Small on purpose: this runs on a 2 vCPU / 1.9 GB box.
@@ -110,6 +126,31 @@ class _EchoedAction:
 
     action: Action
     echo: str
+    # ``call_action`` owns the total queue+response deadline.  If that caller
+    # times out or is cancelled after enqueueing, the writer must not later
+    # turn the abandoned request into a ghost wire action after reconnect.
+    cancelled: bool = False
+
+
+@dataclass
+class _OutboundLease:
+    """One writer-owned item and the queue acknowledgement it carries.
+
+    Items popped from ``_outbound_front`` have already settled their original
+    queue lease.  Items obtained from ``asyncio.Queue.get`` own exactly one
+    ``task_done`` call, released by the writer's single outer ``finally``.
+    """
+
+    item: Any
+    source_queue: Optional[asyncio.Queue] = None
+    released: bool = False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        self.released = True
+        if self.source_queue is not None:
+            self.source_queue.task_done()
 
 
 class OneBotClient:
@@ -134,11 +175,13 @@ class OneBotClient:
         config: OneBotConfig,
         *,
         on_self_id: Optional[Callable[[int], None]] = None,
+        on_account_status: Optional[Callable[[Optional[bool], int, str], None]] = None,
     ) -> None:
         if not (config.url or "").strip():
             raise OneBotConfigError("OneBotConfig.url is empty")
         self._cfg = config
         self._on_self_id = on_self_id
+        self._on_account_status = on_account_status
         self._last_self_id: Optional[int] = None
         self._last_notified_self_id: Optional[int] = None
         self._ws: Any = None
@@ -163,6 +206,8 @@ class OneBotClient:
         self._last_event_at_ms: Optional[int] = None
         self._last_status_online: Optional[bool] = None
         self._last_status_online_at_ms: Optional[int] = None
+        self._last_status_reason: Optional[str] = None
+        self._last_heartbeat_at_ms: Optional[int] = None
         self._connected = False
 
     # ------------------------------------------------------------------
@@ -193,8 +238,8 @@ class OneBotClient:
     def last_self_id(self) -> Optional[int]:
         """Most recent non-zero ``self_id`` seen on any event.
 
-        Authoritative for mention matching: it tracks a NapCat account
-        switch without a config edit.
+        Authoritative for mention matching: it tracks a backend account switch
+        without a config edit.
         """
         return self._last_self_id
 
@@ -208,15 +253,57 @@ class OneBotClient:
         """Last ``status.online`` seen on a heartbeat.
 
         This is the ONLY signal that separates "the WebSocket is fine" from
-        "the QQ account got kicked offline" — NapCat keeps heartbeating after
-        a KickedOffLine, with this flag flipped to False.
+        "the QQ account got kicked offline" — a backend may keep heartbeating
+        after a KickedOffLine, with this flag flipped to False.
         """
         return self._last_status_online
 
     @property
     def last_status_online_at_ms(self) -> Optional[int]:
-        """Wall-clock ms of the heartbeat that set :attr:`last_status_online`."""
+        """Wall-clock ms of the latest account status sample.
+
+        This is deliberately separate from :attr:`last_event_at_ms`: a
+        WebSocket frame only proves that the OneBot endpoint is alive, not that
+        the QQ account is logged in.  The sample may come from a heartbeat, a
+        ``bot_offline`` notice, or an explicit account probe performed by the
+        adapter.
+        """
         return self._last_status_online_at_ms
+
+    @property
+    def last_status_reason(self) -> Optional[str]:
+        """How the current account-status value was learned."""
+        return self._last_status_reason
+
+    @property
+    def last_heartbeat_at_ms(self) -> Optional[int]:
+        """Wall-clock ms of the latest heartbeat frame, including unknown ones."""
+        return self._last_heartbeat_at_ms
+
+    @property
+    def account_state(self) -> str:
+        """Three-state account view, independent of :attr:`connected`."""
+        if self._last_status_online is True:
+            return "online"
+        if self._last_status_online is False:
+            return "auth_required"
+        return "unknown"
+
+    @property
+    def account_auth_required(self) -> bool:
+        """Whether an explicit account-offline signal was observed."""
+        return self._last_status_online is False
+
+    def set_account_status_callback(
+        self, callback: Optional[Callable[[Optional[bool], int, str], None]]
+    ) -> None:
+        """Install the adapter observer used for prompt send protection.
+
+        This setter keeps the constructor backward-compatible with small
+        transport doubles and integrations that only know about the original
+        ``on_self_id`` callback.
+        """
+        self._on_account_status = callback
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -308,14 +395,82 @@ class OneBotClient:
         fut: "asyncio.Future[Dict[str, Any]]" = (
             asyncio.get_running_loop().create_future()
         )
+        queued = _EchoedAction(action=action, echo=echo)
         self._pending_responses[echo] = fut
+        timeout_seconds = (
+            timeout if timeout is not None else self._cfg.call_timeout
+        )
+        deadline_task = asyncio.create_task(
+            asyncio.sleep(max(0.0, float(timeout_seconds))),
+            name=f"onebot-call-deadline-{echo}",
+        )
+        put_task = asyncio.create_task(
+            self._outbound_q.put(queued), name=f"onebot-call-enqueue-{echo}"
+        )
+        completed = False
+
+        async def cancel_and_wait(task: "asyncio.Task[Any]") -> None:
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
         try:
-            await self._outbound_q.put(_EchoedAction(action=action, echo=echo))
-            return await asyncio.wait_for(
-                fut, timeout if timeout is not None else self._cfg.call_timeout
+            # Phase one is an explicit three-way race: bounded-queue capacity,
+            # the already-registered response future (which ``close`` fails),
+            # and the total deadline.  Registering ``fut`` before starting the
+            # put keeps an extremely fast echo safe; observing it here also
+            # lets close interrupt a put blocked behind a full queue.
+            done, _pending = await asyncio.wait(
+                {put_task, fut, deadline_task},
+                return_when=asyncio.FIRST_COMPLETED,
             )
+            if fut in done:
+                queued.cancelled = True
+                await cancel_and_wait(put_task)
+                response = fut.result()
+                completed = True
+                return response
+            if deadline_task in done:
+                queued.cancelled = True
+                await cancel_and_wait(put_task)
+                raise asyncio.TimeoutError
+
+            # Consume a put exception before moving to the response phase.
+            await put_task
+            done, _pending = await asyncio.wait(
+                {fut, deadline_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if fut not in done:
+                queued.cancelled = True
+                raise asyncio.TimeoutError
+            response = fut.result()
+            completed = True
+            return response
+        except asyncio.CancelledError:
+            queued.cancelled = True
+            await cancel_and_wait(put_task)
+            raise
         finally:
             self._pending_responses.pop(echo, None)
+            if not completed:
+                # Queue removal is not supported by ``asyncio.Queue``.  Mark
+                # the exact wrapper instead; the writer skips it whether it is
+                # still in the queue or was requeued at the front after a
+                # disconnect.  Cancelling the future also prevents a late
+                # response from retaining the abandoned caller.
+                queued.cancelled = True
+                if not fut.done():
+                    fut.cancel()
+            # Both helper tasks are structured children of this call.  Always
+            # join them before returning so neither can enqueue later or emit
+            # an unobserved task exception.  Likewise consume a close exception
+            # on ``fut`` even when external cancellation won the race.
+            await cancel_and_wait(put_task)
+            await cancel_and_wait(deadline_task)
+            if fut.done() and not fut.cancelled():
+                with suppress(Exception):
+                    fut.exception()
 
     # ------------------------------------------------------------------
     # Reader loop / reconnect ladder
@@ -325,7 +480,7 @@ class OneBotClient:
         """connect → pump → on disconnect, sleep and retry.
 
         The backoff index resets after a clean disconnect and grows only
-        across consecutive failures, so a nightly NapCat restart does not
+        across consecutive failures, so a nightly backend restart does not
         push us into the 30 s tier.
         """
         attempt = 0
@@ -383,6 +538,7 @@ class OneBotClient:
             uri,
             additional_headers=headers or None,
             ping_interval=self._cfg.ping_interval,
+            max_size=2 ** 20,
         ) as ws:
             self._ws = ws
             self._connected = True
@@ -402,6 +558,76 @@ class OneBotClient:
     # Pump
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _coerce_online(value: Any) -> Optional[bool]:
+        """Decode the loose boolean dialects used by OneBot backends.
+
+        ``bool("false")`` is ``True`` in Python, so using it directly would
+        turn an explicit offline heartbeat into an online account.  Unknown
+        values remain ``None`` and are not allowed to overwrite a previous
+        known state.
+        """
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if value == 0:
+                return False
+            if value == 1:
+                return True
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized in {"true", "yes", "on", "online", "1"}:
+                return True
+            if normalized in {"false", "no", "off", "offline", "0"}:
+                return False
+        return None
+
+    def _record_account_status(
+        self,
+        online: bool,
+        now_ms: int,
+        reason: str,
+        *,
+        notify: bool = True,
+    ) -> None:
+        """Record an explicit account signal and notify the adapter observer."""
+        self._last_status_online = online
+        self._last_status_online_at_ms = now_ms
+        self._last_status_reason = reason
+        if not notify:
+            return
+        callback = self._on_account_status
+        if callback is None:
+            return
+        try:
+            callback(online, now_ms, reason)
+        except Exception as exc:  # noqa: BLE001 — observation must not break WS
+            logger.warning(
+                "OneBot: account-status observer failed (%s)", type(exc).__name__
+            )
+
+    def observe_account_status(
+        self,
+        online: bool,
+        *,
+        now_ms: Optional[int] = None,
+        reason: str = "probe",
+        notify: bool = True,
+    ) -> None:
+        """Record an account result obtained outside the event pump.
+
+        The adapter uses this for successful ``get_status`` /
+        ``get_login_info`` calls.  Keeping the write here means the client and
+        adapter expose the same last-status timestamp and reason.
+        """
+        self._record_account_status(
+            bool(online),
+            int(time.time() * 1000) if now_ms is None else now_ms,
+            reason,
+            notify=notify,
+        )
+
     def _absorb_status(self, raw: Dict[str, Any], now_ms: int) -> None:
         """Track the QQ account's online flag off the raw frame.
 
@@ -409,23 +635,30 @@ class OneBotClient:
         block's shape varies by build:
 
         * upstream OneBot v11 — ``{"status": {"online": true}}``
-        * older NapCat        — ``{"status": {"online": 1}}``
+        * older backends     — ``{"status": {"online": 1}}``
         * some builds nest it under ``status.app.online`` or only ship
           ``status.good``
         * a logged-out bot may omit the flag entirely
 
-        A missing flag is reported as ``False`` — "the WebSocket is up but
-        the account cannot answer" — rather than freezing the previous
-        ``True``, which would hide a kicked-offline bot indefinitely.
+        A missing or malformed flag is **unknown**, not offline.  The
+        distinction matters during the startup window: an endpoint that emits
+        heartbeats without the optional field must not be mistaken for a
+        logged-out account and cause every existing send to be rejected.  A
+        previously explicit ``False`` remains in force until a later explicit
+        ``True`` heartbeat or a successful account probe.
         """
-        if raw.get("post_type") != "meta_event":
-            # A real message / notice / request implies the account was up at
-            # this instant; heartbeats can lag behind traffic.
-            self._last_status_online = True
-            self._last_status_online_at_ms = now_ms
+        post_type = raw.get("post_type")
+        if post_type == "notice":
+            # NapCat emits this even though its forward WebSocket remains
+            # healthy.  It is the account-auth boundary, not a transport
+            # failure, so the adapter must not reconnect the socket.
+            notice_type = str(raw.get("notice_type") or "").strip().casefold()
+            if notice_type in {"bot_offline", "bot-offline"}:
+                self._record_account_status(False, now_ms, "bot_offline_notice")
             return
-        if raw.get("meta_event_type") != "heartbeat":
+        if post_type != "meta_event" or raw.get("meta_event_type") != "heartbeat":
             return
+        self._last_heartbeat_at_ms = now_ms
         status_block = raw.get("status")
         online_raw: Any = None
         if isinstance(status_block, dict):
@@ -436,8 +669,9 @@ class OneBotClient:
                     online_raw = inner_app.get("online")
                 if online_raw is None and "good" in status_block:
                     online_raw = status_block.get("good")
-        self._last_status_online = False if online_raw is None else bool(online_raw)
-        self._last_status_online_at_ms = now_ms
+        online = self._coerce_online(online_raw)
+        if online is not None:
+            self._record_account_status(online, now_ms, "heartbeat")
 
     def _observe_self_id(self, event: Event) -> None:
         """Record the bot's own uin, notifying the observer only on change."""
@@ -514,6 +748,7 @@ class OneBotClient:
             with suppress(asyncio.CancelledError):
                 await writer
 
+
     async def _writer_loop(self, ws: Any) -> None:
         """Drain the outbound queues, writing each action as a text frame.
 
@@ -525,50 +760,62 @@ class OneBotClient:
         without counting as a retry — it is not the action's fault.
         """
         while True:
-            if self._outbound_front:
-                action = self._outbound_front.popleft()
-            else:
-                try:
-                    action = await self._outbound_q.get()
-                except asyncio.CancelledError:
-                    return
-            if isinstance(action, _EchoedAction):
-                wire = action_to_wire(action.action)
-                wire["echo"] = action.echo
-            else:
-                wire = action_to_wire(action)
-            payload = json.dumps(wire)
             try:
-                await ws.send(payload)
+                if self._outbound_front:
+                    lease = _OutboundLease(self._outbound_front.popleft())
+                else:
+                    lease = _OutboundLease(
+                        await self._outbound_q.get(), self._outbound_q
+                    )
             except asyncio.CancelledError:
-                self._outbound_front.appendleft(action)
-                raise
-            except Exception as exc:  # noqa: BLE001 — classified below
-                inner = action.action if isinstance(action, _EchoedAction) else action
-                retries = self._outbound_retries.get(id(action), 0) + 1
-                if retries >= 2:
+                return
+            action = lease.item
+            try:
+                if isinstance(action, _EchoedAction) and action.cancelled:
                     self._outbound_retries.pop(id(action), None)
-                    logger.error(
-                        "OneBot: dropping action %s after %d failed sends (%s)",
+                    continue
+                if isinstance(action, _EchoedAction):
+                    wire = action_to_wire(action.action)
+                    wire["echo"] = action.echo
+                else:
+                    wire = action_to_wire(action)
+                payload = json.dumps(wire)
+                try:
+                    await ws.send(payload)
+                except asyncio.CancelledError:
+                    self._outbound_front.appendleft(action)
+                    raise
+                except Exception as exc:  # noqa: BLE001 — classified below
+                    inner = (
+                        action.action if isinstance(action, _EchoedAction) else action
+                    )
+                    retries = self._outbound_retries.get(id(action), 0) + 1
+                    if retries >= 2:
+                        self._outbound_retries.pop(id(action), None)
+                        logger.error(
+                            "OneBot: dropping action %s after %d failed sends (%s)",
+                            type(inner).__name__,
+                            retries,
+                            exc,
+                        )
+                        # Do not re-raise — keep draining the rest of the queue.
+                        continue
+                    self._outbound_retries[id(action)] = retries
+                    self._outbound_front.appendleft(action)
+                    logger.warning(
+                        "OneBot: send failed for %s (retry %d): %s",
                         type(inner).__name__,
                         retries,
                         exc,
                     )
-                    # Do not re-raise — keep draining the rest of the queue.
-                    continue
-                self._outbound_retries[id(action)] = retries
-                self._outbound_front.appendleft(action)
-                logger.warning(
-                    "OneBot: send failed for %s (retry %d): %s",
-                    type(inner).__name__,
-                    retries,
-                    exc,
-                )
-                # Abort the pump so the reconnect ladder runs; the requeued
-                # action goes out on the fresh socket.
-                raise OneBotTransportError(f"OneBot send failed: {exc}") from exc
-            else:
-                self._outbound_retries.pop(id(action), None)
+                    # Abort the pump so the reconnect ladder runs; the requeued
+                    # action goes out on the fresh socket.
+                    raise OneBotTransportError(f"OneBot send failed: {exc}") from exc
+                else:
+                    self._outbound_retries.pop(id(action), None)
+            finally:
+                lease.release()
+
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +825,7 @@ class OneBotClient:
 # ``tools/onebot_client.py`` exposes a SYNCHRONOUS ``onebot_call()`` for tool
 # handlers (the Qzone family borrows the QQ login state through it).  When the
 # gateway is running in this process there is already a healthy long-lived
-# connection; opening a second one would burn a NapCat connection slot and
+# connection; opening a second one would burn a backend connection slot and
 # race with the adapter.  The adapter publishes itself here on connect, and
 # the tool layer reuses it when present, falling back to its own short-lived
 # connection otherwise (CLI / cron, where no gateway runs).
@@ -607,3 +854,57 @@ def get_live_client() -> Tuple[Optional[OneBotClient], Optional[asyncio.Abstract
     if _LIVE_CLIENT is None or not _LIVE_CLIENT.connected:
         return None, None
     return _LIVE_CLIENT, _LIVE_LOOP
+
+
+# ---------------------------------------------------------------------------
+# Live-adapter registry — the same seam, one layer up
+# ---------------------------------------------------------------------------
+#
+# ``get_live_client`` hands back the raw socket, which is everything a
+# read-only action such as ``get_cookies`` needs.  An *outbound* tool needs
+# strictly more than the socket: the emergency mute, the Tencent content
+# policy and the shared recent-chatter buffer all hang off the adapter, and
+# ``voice.speak()`` is the single place that applies them in the right order.
+# A tool holding only the client would have to rebuild that list — and every
+# rebuild so far has come out two-of-three correct, which is the most
+# expensive kind of nearly-right.  So the adapter publishes itself here as
+# well, and the tool layer prefers it whenever a gateway is live, falling
+# back to the raw transport only under CLI / cron where none of that state
+# exists in the first place.
+#
+# Typed loosely on purpose: ``adapter`` imports this module, so naming
+# ``OneBotAdapter`` at runtime here would close an import cycle.  The
+# ``TYPE_CHECKING`` import above gives editors the real type without it.
+
+_LIVE_ADAPTER: Optional["OneBotAdapter"] = None
+_LIVE_ADAPTER_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_live_adapter(
+    adapter: Optional["OneBotAdapter"],
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+) -> None:
+    """Publish (or clear, with ``None``) the process-wide live adapter."""
+    global _LIVE_ADAPTER, _LIVE_ADAPTER_LOOP
+    _LIVE_ADAPTER = adapter
+    _LIVE_ADAPTER_LOOP = loop
+
+
+def get_live_adapter() -> Tuple[Optional[Any], Optional[asyncio.AbstractEventLoop]]:
+    """Return ``(adapter, loop)`` for the live adapter, or ``(None, None)``.
+
+    ``(None, None)`` is the ordinary answer under the CLI and cron, where no
+    gateway runs — callers treat it as "use your own transport", never as an
+    error.
+
+    Liveness mirrors :func:`get_live_client`: a published adapter whose socket
+    has since dropped is not usable, and handing it out would turn a clean
+    fallback into a timeout.  ``_client`` is read defensively rather than
+    imported-and-typed, for the import-cycle reason above.
+    """
+    if _LIVE_ADAPTER is None:
+        return None, None
+    client = getattr(_LIVE_ADAPTER, "_client", None)
+    if client is None or not getattr(client, "connected", False):
+        return None, None
+    return _LIVE_ADAPTER, _LIVE_ADAPTER_LOOP

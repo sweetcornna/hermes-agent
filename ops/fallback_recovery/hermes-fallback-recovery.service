@@ -1,0 +1,18 @@
+[Unit]
+Description=Probe Hermes primary model when fallback recovery is due
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+WorkingDirectory=/opt/hermes/repo
+Environment=HERMES_HOME=/opt/hermes/data
+Environment=PYTHONPATH=/opt/hermes/repo
+ExecStart=/opt/hermes/venv/bin/python -m agent.fallback_recovery
+TimeoutStartSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+

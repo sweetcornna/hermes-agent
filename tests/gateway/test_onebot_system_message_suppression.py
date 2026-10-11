@@ -318,8 +318,19 @@ class TestConversationIsNeverTouched:
         assert len(client.actions) == 1
 
 
-class TestTheCarveOuts:
-    """Marked, but delivered anyway — silence would cost more than the bubble."""
+class TestTheCarveOutsWereRemoved:
+    """These two used to be delivered anyway. The operator asked for total
+    silence on QQ ("全部静默"), so the carve-out table is now empty and both are
+    dropped like everything else.
+
+    The cost is stated rather than hidden: ``hermes update`` run from QQ will
+    now block on a prompt nobody sees, and a session-database alarm will not
+    appear in the chat. Both still reach the journal at WARNING, and the
+    operator also has Telegram. Approval requests are the one category still
+    delivered — see ``test_onebot_operational_silence.py`` for why that one is
+    different (it blocks a live turn raised by ordinary agent work, whereas an
+    update is something the operator deliberately started and is watching).
+    """
 
     UPDATE_PROMPT = (
         "⚕ **Update needs your input:**\n\n"
@@ -337,12 +348,17 @@ class TestTheCarveOuts:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("attr", ["UPDATE_PROMPT", "DB_UNAVAILABLE", "DB_CORRUPT"])
-    async def test_it_is_delivered_with_the_switch_on(self, attr):
+    async def test_it_is_now_suppressed_like_everything_else(self, attr):
         client = FakeClient()
         ad = make_adapter(client=client)
         res = await ad.send(str(DM_PEER), getattr(self, attr), metadata=dict(MARKED))
-        assert res.success is True
-        assert client.actions
+        assert A.is_suppressed_send_result(res) is True
+        assert client.actions == []
+
+    def test_the_carve_out_table_is_empty(self):
+        """The mechanism is kept, deliberately unused — re-adding an entry is a
+        one-line edit rather than a rewrite."""
+        assert A._ALWAYS_DELIVER_PATTERNS == ()
 
     @pytest.mark.asyncio
     async def test_the_update_prompt_is_the_only_form_qq_can_receive(self):
@@ -353,11 +369,13 @@ class TestTheCarveOuts:
         assert getattr(A.OneBotAdapter, "send_update_prompt", None) is None
 
     @pytest.mark.asyncio
-    async def test_the_carve_out_is_not_logged_as_dropped(self, caplog):
+    async def test_the_drop_is_recorded(self, caplog):
+        """Dropped is not silent to the operator: the journal still says a
+        message existed and did not go out."""
         ad = make_adapter()
         with caplog.at_level(logging.INFO, logger=A.logger.name):
             await ad.send(str(DM_PEER), self.UPDATE_PROMPT, metadata=dict(MARKED))
-        assert not [r for r in caplog.records if A.SUPPRESSED_REASON in r.getMessage()]
+        assert [r for r in caplog.records if A.SUPPRESSED_REASON in r.getMessage()]
 
     def test_the_carve_out_does_not_widen_into_a_text_filter(self):
         """The patterns are anchored; a status bubble that merely mentions

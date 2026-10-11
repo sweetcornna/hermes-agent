@@ -1,0 +1,1 @@
+{"updated": true, "method": "multiForwardMsgWithComment", "sha256": "d39b5792caca7542536425a1d89a75015076530b8df685ce25a4bbe647a7b222"}

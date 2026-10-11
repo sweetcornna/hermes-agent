@@ -1,0 +1,6 @@
+Failed to connect to MCP server 'agent-plugin-corlinman-search-09244279__search' (command=uv): CancelledError
+Traceback (most recent call last):
+  File "/opt/hermes/search-repair/smoke.py", line 36, in <module>
+    assert status['connected'] and status['tools'] == 1, status
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'name': 'agent-plugin-corlinman-search-09244279__search', 'transport': 'stdio', 'tools': 0, 'connected': False, 'disabled': False, 'status': 'failed', 'error': 'CancelledError'}

@@ -1,0 +1,69 @@
+[
+  {
+    "provider": "gpt",
+    "endpoint": "https://api.cornna.xyz/v1/responses",
+    "seconds": 10.0,
+    "evidence": {
+      "model": "gpt-6-astra",
+      "status": "completed",
+      "search_calls": [
+        {
+          "id": "ws_0d8fd19abe0a257e016a9e2c98d48887d0853026e4ac70215b",
+          "type": "web_search_call",
+          "status": "completed",
+          "action": {
+            "type": "search",
+            "queries": [
+              "site:docs.python.org/3/tutorial/ The Python Tutorial"
+            ],
+            "query": "site:docs.python.org/3/tutorial/ The Python Tutorial"
+          }
+        }
+      ],
+      "citations": [
+        {
+          "type": "url_citation",
+          "end_index": 475,
+          "start_index": 380,
+          "title": "The Python Tutorial — Python 3.14.7 documentation",
+          "url": "https://docs.python.org/3/tutorial/index.html?gdm=GetApp&utm_source=openai"
+        }
+      ]
+    }
+  },
+  {
+    "provider": "gemini",
+    "endpoint": "https://api.cornna.xyz/antigravity/v1beta/models/gemini-3.8-flash-high:generateContent",
+    "seconds": 12.27,
+    "evidence": {
+      "model": "gemini-3.8-flash",
+      "grounding": [
+        {
+          "queries": [
+            "Python tutorial official documentation docs python org"
+          ],
+          "sources": [
+            {
+              "web": {
+                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQG7MILylWJhI75yx7Stv1g2w1aIcDKctDPnuEpeke9y3xxoC2Y4ALCKp21I9q2SRmwVIiC4PfPXyNdq-4EFQMyzdr1sMjXpOyIbmCqbNfYJJt0A2heLgEYb1V68JWajrTZz9qk=",
+                "title": "python.org"
+              }
+            },
+            {
+              "web": {
+                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFDO_VDjXWsv52Dh1PE-YFN5dx0W0DAKM5aUnK4Z-jHPisrO0Hb-Ydf5VT7IHRHsktoYSjbz-LoV05XXbPBFOUcpP7wcG8HIYxmy_h3hO-vj9aYwUt4SwvWGW7HNvn-s2MXHgHtcFDRtOzx",
+                "title": "python.org"
+              }
+            },
+            {
+              "web": {
+                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQHk3TI45c0iuvbXvP_KT7WrHXdIXuRDEJTXvR1IRxl3aiYQXj9IVXnXS_AcJNZRq3tTt2MRD0SbZotXhRQCWUACIOE508rQg-M9fEqFr8n1KqE=",
+                "title": "python.org"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

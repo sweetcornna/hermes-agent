@@ -1325,6 +1325,14 @@ def _make_run_env(env: dict) -> dict:
 
     _inject_context_hermes_home(run_env)
 
+    # The configured Hermes timezone is the agent's wall clock; without it a
+    # shell ``date`` answers in the host's zone (a US server, for a bot that
+    # lives on Shanghai time). Mirrors execute_code. An explicit TZ in this
+    # environment's own env still wins.
+    _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
+    if _tz_name and "TZ" not in env:
+        run_env["TZ"] = _tz_name
+
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
 

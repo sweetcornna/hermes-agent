@@ -1,0 +1,213 @@
+TAP version 13
+# (node:10710) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: long Unicode/code bodies survive draft chunking without an omitted character
+ok 1 - long Unicode/code bodies survive draft chunking without an omitted character
+  ---
+  duration_ms: 18.544848
+  type: 'test'
+  ...
+# Subtest: the entire card and each real send are durable and cannot replay after reopening
+ok 2 - the entire card and each real send are durable and cannot replay after reopening
+  ---
+  duration_ms: 48.059853
+  type: 'test'
+  ...
+# Subtest: a timed-out card is not reported as safely unsent and cannot be resent
+ok 3 - a timed-out card is not reported as safely unsent and cannot be resent
+  ---
+  duration_ms: 27.195329
+  type: 'test'
+  ...
+# Subtest: a card preparation refusal proves the recipient is unsent without pausing valid text
+ok 4 - a card preparation refusal proves the recipient is unsent without pausing valid text
+  ---
+  duration_ms: 24.731897
+  type: 'test'
+  ...
+# Subtest: generated cards reject other senders and unsupported media before any draft
+ok 5 - generated cards reject other senders and unsupported media before any draft
+  ---
+  duration_ms: 0.391711
+  type: 'test'
+  ...
+# Subtest: native messages retain string IDs, deduplicate, exclude history/self/old sessions, and preserve mentions
+ok 6 - native messages retain string IDs, deduplicate, exclude history/self/old sessions, and preserve mentions
+  ---
+  duration_ms: 3.345882
+  type: 'test'
+  ...
+# Subtest: native acceptance alone does not complete a send; exact native delivery callback does
+ok 7 - native acceptance alone does not complete a send; exact native delivery callback does
+  ---
+  duration_ms: 9.058957
+  type: 'test'
+  ...
+# Subtest: outbound reply uses the original native ID and rejects a different conversation
+ok 8 - outbound reply uses the original native ID and rejects a different conversation
+  ---
+  duration_ms: 2.063942
+  type: 'test'
+  ...
+# Subtest: timeout does not resend and session changes revoke ongoing native operations
+ok 9 - timeout does not resend and session changes revoke ongoing native operations
+  ---
+  duration_ms: 6.337555
+  type: 'test'
+  ...
+# Subtest: self-check exercises the native message service without sending, unsupported media fails before send
+ok 10 - self-check exercises the native message service without sending, unsupported media fails before send
+  ---
+  duration_ms: 0.641432
+  type: 'test'
+  ...
+# Subtest: native forward uploads and confirms the correct card (correlation echo: true)
+ok 11 - native forward uploads and confirms the correct card (correlation echo: true)
+  ---
+  duration_ms: 3.903062
+  type: 'test'
+  ...
+# Subtest: native forward uploads and confirms the correct card (correlation echo: false)
+ok 12 - native forward uploads and confirms the correct card (correlation echo: false)
+  ---
+  duration_ms: 2.122524
+  type: 'test'
+  ...
+# Subtest: foreign drafts and failed card preparation never send to the recipient
+ok 13 - foreign drafts and failed card preparation never send to the recipient
+  ---
+  duration_ms: 1.986157
+  type: 'test'
+  ...
+# Subtest: account change retires an in-flight native card rather than handing it to the next account
+ok 14 - account change retires an in-flight native card rather than handing it to the next account
+  ---
+  duration_ms: 2.86458
+  type: 'test'
+  ...
+# Subtest: self-card verification reads native forwarded records and hashes the complete body without sending
+ok 15 - self-card verification reads native forwarded records and hashes the complete body without sending
+  ---
+  duration_ms: 0.819971
+  type: 'test'
+  ...
+# (node:10724) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"native-message-received"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: real authenticated WebSocket crosses kernel Unix pipes, correlates echo and forwards typed events
+ok 16 - real authenticated WebSocket crosses kernel Unix pipes, correlates echo and forwards typed events
+  ---
+  duration_ms: 76.304704
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# Subtest: gateway refuses a missing token and browser origins before accepting a client
+ok 17 - gateway refuses a missing token and browser origins before accepting a client
+  ---
+  duration_ms: 25.580874
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: forward card crosses the real authenticated gateway and replays without another draft or card
+ok 18 - forward card crosses the real authenticated gateway and replays without another draft or card
+  ---
+  duration_ms: 43.324878
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: authenticated writes never replay an uncertain native malformed outcome
+ok 19 - authenticated writes never replay an uncertain native malformed outcome
+  ---
+  duration_ms: 74.610081
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: authenticated writes never replay an uncertain native rejected outcome
+ok 20 - authenticated writes never replay an uncertain native rejected outcome
+  ---
+  duration_ms: 67.39399
+  type: 'test'
+  ...
+# [SnowLuma native OneBot] {"event":"listening"}
+# [SnowLuma native OneBot] {"event":"kernel-authenticated"}
+# [SnowLuma native OneBot] {"event":"kernel-disconnected"}
+# Subtest: authenticated writes never replay an uncertain native missing_id outcome
+ok 21 - authenticated writes never replay an uncertain native missing_id outcome
+  ---
+  duration_ms: 71.756799
+  type: 'test'
+  ...
+# (node:10736) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: completed operation survives restart; a distinct operation may intentionally send identical text
+ok 22 - completed operation survives restart; a distinct operation may intentionally send identical text
+  ---
+  duration_ms: 44.960103
+  type: 'test'
+  ...
+# Subtest: concurrent replay never emits another native operation or claims the original was not sent
+ok 23 - concurrent replay never emits another native operation or claims the original was not sent
+  ---
+  duration_ms: 34.473966
+  type: 'test'
+  ...
+# Subtest: uncertain outcome persists a pause and remains non-replayable after explicit resume
+ok 24 - uncertain outcome persists a pause and remains non-replayable after explicit resume
+  ---
+  duration_ms: 30.094537
+  type: 'test'
+  ...
+# Subtest: failed native operations trip the configured breaker and do not auto retry
+ok 25 - failed native operations trip the configured breaker and do not auto retry
+  ---
+  duration_ms: 27.131588
+  type: 'test'
+  ...
+# Subtest: minute budget persists across reopen and expires according to its rolling window
+ok 26 - minute budget persists across reopen and expires according to its rolling window
+  ---
+  duration_ms: 29.803541
+  type: 'test'
+  ...
+# Subtest: client disconnect before a paced send cancels it without touching the native sender
+ok 27 - client disconnect before a paced send cancels it without touching the native sender
+  ---
+  duration_ms: 16.486258
+  type: 'test'
+  ...
+# Subtest: only one live owner may write an account journal
+ok 28 - only one live owner may write an account journal
+  ---
+  duration_ms: 15.135572
+  type: 'test'
+  ...
+# Subtest: a crashed process leaves an uncertain record that cannot be replayed
+ok 29 - a crashed process leaves an uncertain record that cannot be replayed
+  ---
+  duration_ms: 101.818388
+  type: 'test'
+  ...
+# Subtest: an unrelated database and a symlink are refused without schema mutation
+ok 30 - an unrelated database and a symlink are refused without schema mutation
+  ---
+  duration_ms: 5.555715
+  type: 'test'
+  ...
+1..30
+# tests 30
+# suites 0
+# pass 30
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1197.326065

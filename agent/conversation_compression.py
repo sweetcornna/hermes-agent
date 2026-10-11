@@ -3336,10 +3336,21 @@ def compress_context(
         # can predate mid-session memory writes the in-memory snapshot has
         # already absorbed. External providers can change their own prompt
         # block during on_pre_compress(), so they retain the rebuild path.
+        _memory_manager = getattr(agent, "_memory_manager", None)
+        _external_prompt_stable = _memory_manager is None
+        if _memory_manager is not None:
+            try:
+                _external_prompt_stable = bool(
+                    _memory_manager.system_prompt_stable_across_compression()
+                )
+            except Exception:
+                _external_prompt_stable = False
         if (
             cached_system_prompt is not None
-            and getattr(agent, "_memory_manager", None) is None
-            and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
+            and _external_prompt_stable
+            and _cached_prompt_reflects_builtin_memory(
+                agent, cached_system_prompt
+            )
         ):
             new_system_prompt = cached_system_prompt
             agent._cached_system_prompt = cached_system_prompt

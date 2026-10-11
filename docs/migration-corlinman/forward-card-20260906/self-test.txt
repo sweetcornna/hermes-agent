@@ -1,0 +1,22 @@
+{"phase": "self-check", "result": {"native_message_service": true, "local_query": true, "rows": 1, "forward_builder_available": true, "network_send_verified": false, "live_receive_verified": true}}
+Traceback (most recent call last):
+  File "/opt/hermes/data/.deployments/forward-card-20260906/self-test.py", line 32, in <module>
+    asyncio.run(main())
+  File "/usr/local/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/opt/hermes/data/.deployments/forward-card-20260906/self-test.py", line 26, in main
+    ledger.write_text(json.dumps(attempt,ensure_ascii=False))
+  File "/usr/local/lib/python3.11/pathlib.py", line 1078, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/pathlib.py", line 1044, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/opt/hermes/data/.deployments/forward-card-20260906/self-test-attempt.json'

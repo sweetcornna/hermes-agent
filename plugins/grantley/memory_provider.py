@@ -253,11 +253,17 @@ class GrantleyMemoryProvider(MemoryProvider):
 
         try:
             state = store.load_state(self._persona_id)
-            extra: list[str] = []
+            now = life.now_dt()
+            # The system prompt only carries the conversation's start date, and a
+            # shared group session lives for weeks; without the wall clock the
+            # model guesses "大半夜" and is usually wrong.
+            extra: list[str] = [
+                f"现在：{now.month}月{now.day}日 周{'一二三四五六日'[now.weekday()]} {now:%H:%M}"
+            ]
 
             if self._emit_nudges:
                 signals = life.compute_life_signals(
-                    state.state_json.get("life"), life.now_dt()
+                    state.state_json.get("life"), now
                 )
                 nudge = signals.get("life_nudge")
                 if isinstance(nudge, dict):
@@ -274,8 +280,10 @@ class GrantleyMemoryProvider(MemoryProvider):
             )
             self._last_recall_count = len(events)
             if events:
+                # Order already carries salience; a printed weight is a number
+                # the character has no use for and sometimes reads aloud.
                 lines = ["最近还留着印象的事（越靠前越鲜明）："]
-                lines += [f"- [{e.weight:.2f}] {e.text}" for e in events]
+                lines += [f"- {e.text}" for e in events]
                 extra.append("\n".join(lines))
 
             return render_state_block(doc, state, extra_lines=extra)

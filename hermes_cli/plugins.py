@@ -2768,6 +2768,74 @@ class PluginContext:
         )
         return handle
 
+    # -- audio decoder registration ------------------------------------------
+
+    @_serialized_replacement
+    def register_audio_decoder(self, decoder) -> Optional[PluginRegistration]:
+        """Register a decoder for a codec no STT provider accepts.
+
+        ``decoder`` must be an instance of
+        :class:`agent.audio_decoder.AudioDecoder`. The transcription
+        pipeline consults the registry for every inbound file whose
+        container is not already one the built-in providers take
+        unconverted, decodes with the claiming decoder, and hands the
+        result to whichever STT provider is configured — **but only
+        when**:
+
+        1. The decoder claims no container or extension the built-in
+           pipeline already accepts (``mp3``, ``wav``, ``ogg``, …).
+           Built-ins always win — the registry rejects an overlapping
+           decoder with a warning, so no installed plugin can insert a
+           conversion hop into every voice note.
+        2. The file's own bytes select it. Unlike the TTS/STT provider
+           hooks there is no ``config.yaml`` name to match: dispatch is
+           by sniffed container id, with the filename suffix used only
+           when the header matches nothing known.
+
+        Sits *before* the STT provider hook rather than replacing it:
+        one decoder serves every provider, built-in or plugin. See
+        :mod:`agent.audio_decoder` for the contract, including the
+        temp-file ownership rule (the host removes the returned
+        ``cleanup_dir``; the decoder cleans up after itself when it
+        raises).
+        """
+        from agent.audio_decoder import AudioDecoder
+        from agent.audio_decoder_registry import (
+            register_decoder as _register_audio_decoder,
+            restore_registration,
+            snapshot_registration,
+        )
+
+        if not isinstance(decoder, AudioDecoder):
+            logger.warning(
+                "Plugin '%s' tried to register an audio decoder that does "
+                "not inherit from AudioDecoder. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        registry_name = decoder.name.strip().lower()
+        scope = self._manager.scope_key
+        previous = snapshot_registration(registry_name, scope=scope)
+        _register_audio_decoder(decoder, scope=scope)
+        registered = snapshot_registration(registry_name, scope=scope)
+        if registered is not decoder:
+            return None
+        handle = self._track_replacement(
+            "audio_decoder",
+            registry_name,
+            slot=("audio_decoder", scope, registry_name),
+            current=decoder,
+            previous=previous,
+            restore=lambda replacement: restore_registration(
+                registry_name, decoder, replacement, scope=scope
+            ),
+        )
+        logger.info(
+            "Plugin '%s' registered audio decoder: %s",
+            self.manifest.name, registry_name,
+        )
+        return handle
+
     # -- platform adapter registration ---------------------------------------
 
     @_serialized_replacement

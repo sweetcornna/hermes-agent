@@ -253,6 +253,22 @@ class TestBindingResolution:
         prompt = PB.channel_prompt({}, chat_id=GROUP, is_group=True)
         assert prompt and OWNER in prompt
 
+    def test_a_transient_empty_config_is_retried_not_kept_forever(self, monkeypatch):
+        """One failed read at startup used to drop every frame until restart."""
+        import plugins.grantley as G
+
+        answers = [{}, {"channels": CHANNELS}]
+        monkeypatch.setattr(G, "load_plugin_config", lambda: answers.pop(0))
+        clock = [1000.0]
+        monkeypatch.setattr(PB.time, "monotonic", lambda: clock[0])
+        PB.reset_state()
+
+        assert PB.channel_prompt({}, chat_id=GROUP, is_group=True) is None
+        assert PB.channel_prompt({}, chat_id=GROUP, is_group=True) is None  # inside the window
+        clock[0] += PB._EMPTY_RETRY_SECONDS + 1
+        prompt = PB.channel_prompt({}, chat_id=GROUP, is_group=True)
+        assert prompt and OWNER in prompt
+
     def test_the_documented_config_path_is_the_one_that_is_read(self):
         """Guards the fallback against a silent rename on either side."""
         import plugins.grantley as G
@@ -360,3 +376,18 @@ class TestBindingOnBothLanes:
         inbound = await ad._build_message_event(group_event("在吗"), "在吗")
         assert inbound.channel_prompt is None
         assert await PR.generate(ad, str(GROUP), "说点什么") == handler.reply
+
+
+def test_today_follows_configured_timezone(monkeypatch):
+    """The frame's day turns over at Shanghai midnight, like ``life.now_dt()``."""
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    import hermes_time
+
+    monkeypatch.setattr(
+        hermes_time,
+        "now",
+        lambda: datetime(2031, 1, 2, 8, 39, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    assert PB._today() == date(2031, 1, 2)

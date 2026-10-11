@@ -1,0 +1,86 @@
+[
+  {
+    "name": "mcp",
+    "version": "2.1.1",
+    "filename": "mcp-2.1.1-py3-none-any.whl",
+    "sha256": "1c6c31c5d6471c58db76af3af8af67f46d11d01f0a59077d0a308cbdb3d3e915",
+    "url": "https://files.pythonhosted.org/packages/50/af/8644cc5fa26a59afd2df2e98eeb19e72926887fa4b7441aba4ff661140db/mcp-2.1.1-py3-none-any.whl"
+  },
+  {
+    "name": "uv",
+    "version": "0.12.10",
+    "filename": "uv-0.12.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "f7d6248ad9f2d282fea795f248da8fa666ab382df50d8385bd98e01049440a0c",
+    "url": "https://files.pythonhosted.org/packages/f0/41/f0e14ba1f881f7126152dcaf04119b3a2bd7566ba1cac1d22834bd134cbf/uv-0.12.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+  },
+  {
+    "name": "httpx2",
+    "version": "2.12.0",
+    "filename": "httpx2-2.12.0-py3-none-any.whl",
+    "sha256": "cc8b6eecb8661c146b8f89a60e97456ee086e91a784ed31ac450c3a9e613dd36",
+    "url": "https://files.pythonhosted.org/packages/c8/95/411ba65569158e862368917aaf56597f3e5fa3b91b0502919638465a08f3/httpx2-2.12.0-py3-none-any.whl"
+  },
+  {
+    "name": "jsonschema",
+    "version": "4.26.0",
+    "filename": "jsonschema-4.26.0-py3-none-any.whl",
+    "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+    "url": "https://files.pythonhosted.org/packages/69/90/f63fb5873511e014207a475e2bb4e8b2e570d655b00ac19a9a0ca0a385ee/jsonschema-4.26.0-py3-none-any.whl"
+  },
+  {
+    "name": "mcp_types",
+    "version": "2.1.1",
+    "filename": "mcp_types-2.1.1-py3-none-any.whl",
+    "sha256": "26f9f7f03f2a5730717a5b98e2ab7eb640ac352d05a00cdc725c311864778295",
+    "url": "https://files.pythonhosted.org/packages/71/d0/242e63c510f4a17381f55b1549a3f94f5687a0595984febd2b6f87a687a0/mcp_types-2.1.1-py3-none-any.whl"
+  },
+  {
+    "name": "opentelemetry_api",
+    "version": "1.44.0",
+    "filename": "opentelemetry_api-1.44.0-py3-none-any.whl",
+    "sha256": "94b98c893a91b88657eaac1e3ba89618cdb85be6918196705354f34728b2cdef",
+    "url": "https://files.pythonhosted.org/packages/ca/6f/a04e900f465ff3221ccc395522503e2d10e79fa21f2723c8e177aae1e0d1/opentelemetry_api-1.44.0-py3-none-any.whl"
+  },
+  {
+    "name": "sse_starlette",
+    "version": "3.4.11",
+    "filename": "sse_starlette-3.4.11-py3-none-any.whl",
+    "sha256": "c7b2244bdff016fe7f64e10075e89a3e6bbf899649cc89b0fe884b5545042453",
+    "url": "https://files.pythonhosted.org/packages/98/6a/2ba3ed4a69babf3afdddf7d8314a48d87562c0a442206bbc2a1b50d5efc0/sse_starlette-3.4.11-py3-none-any.whl"
+  },
+  {
+    "name": "httpcore2",
+    "version": "2.12.0",
+    "filename": "httpcore2-2.12.0-py3-none-any.whl",
+    "sha256": "7e04258ce01013d7d615e5b910a3b27fac937d7a95038227e79652b4ba3b4ceb",
+    "url": "https://files.pythonhosted.org/packages/d2/74/d370e55600d9bcfa0d9794b0166126d49291a3d2b20c268fc98c453a4948/httpcore2-2.12.0-py3-none-any.whl"
+  },
+  {
+    "name": "truststore",
+    "version": "0.10.4",
+    "filename": "truststore-0.10.4-py3-none-any.whl",
+    "sha256": "adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981",
+    "url": "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl"
+  },
+  {
+    "name": "jsonschema_specifications",
+    "version": "2025.9.1",
+    "filename": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+    "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+    "url": "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl"
+  },
+  {
+    "name": "referencing",
+    "version": "0.37.0",
+    "filename": "referencing-0.37.0-py3-none-any.whl",
+    "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+    "url": "https://files.pythonhosted.org/packages/2c/58/ca301544e1fa93ed4f80d724bf5b194f6e4b945841c5bfd555878eea9fcb/referencing-0.37.0-py3-none-any.whl"
+  },
+  {
+    "name": "rpds_py",
+    "version": "2026.6.3",
+    "filename": "rpds_py-2026.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "9c1255b302953c86a486b81d330d5ee1d5bd937691ce271b6be0ef0e299eaab7",
+    "url": "https://files.pythonhosted.org/packages/5e/19/7e98f468bd50346faff5b10e5297374b443bfdddacc8e9fbc65984539597/rpds_py-2026.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+  }
+]

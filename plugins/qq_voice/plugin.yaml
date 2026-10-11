@@ -1,0 +1,104 @@
+name: qq_voice
+version: 1.0.0
+label: QQ 语音 (voice messages)
+# ``backend``: bundled and auto-loaded like the other service integrations
+# (qzone, spotify, image_gen). The tools gate themselves on a configured
+# OneBot endpoint via check_fn, so loading costs nothing on an install
+# without QQ — they never enter the model's schema there.
+kind: backend
+description: >
+  Voice tools for a QQ account already bridged through OneBot v11 (SnowLuma /
+  NapCat / Lagrange / go-cqhttp): send a native voice message (语音消息) to a person or a group —
+  synthesized from text with the configured TTS provider, or from an existing
+  local audio file — and post a voice message spoken by one of QQ's built-in
+  AI characters (群 AI 声聊).
+
+  No credentials of its own: the logged-in QQ session belongs to the running
+  OneBot backend. Requires ONEBOT_WS_URL or ONEBOT_HTTP_URL; the tools are
+  absent from the model's schema without one. Speech synthesis reuses the
+  existing ``tts:`` configuration in ~/.hermes/config.yaml — no separate TTS
+  credential or setting is introduced.
+
+  Capped, because a model-callable tool that runs a paid per-synthesis TTS
+  provider bills per call. Two settings, declared in config_schema below and
+  therefore type-checked at load, both applying immediately when edited, and
+  both disabled by a value of 0 or less:
+
+    plugins:
+      entries:
+        qq_voice:
+          settings:
+            max_text_chars: 200  # per-message script length; 0 = no cap
+            daily_max: 30        # qq_send_voice sends per day; 0 = no cap
+
+  ``max_text_chars`` covers both tools — an unlistenably long voice bubble is
+  a listener's problem regardless of who synthesized it. ``daily_max`` covers
+  ``qq_send_voice`` only, because that is the one that costs money;
+  ``qq_ai_voice`` is synthesized by Tencent. The budget counts local days,
+  persists at <hermes home>/plugin-data/qq_voice/voice_quota.json, is charged
+  only once a message is (or may be) in the chat, and is reported in every
+  ``qq_send_voice`` result as ``voice_quota``. These are thresholds, not
+  secrets, so they are config keys rather than environment variables.
+
+  When the Hermes gateway is running in this process the send is routed
+  through the OneBot adapter, so the emergency group mute, the Tencent
+  content policy and the recent-chatter self-recording all apply. Under the
+  CLI or cron, where none of that state exists, it falls back to the plain
+  OneBot transport. Every result that got as far as choosing a transport
+  reports which one ran under ``delivery_path``; a refusal raised before that
+  point (bad arguments, either cap, a failed synthesis) names no path,
+  because none was taken.
+
+  These drive an unofficial automation path and can fail on a stale OneBot
+  login state or under Tencent risk control. A voice message posted into a
+  real chat cannot be unsent from here, and nothing here ever retries a send
+  — a double-posted voice bubble is worse than a visible failure. The QQ AI
+  voice tool uses a OneBot v11 extension implemented by SnowLuma and NapCat;
+  Lagrange and go-cqhttp may reject ``send_group_ai_record`` and
+  ``get_ai_characters``.
+author: hermes-agent
+provides_tools:
+  - qq_send_voice
+  - qq_ai_voice
+# Read from plugins.entries.qq_voice.settings.* — the native plugin-config
+# path — by plugins/qq_voice/quota.py::resolve_limits, fresh on every tool
+# call. Declared here so the loader type-checks what an operator wrote and
+# names the offending key by its full config path; the defaults below are the
+# same constants the resolver falls back to (DEFAULT_MAX_TEXT_CHARS /
+# DEFAULT_DAILY_MAX), and a test asserts the two cannot drift apart.
+config_schema:
+  max_text_chars:
+    type: int
+    default: 200
+    description: >-
+      Longest script either voice tool will speak, in perceived characters
+      (NFC, zero-width marks excluded). Applies to qq_send_voice and
+      qq_ai_voice alike — an unlistenable voice bubble is the listener's
+      problem whoever synthesized it. 0 or less disables the cap.
+  daily_max:
+    type: int
+    default: 30
+    description: >-
+      Voice messages qq_send_voice may deliver per local day, counted at
+      <hermes home>/plugin-data/qq_voice/voice_quota.json and reset at local
+      midnight. A cost cap on paid TTS synthesis, so qq_ai_voice (which
+      Tencent synthesizes for free) is not charged against it. 0 or less
+      disables the cap.
+requires_env:
+  - name: ONEBOT_WS_URL
+    description: >
+      Forward WebSocket of the OneBot v11 backend, e.g. ws://127.0.0.1:3001.
+      ONEBOT_HTTP_URL works instead and takes precedence when both are set.
+      Shared with the OneBot platform plugin and the qzone tools; do not
+      configure a second OneBot backend.
+optional_env:
+  - name: ONEBOT_ACCESS_TOKEN
+    description: >
+      OneBot access token. NOT the NapCat WebUI token or SnowLuma WebUI
+      password — they are separate secrets and swapping them gives a
+      permanent 401.
+tags:
+  - qq
+  - voice
+  - tts
+  - onebot

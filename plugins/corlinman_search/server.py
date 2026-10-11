@@ -24,6 +24,7 @@ def _configure_backend_environment() -> None:
         "SEARCH_MCP_CACHE_DIR": os.path.join(plugin_data, "cache"),
         "SEARCH_MCP_CACHE_MAX_MB": "64",
         "SEARCH_MCP_FETCH_STRATEGY": "http",
+        "SEARCH_MCP_DEFAULT_ENGINES": '["baidu","anysearch","duckduckgo","mojeek","googlenews"]',
         "SEARCH_MCP_REQUEST_TIMEOUT": "8",
         "SEARCH_MCP_RESCUE_TIMEOUT": "6",
         "SEARCH_MCP_RATE_LIMIT_PER_MINUTE": "30",

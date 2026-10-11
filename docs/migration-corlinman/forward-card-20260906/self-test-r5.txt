@@ -1,0 +1,3 @@
+{"phase": "self-check", "result": {"native_message_service": true, "local_query": true, "rows": 1, "forward_builder_available": true, "network_send_verified": false, "forward_diagnostic": null, "live_receive_verified": false}}
+{"phase": "self-card", "status": "ok", "data": {"message_id": 180931947278034}, "native_qq": null, "body_characters": 1182, "target_is_self": true}
+{"phase": "diagnostic", "data": {"native_message_service": true, "local_query": true, "rows": 1, "forward_builder_available": true, "network_send_verified": true, "forward_diagnostic": {"method": "multiForwardMsgWithComment", "drafts": 1}, "live_receive_verified": false}}

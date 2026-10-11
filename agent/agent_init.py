@@ -20,6 +20,7 @@ preserved.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sys
@@ -31,6 +32,13 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.compression_policy import (
+    MAX_MIN_TAIL_USER_MESSAGES,
+    merge_provider_compression_policy,
+    normalize_tail_tokens,
+    normalize_threshold_ratio,
+    normalize_threshold_tokens,
+)
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
@@ -1974,9 +1982,36 @@ def init_agent(
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)
     _compression_cfg = _agent_cfg.get("compression", {})
-    if not isinstance(_compression_cfg, dict):
-        _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    # Never mutate the merged config object. The gateway may construct
+    # several persona agents from the same read-only mapping, and a provider
+    # override for one lane must not leak into another.
+    _compression_cfg, _rejected_provider_policy_fields = (
+        merge_provider_compression_policy(_compression_cfg, {})
+    )
+    if agent._memory_manager:
+        try:
+            _provider_compression_policy = (
+                agent._memory_manager.context_compression_policy()
+            )
+        except Exception:
+            _provider_compression_policy = {}
+        _compression_cfg, _rejected_provider_policy_fields = (
+            merge_provider_compression_policy(
+                _compression_cfg,
+                _provider_compression_policy,
+            )
+        )
+        if _rejected_provider_policy_fields:
+            _ra().logger.warning(
+                "Memory provider compression policy ignored invalid field(s): %s",
+                ", ".join(_rejected_provider_policy_fields),
+            )
+    compression_threshold = normalize_threshold_ratio(
+        _compression_cfg.get("threshold"),
+        allow_string=True,
+    )
+    if compression_threshold is None:
+        compression_threshold = 0.50
     # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
     # raise to 85% (the Codex backend caps both families at 272K, so the
     # default 50% would compact at ~136K — half the usable context). Gated by
@@ -2022,7 +2057,17 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
-    compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+    try:
+        _raw_target_ratio = _compression_cfg.get("target_ratio", 0.20)
+        if isinstance(_raw_target_ratio, bool):
+            raise ValueError
+        compression_target_ratio = float(_raw_target_ratio)
+        if not math.isfinite(compression_target_ratio):
+            raise ValueError
+        if not 0.01 <= compression_target_ratio <= 0.80:
+            raise ValueError
+    except (TypeError, ValueError):
+        compression_target_ratio = 0.20
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # Tail retention mode (compression.tail_mode). "legacy" (default) keeps
     # the 0.20*window verbatim tail; "lean" switches to the clamped
@@ -2051,6 +2096,10 @@ def init_agent(
             compression_min_tail_users = 1
     if compression_min_tail_users < 1:
         compression_min_tail_users = 1
+    compression_min_tail_users = min(
+        compression_min_tail_users,
+        MAX_MIN_TAIL_USER_MESSAGES,
+    )
     # Cap on compression retry rounds before a turn gives up with "max
     # compression attempts reached" (compression.max_attempts).  Hardcoding 3
     # strands sessions that legitimately need more rounds — e.g. a restart
@@ -2131,7 +2180,7 @@ def init_agent(
     if isinstance(_raw_model_thresholds, dict):
         compression_model_thresholds = {
             str(k): float(v) for k, v in _raw_model_thresholds.items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
+            if normalize_threshold_ratio(v) is not None
         }
     else:
         compression_model_thresholds = {}
@@ -2139,14 +2188,12 @@ def init_agent(
     # the ratio-based threshold and this absolute count. Clamped to the
     # model's context length at apply-time so a cap above the window is
     # a no-op (ratio-based threshold wins).
-    compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
-    if compression_threshold_tokens is not None:
-        try:
-            compression_threshold_tokens = int(compression_threshold_tokens)
-            if compression_threshold_tokens <= 0:
-                compression_threshold_tokens = None
-        except (TypeError, ValueError):
-            compression_threshold_tokens = None
+    compression_threshold_tokens = normalize_threshold_tokens(
+        _compression_cfg.get("threshold_tokens")
+    )
+    compression_tail_tokens = normalize_tail_tokens(
+        _compression_cfg.get("tail_tokens")
+    )
     # In-place compaction: when True, compress_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no
     # parent_session_id chain, no `name #N` renumber). See #38763 and
@@ -2655,6 +2702,7 @@ def init_agent(
             max_tokens=agent.max_tokens,
             model_thresholds=compression_model_thresholds,
             threshold_tokens_cap=compression_threshold_tokens,
+            tail_tokens=compression_tail_tokens,
             proactive_prune_tokens=compression_proactive_prune_tokens,
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,

@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/opt/hermes-cloud/data/.deployments/forward-card-20260906/update-kernel.py", line 35, in <module>
+    run('docker','exec',Q,'python3','-c',code)
+  File "/opt/hermes-cloud/data/.deployments/forward-card-20260906/update-kernel.py", line 4, in run
+    def run(*a):return subprocess.check_output(a,stderr=subprocess.STDOUT).decode()
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/subprocess.py", line 466, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '('docker', 'exec', 'snowluma-native-replacement-r4-20260905', 'python3', '-c', "import os,signal,time\nfrom pathlib import Path\npids=[]\nfor p in Path('/proc').iterdir():\n if not p.name.isdigit():continue\n try:a=(p/'cmdline').read_bytes().split(b'\\0')\n except:continue\n if a and a[0]==b'/opt/QQ/qq' and not any(s.startswith(b'--type=') for s in a):pids.append(int(p.name))\nassert len(pids)==1,pids\nos.kill(pids[0],signal.SIGTERM)\nfor _ in range(50):\n try:\n  if Path('/proc',str(pids[0]),'stat').read_text().rsplit(')',1)[1].strip().split()[0]=='Z':break\n except FileNotFoundError:break\n time.sleep(.2)\nelse:raise RuntimeError('QQ did not stop')\n")' returned non-zero exit status 1.

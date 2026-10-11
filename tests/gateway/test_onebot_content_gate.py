@@ -52,6 +52,7 @@ from gateway.platforms.helpers import strip_markdown
 
 from plugins.platforms.onebot import adapter as A
 from plugins.platforms.onebot import proactive as PR
+from plugins.platforms.onebot import proactive_judge as PJ
 from plugins.qzone import policy as POLICY
 
 
@@ -142,6 +143,16 @@ def _clean_module_state():
     A._reset_module_state()
     yield
     A._reset_module_state()
+
+
+@pytest.fixture(autouse=True)
+def _judge_steps_aside(monkeypatch):
+    """The proactive pre-judge has its own suite; here it lets every beat through."""
+
+    async def _speak(adapter, group, cfg):  # noqa: ANN001
+        return PJ.JudgeVerdict(speak=True, consulted=False, cause="test")
+
+    monkeypatch.setattr(PR, "judge_room", _speak)
 
 
 @pytest.fixture(autouse=True)
@@ -430,7 +441,7 @@ class TestBlockedTextIsRefused:
         raw = res.raw_response
         assert raw["category_codes"] == ["fraud_gambling_account_abuse"]
         assert raw["rule_ids"] == ["fraud.account-abuse"]
-        assert raw["ruleset_version"] == POLICY.RULESET_VERSION
+        assert raw["ruleset_version"] == POLICY.COMBINED_RULESET_VERSION
 
     @pytest.mark.asyncio
     async def test_the_audit_fields_carry_no_source_text(self):
@@ -479,7 +490,7 @@ class TestClassifierFailureFailsClosed:
         def _boom(*_a, **_kw):
             raise RuntimeError("rule table exploded")
 
-        monkeypatch.setattr(A.content_policy, "moderate_text", _boom)
+        monkeypatch.setattr(A.content_policy, "moderate_text_all", _boom)
         ad = make_adapter()
         res = await ad.send(f"g{GROUP}", BENIGN_TEXT)
         assert res.success is False, "fail-open would defeat the whole gate"
@@ -490,7 +501,7 @@ class TestClassifierFailureFailsClosed:
         def _boom(*_a, **_kw):
             raise RuntimeError("rule table exploded")
 
-        monkeypatch.setattr(A.content_policy, "moderate_text", _boom)
+        monkeypatch.setattr(A.content_policy, "moderate_text_all", _boom)
         res = await make_adapter().send(f"g{GROUP}", BENIGN_TEXT)
         assert res.raw_response["category_codes"] == ["classifier_failure"]
         assert res.raw_response["rule_ids"] == ["policy.classifier-failure"]
@@ -503,7 +514,7 @@ class TestClassifierFailureFailsClosed:
         def _boom(*_a, **_kw):
             raise RuntimeError("rule table exploded")
 
-        monkeypatch.setattr(A.content_policy, "moderate_text", _boom)
+        monkeypatch.setattr(A.content_policy, "moderate_text_all", _boom)
         res = await make_adapter().send(f"g{GROUP}", BENIGN_TEXT)
         assert res.error_kind == "unknown"
         assert res.retryable is False
@@ -515,7 +526,7 @@ class TestClassifierFailureFailsClosed:
         def _boom(*_a, **_kw):
             raise RuntimeError("rule table exploded")
 
-        monkeypatch.setattr(A.content_policy, "moderate_text", _boom)
+        monkeypatch.setattr(A.content_policy, "moderate_text_all", _boom)
         res = await make_adapter().send(str(DM_PEER), BENIGN_TEXT)
         assert res.success is False
 
@@ -572,13 +583,13 @@ class _SpyPolicy:
         self.calls: List[str] = []
 
     def install(self, monkeypatch):
-        real = POLICY.moderate_text
+        real = POLICY.moderate_text_all
 
         def _spy(text, config=None):
             self.calls.append(text)
             return real(text, config)
 
-        monkeypatch.setattr(A.content_policy, "moderate_text", _spy)
+        monkeypatch.setattr(A.content_policy, "moderate_text_all", _spy)
         return self
 
 
@@ -750,3 +761,65 @@ class TestProactiveLaneDegradesToASkippedBeat:
         sent = wire_text(ad)
         assert sent, "the beat should have posted"
         assert "###" not in sent and "**" not in sent
+
+
+# ---------------------------------------------------------------------------
+# The CN platform-risk table reaches the wire gate too
+#
+# Everything above exercises the *ported* table (fraud.account-abuse). These
+# prove the second table added in plugins/qzone/policy_cn.py is genuinely on
+# the send path — the adapter calls moderate_text_all, so a 涉政 reply is
+# refused with the same shape as any other policy refusal, and — the half
+# that matters day to day — an ordinary sentence mentioning the same nouns
+# still goes out.
+# ---------------------------------------------------------------------------
+
+#: Fires ``politics.leader-attack`` in the CN table and nothing in the ported one.
+CN_BLOCKED_TEXT = "打倒习近平"
+#: Same nouns, no attack stance — must reach the wire.
+CN_BENIGN_TEXT = "习近平主席出席了今天的会议"
+
+
+def test_the_cn_fixtures_are_what_this_section_claims():
+    """Guard the guard, same as ``test_the_blocked_fixture_is_actually_blocked``."""
+    cfg = POLICY.resolve_config(None)
+    assert POLICY.moderate_text(CN_BLOCKED_TEXT, cfg).decision.allowed is True, (
+        "must be invisible to the ported table, or this section proves nothing"
+    )
+    assert POLICY.moderate_text_all(CN_BLOCKED_TEXT, cfg).decision.allowed is False
+    assert POLICY.moderate_text_all(CN_BENIGN_TEXT, cfg).decision.allowed is True
+
+
+class TestCnTableIsOnTheSendPath:
+    @pytest.mark.asyncio
+    async def test_a_group_reply_is_refused(self):
+        client = FakeClient()
+        res = await make_adapter(client=client).send(f"g{GROUP}", CN_BLOCKED_TEXT)
+        assert A.is_policy_blocked_send_result(res) is True
+        assert client.actions == [], "a refused reply must never reach the wire"
+
+    @pytest.mark.asyncio
+    async def test_a_dm_is_refused_too(self):
+        client = FakeClient()
+        res = await make_adapter(client=client).send(str(DM_PEER), CN_BLOCKED_TEXT)
+        assert A.is_policy_blocked_send_result(res) is True
+        assert client.actions == []
+
+    @pytest.mark.asyncio
+    async def test_the_audit_fields_name_the_cn_rule(self):
+        res = await make_adapter().send(f"g{GROUP}", CN_BLOCKED_TEXT)
+        raw = res.raw_response
+        assert raw["category_codes"] == ["political_attack"]
+        assert raw["rule_ids"] == ["politics.leader-attack"]
+        assert raw["ruleset_version"] == POLICY.COMBINED_RULESET_VERSION
+        assert CN_BLOCKED_TEXT not in repr(raw), "audit fields must carry no source text"
+
+    @pytest.mark.asyncio
+    async def test_the_same_nouns_without_an_attack_stance_still_send(self):
+        """The expensive half of the guarantee: precision. If this ever fails,
+        the bot has started silently refusing ordinary conversation."""
+        client = FakeClient()
+        res = await make_adapter(client=client).send(f"g{GROUP}", CN_BENIGN_TEXT)
+        assert A.is_policy_blocked_send_result(res) is False
+        assert res.success is True
+        assert client.actions, "a benign reply must reach the wire"

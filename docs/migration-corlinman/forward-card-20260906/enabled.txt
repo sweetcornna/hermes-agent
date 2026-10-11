@@ -1,0 +1,1 @@
+{"enabled": true, "gateway": "running", "onebot": "connected", "telegram": "connected", "qq_restarted_for_enable": false, "started_at": "2026-09-06T16:38:56.782135871Z", "exact_body_readback": "e29514e2c5b90a10a83e2c1e7a08c1be5cf3039e3fb5a34adce824e07c7f645e"}

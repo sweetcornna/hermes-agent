@@ -97,8 +97,13 @@ class TestProviderSurface:
 
     def test_list_models_matches_verified_catalog(self):
         ids = [m["id"] for m in CornnaImageGenProvider().list_models()]
-        # Exactly the three image models the live /v1/models call returned.
-        assert ids == ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]
+        # Only image models that were generated against on the live endpoint.
+        assert ids == [
+            "gpt-image-2.5-sunburst",
+            "gpt-image-2",
+            "gpt-image-1.5",
+            "gpt-image-1",
+        ]
         # "image2" is not a real model id on this endpoint.
         assert "image2" not in ids
 

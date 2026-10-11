@@ -1,0 +1,57 @@
+✔ long Unicode/code bodies survive draft chunking without an omitted character (1.751458ms)
+✔ the entire card and each real send are durable and cannot replay after reopening (7.903292ms)
+✔ a timed-out card is not reported as safely unsent and cannot be resent (5.728083ms)
+✔ a card preparation refusal proves the recipient is unsent without pausing valid text (4.31475ms)
+✔ generated cards reject other senders and unsupported media before any draft (0.125709ms)
+✔ native messages retain string IDs, deduplicate, exclude history/self/old sessions, and preserve mentions (2.356916ms)
+✔ native acceptance alone does not complete a send; exact native delivery callback does (2.664542ms)
+✔ outbound reply uses the original native ID and rejects a different conversation (1.114459ms)
+✔ timeout does not resend and session changes revoke ongoing native operations (6.877375ms)
+✔ self-check exercises the native message service without sending, unsupported media fails before send (0.180292ms)
+✔ complete card type 10 builds only own drafts and waits for the final native confirmation (0.702958ms)
+[SnowLuma native forward] {"failed_stage":"drafts"}
+✔ complete card type 16 builds only own drafts and waits for the final native confirmation (0.828917ms)
+[SnowLuma native forward] {"failed_stage":"card"}
+✔ foreign drafts and failed card preparation never send to the recipient (0.723125ms)
+[SnowLuma native forward] {"failed_stage":"build"}
+✔ account change while building a card cannot deliver through the next session (0.343542ms)
+[SnowLuma native OneBot] {"event":"listening"}
+[SnowLuma native OneBot] {"event":"kernel-authenticated"}
+[SnowLuma native OneBot] {"event":"native-message-received"}
+[SnowLuma native OneBot] {"event":"kernel-disconnected"}
+✔ real authenticated WebSocket crosses kernel Unix pipes, correlates echo and forwards typed events (53.935292ms)
+[SnowLuma native OneBot] {"event":"listening"}
+✔ gateway refuses a missing token and browser origins before accepting a client (11.744458ms)
+[SnowLuma native OneBot] {"event":"listening"}
+[SnowLuma native OneBot] {"event":"kernel-authenticated"}
+[SnowLuma native OneBot] {"event":"kernel-disconnected"}
+✔ forward card crosses the real authenticated gateway and replays without another draft or card (21.386917ms)
+[SnowLuma native OneBot] {"event":"listening"}
+[SnowLuma native OneBot] {"event":"kernel-authenticated"}
+[SnowLuma native OneBot] {"event":"kernel-disconnected"}
+✔ authenticated writes never replay an uncertain native malformed outcome (69.826125ms)
+[SnowLuma native OneBot] {"event":"listening"}
+[SnowLuma native OneBot] {"event":"kernel-authenticated"}
+[SnowLuma native OneBot] {"event":"kernel-disconnected"}
+✔ authenticated writes never replay an uncertain native rejected outcome (67.357958ms)
+[SnowLuma native OneBot] {"event":"listening"}
+[SnowLuma native OneBot] {"event":"kernel-authenticated"}
+[SnowLuma native OneBot] {"event":"kernel-disconnected"}
+✔ authenticated writes never replay an uncertain native missing_id outcome (68.284208ms)
+✔ completed operation survives restart; a distinct operation may intentionally send identical text (9.125458ms)
+✔ concurrent replay never emits another native operation or claims the original was not sent (3.746542ms)
+✔ uncertain outcome persists a pause and remains non-replayable after explicit resume (4.706417ms)
+✔ failed native operations trip the configured breaker and do not auto retry (4.789ms)
+✔ minute budget persists across reopen and expires according to its rolling window (4.558417ms)
+✔ client disconnect before a paced send cancels it without touching the native sender (3.952084ms)
+✔ only one live owner may write an account journal (2.753625ms)
+✔ a crashed process leaves an uncertain record that cannot be replayed (58.478208ms)
+✔ an unrelated database and a symlink are refused without schema mutation (1.79125ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 382.193958

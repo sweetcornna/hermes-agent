@@ -34,6 +34,7 @@ from gateway.platforms.base import MessageEvent
 
 from plugins.platforms.onebot import adapter as A
 from plugins.platforms.onebot import proactive as PR
+from plugins.platforms.onebot import proactive_judge as PJ
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +151,16 @@ def _reset_state():
     yield
     A._reset_module_state()
     PR.set_context_provider(None)
+
+
+@pytest.fixture(autouse=True)
+def _judge_steps_aside(monkeypatch):
+    """The pre-judge has its own suite; here it always lets the beat through."""
+
+    async def _speak(adapter, group, cfg):  # noqa: ANN001
+        return PJ.JudgeVerdict(speak=True, consulted=False, cause="test")
+
+    monkeypatch.setattr(PR, "judge_room", _speak)
 
 
 # ---------------------------------------------------------------------------
@@ -683,6 +694,52 @@ class TestLoopGates:
         assert handler.calls == 0
 
     @pytest.mark.asyncio
+    async def test_overall_daily_cap_spans_every_group(self, monkeypatch):
+        """Posts in one group spend the allowance the other groups share."""
+        one_beat(monkeypatch)
+        freeze_clock(monkeypatch)
+        judged: List[str] = []
+
+        async def _judge(adapter, group, cfg):  # noqa: ANN001
+            judged.append(group)
+            return PJ.JudgeVerdict(speak=True)
+
+        monkeypatch.setattr(PR, "judge_room", _judge)
+        handler = FakeHandler("不该出现")
+        ad = make_adapter(
+            {
+                "proactive_enabled": True,
+                "group_whitelist": [GROUP, "200"],
+                "proactive_daily_max": 5,
+                "proactive_daily_max_total": 2,
+            },
+            handler=handler,
+        )
+        PR.mark_sent(A.speech_key("default", "200"), "2026-08-19")
+        PR.mark_sent(A.speech_key("default", "200"), "2026-08-19")
+        await run_one_beat(ad)
+        assert handler.calls == 0 and judged == []
+        assert PR.sent_today_total("default", (GROUP, "200"), "2026-08-19") == 2
+
+    @pytest.mark.asyncio
+    async def test_overall_cap_leaves_room_until_spent(self, monkeypatch):
+        one_beat(monkeypatch)
+        freeze_clock(monkeypatch)
+        handler = FakeHandler("大家下午好呀")
+        ad = make_adapter(
+            {
+                "proactive_enabled": True,
+                "group_whitelist": [GROUP, "200"],
+                "proactive_groups": [GROUP],
+                "proactive_daily_max_total": 2,
+            },
+            handler=handler,
+        )
+        PR.mark_sent(A.speech_key("default", "200"), "2026-08-19")
+        await run_one_beat(ad)
+        assert sent_texts(ad) == ["大家下午好呀"]
+
+    @pytest.mark.asyncio
     async def test_min_gap_blocks_a_repeat(self, monkeypatch):
         one_beat(monkeypatch)
         freeze_clock(monkeypatch)
@@ -902,6 +959,16 @@ class TestLifecycle:
         ad._start_proactive_loop()
         assert ad._proactive_task is first
         await ad.disconnect()
+
+    def test_overall_cap_parses_and_defaults_off(self):
+        assert PR.live_config(make_adapter({"proactive_enabled": True})).daily_max_total == 0
+        cfg = PR.live_config(
+            make_adapter({"proactive_enabled": True, "proactive_daily_max_total": "2"})
+        )
+        assert cfg.daily_max_total == 2
+        assert A._apply_yaml_config({}, {"proactive_daily_max_total": 2})[
+            "proactive_daily_max_total"
+        ] == 2
 
     def test_proactive_keys_are_accepted_from_top_level_yaml(self):
         extras = A._apply_yaml_config(

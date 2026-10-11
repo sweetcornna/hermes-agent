@@ -929,7 +929,36 @@ class TestGroupSpeechCap:
 
     @pytest.mark.asyncio
     async def test_slash_commands_are_never_locked_out_by_the_cap(self):
-        """Operator tooling must survive a chatty group."""
+        """Operator tooling must survive a chatty group.
+
+        Only where operator tooling exists: a group is not a console
+        (:mod:`plugins.platforms.onebot.main_window`), so this guarantee is
+        scoped to a deployment that opened the escape hatch. With it shut,
+        the case below covers what happens instead.
+        """
+        ad = make_adapter({
+            "group_replies_enabled": True,
+            "group_gateway_control_enabled": True,
+            "group_rate_limit_window_minutes": 3,
+            "group_rate_limit_max_messages": 1,
+        })
+        rec = instrument(ad)
+        await ad._on_message_event(group_event(
+            "", message_id=1, segments=[P.AtSegment(qq="100"), P.TextSegment(text=" hi")]))
+        for i in range(3):
+            await ad._on_message_event(group_event("/status", message_id=10 + i))
+        await asyncio.sleep(0.05)
+        assert len(rec.events) == 4
+
+    @pytest.mark.asyncio
+    async def test_a_slash_prefix_is_not_a_way_around_the_cap(self):
+        """The default: a group's slash text has no privilege at all.
+
+        It cannot execute (``allow_gateway_control=False``), it does not
+        summon a turn past the keyword gate, and it does not skip the speech
+        cap — otherwise any member could reply-storm a capped group by
+        typing a leading slash.
+        """
         ad = make_adapter({
             "group_replies_enabled": True,
             "group_rate_limit_window_minutes": 3,
@@ -941,7 +970,8 @@ class TestGroupSpeechCap:
         for i in range(3):
             await ad._on_message_event(group_event("/status", message_id=10 + i))
         await asyncio.sleep(0.05)
-        assert len(rec.events) == 4
+        assert len(rec.events) == 1
+        assert rec.events[0].allow_gateway_control is False
 
     @pytest.mark.asyncio
     async def test_cap_is_per_group(self):

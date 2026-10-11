@@ -69,11 +69,15 @@ class TestTurnRunner:
         runner = _make_runner(ctx)  # stub adapter resolver returns None
         assert asyncio.run(runner.send_progress_messages()) is None
 
-    def test_normal_response_preserves_compression_exhausted(self):
+    @pytest.mark.parametrize("channel_limit", [None, 3])
+    def test_normal_response_preserves_compression_exhausted(self, channel_limit):
         """A non-empty exhaustion response must still reach auto-reset consumers."""
+
+        received_limits = []
 
         class _ExhaustedAgent:
             def __init__(self, **kwargs):
+                received_limits.append(kwargs["max_iterations"])
                 self.model = kwargs["model"]
                 self.session_id = kwargs["session_id"]
                 self.tools = []
@@ -93,7 +97,13 @@ class TestTurnRunner:
                 }
 
         gateway_runner = MagicMock()
-        gateway_runner.config = SimpleNamespace(streaming=None)
+        from gateway.config import ChannelOverride, GatewayConfig, PlatformConfig
+
+        gateway_runner.config = GatewayConfig(platforms={
+            Platform.LOCAL: PlatformConfig(channel_overrides={
+                "test-chat": ChannelOverride(max_turns=channel_limit),
+            }),
+        })
         gateway_runner._provider_routing = {}
         gateway_runner._agent_cache_lock = None
         gateway_runner._agent_cache = {}
@@ -137,9 +147,11 @@ class TestTurnRunner:
             _hooks_ref=SimpleNamespace(loaded_hooks=False),
         )
 
-        from gateway.run import TurnRunner
+        from gateway.run import TurnRunner, _current_max_iterations
 
         result = TurnRunner(gateway_runner, ctx).run_sync()
+        default = _current_max_iterations()
+        assert received_limits == [min(default, channel_limit) if channel_limit else default]
 
         assert result["final_response"] == (
             "Context length exceeded. Cannot compress further."

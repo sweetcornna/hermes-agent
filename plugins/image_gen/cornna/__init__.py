@@ -167,10 +167,17 @@ SIZE_ENV = "CORNNA_IMAGE_SIZE"
 
 DEFAULT_BASE_URL = "https://api.cornna.xyz/v1"
 
-# Catalog verified against ``GET /v1/models`` on the live endpoint: of the
-# 20 ids it serves, exactly these three are image models. (There is no
-# model called ``image2`` — "image2" colloquially means ``gpt-image-2``.)
+# Catalog verified against ``GET /v1/models`` on the live endpoint. (There is
+# no model called ``image2`` — "image2" colloquially means ``gpt-image-2``.)
+# ``gpt-image-2.5-sunburst`` was added 2026-09-24 after generating through all
+# three paths (plain, refs via ``responses``, refs via ``edits``); production
+# pins it with ``image_gen.cornna.model``.
 _MODELS: Dict[str, Dict[str, Any]] = {
+    "gpt-image-2.5-sunburst": {
+        "display": "GPT Image 2.5 Sunburst",
+        "speed": "~25-40s",
+        "strengths": "Newest; the production pin. Works on all three request shapes.",
+    },
     "gpt-image-2": {
         "display": "GPT Image 2",
         "speed": "~20-40s",
@@ -272,9 +279,30 @@ GENERATION_RETRY_SLEEP_SECONDS = 8
 _REF_ANCHOR_PREAMBLE = (
     "You are given character reference portraits. For each character that "
     "appears in the scene below, strictly match their species, fur or skin "
-    "color and markings, eye color, ear and hair shape, and clothing from "
-    "their reference image. Render them performing the scene's action in "
-    "the described setting.\n\n"
+    "color and markings, eye color, ear and hair shape from their reference "
+    "image. Use reference clothing by default, but follow explicit scene "
+    "directions for a changed outfit or a shirtless athletic appearance while "
+    "preserving character identity. Render them performing the scene's action in "
+    "the described setting.\n"
+    # The head is where reference anchoring actually fails. Observed
+    # 2026-08-28 across one 说说 batch: the same reference produced a spiky
+    # human-style hairstyle in one frame and a bare muzzle with no head fur
+    # or cheek tufts in the next, and the build drifted a weight class
+    # heavier under a wide-angle instruction. Body and clothing survived;
+    # the face did not. Naming the head parts individually is what holds it,
+    # because "hair shape" above reads as advice rather than a constraint.
+    "Treat the head as fixed identity geometry, while allowing a natural "
+    "scene-specific expression: reproduce the reference's muzzle shape, "
+    "facial markings, brow and cheek fur tufts, ear shape, and head fur. "
+    "Do not restyle head fur into a human haircut, recolor it, or remove "
+    "tufts the reference has. Vary the expression through eyes, brows and "
+    "mouth according to the action; do not give every frame the same blank "
+    "face. Anatomically connect the head to the neck and shoulders: continuous "
+    "fur or skin transition under the jaw, correct neck width and perspective, "
+    "matching edge light and contact shadow, no pasted-on head, floating head, "
+    "cutout seam, or mismatched scale. Keep the reference's build — do not "
+    "make the character more muscular or larger than the reference, whatever "
+    "the camera angle asks for.\n\n"
 )
 
 _REFS_INSTRUCTIONS = (

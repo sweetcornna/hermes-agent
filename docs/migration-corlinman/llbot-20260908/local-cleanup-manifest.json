@@ -1,0 +1,82 @@
+{
+  "plugins/platforms/onebot/README.md": {
+    "before_sha256": "a202dd9b1a8ee3e027786224fb0cc8b67a3f7e030b4f1e94ae40c3a8f6ac313a",
+    "after_sha256": "0ec53f9614e72bfc2b2a4e9778c9857932f56a9e4f055fe19982bae8d539645a",
+    "action": "modify"
+  },
+  "plugins/platforms/onebot/__init__.py": {
+    "before_sha256": "e95d80f3621b7af6a6f5d9316fd40401912664fa8e15df2318ec35021caabda8",
+    "after_sha256": "5b4a79a3c52f7d2dc9c84c9f6defcc44ca1b27f3ed0dc66f1213639650895fd6",
+    "action": "modify"
+  },
+  "plugins/platforms/onebot/adapter.py": {
+    "before_sha256": "343a6f30df40fe5fa4917f29bd3d4579fdc7f7cabc71201cd3b4173dd55e5807",
+    "after_sha256": "870f86d35044f012b031040f75d54ab90a53e7f55c78b880f5d4aa7fdb8f9dc9",
+    "action": "modify"
+  },
+  "plugins/platforms/onebot/client.py": {
+    "before_sha256": "825acc2a61fa99a951751a9f5bf3efeaffa288655f3d24adc5068aab18c8859c",
+    "after_sha256": "b1ebafcc860f0c4064bdeb5c18bc4e87cc4f2fa45bfe573d21f9c71696afa6b1",
+    "action": "modify"
+  },
+  "plugins/platforms/onebot/desktop_backend.py": {
+    "before_sha256": "8176d69d7d2ce799ef0d04f4a1726829c511629749ef3eeb99db6fb4a9519cbb",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "plugins/platforms/onebot/desktop_cli.py": {
+    "before_sha256": "6d482cd6727d926acf4260ba719ada84255a7ed91eb41c78880d73bbace24f93",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "plugins/platforms/onebot/desktop_inbox.py": {
+    "before_sha256": "5da182f4261722efb47d5526619520c4cceefa06b4c735ad021a65f6459e9c55",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "plugins/platforms/onebot/desktop_media.py": {
+    "before_sha256": "aa076ea7d8a78fe2133384c5308ded670862b32752006685175331513a752401",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "plugins/platforms/onebot/native_backend.py": {
+    "before_sha256": "643d70f63bded8032e9b23b27fc38a52e96b38720d5499b9a34c0ef39db0fd72",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "plugins/platforms/onebot/native_cli.py": {
+    "before_sha256": "3c208f71ca0b00acf7a8e2ae5a7041313bffa3e7b97930c375140894ddee734e",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "plugins/platforms/onebot/protocol.py": {
+    "before_sha256": "2c2056ed62fb0a8ad941fd1af8e6b05e9533cc9c2dfbff2fbf45493628fa0aa4",
+    "after_sha256": "dd67f39d9140ec23ec7d4d3284a7541184fc5df8c7140e0e29b10085283bbc61",
+    "action": "modify"
+  },
+  "tests/gateway/test_onebot_backend_identity.py": {
+    "before_sha256": "3e190c5edb495a638cebac3279dcc127c7d356a18684d6943dfd1b75496cc986",
+    "after_sha256": "4b154090f5c60dc31f47207e63b1141d627ea8555f89e188907cbc36d1b67c56",
+    "action": "modify"
+  },
+  "tests/gateway/test_onebot_desktop_backend.py": {
+    "before_sha256": "056430fb9ecc4f6e3e7ae9531f011bd0ebcb2215271a00c0cc7ef50e690484fe",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "tests/gateway/test_onebot_desktop_cli.py": {
+    "before_sha256": "95cd274c26ab23392a2839588cf1328b2bc7c73171bdb56b0dec10f9be8061ff",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "tests/gateway/test_onebot_desktop_media.py": {
+    "before_sha256": "f41f0e524dc362c5f154ea7ab801af3bdc4e4b86c7fb08b0787213d2c0a16574",
+    "after_sha256": null,
+    "action": "delete"
+  },
+  "tests/gateway/test_onebot_native_backend.py": {
+    "before_sha256": "ad546a42cebbab2fb2c4e1fc3186c6441f523277cd05130246a2cd8a5bf7fb42",
+    "after_sha256": null,
+    "action": "delete"
+  }
+}

@@ -109,6 +109,30 @@ class BlockingPrefetchProvider(FakeMemoryProvider):
         return self._prefetch_result
 
 
+class DeferredToolProvider(FakeMemoryProvider):
+    """Provider whose tools become known only after session initialization."""
+
+    def __init__(self):
+        super().__init__(
+            name="deferred",
+            tools=[
+                {
+                    "name": "deferred_lookup",
+                    "description": "session-bound lookup",
+                    "parameters": {},
+                }
+            ],
+        )
+        self.initialize_count = 0
+
+    def initialize(self, session_id, **kwargs):
+        super().initialize(session_id, **kwargs)
+        self.initialize_count += 1
+
+    def get_tool_schemas(self):
+        return self._tools if self.initialized else []
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider ABC tests
 # ---------------------------------------------------------------------------
@@ -137,6 +161,53 @@ class TestMemoryProviderABC:
         p.queue_prefetch("query")
         p.sync_turn("user", "assistant")
         p.shutdown()
+
+
+class TestSessionAwareToolIndexLifecycle:
+    def test_initialize_rebuilds_and_freezes_deferred_tool_index(self):
+        manager = MemoryManager()
+        provider = DeferredToolProvider()
+        manager.add_provider(provider)
+
+        assert manager.get_all_tool_schemas() == []
+        assert manager.has_tool("deferred_lookup") is False
+
+        manager.initialize_all("session-a", platform="onebot", chat_id="123")
+        schemas = manager.get_all_tool_schemas()
+        assert [schema["name"] for schema in schemas] == ["deferred_lookup"]
+        assert manager.has_tool("deferred_lookup") is True
+
+        # Provider-owned objects may change internally, but this initialized
+        # AIAgent's tool surface remains frozen until a lifecycle rebuild.
+        provider._tools[0]["description"] = "mutated after initialization"
+        assert manager.get_all_tool_schemas() == schemas
+
+        manager.initialize_all("session-a", platform="onebot", chat_id="123")
+        assert provider.initialize_count == 2
+        assert manager.get_all_tool_names() == {"deferred_lookup"}
+        assert len(manager.get_all_tool_schemas()) == 1
+
+    def test_real_bundled_provider_tools_survive_rebuild(self, tmp_path, monkeypatch):
+        from plugins.memory import load_memory_provider
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        provider = load_memory_provider("holographic", register_skills=False)
+        assert provider is not None
+        assert provider.is_available() is True
+
+        manager = MemoryManager()
+        manager.add_provider(provider)
+        before = {schema["name"] for schema in manager.get_all_tool_schemas()}
+        assert before == {"fact_store", "fact_feedback"}
+
+        manager.initialize_all("real-bundled", platform="cli")
+        after = {schema["name"] for schema in manager.get_all_tool_schemas()}
+        assert after == before
+        assert manager.get_all_tool_names() == before
+        manager.initialize_all("real-bundled", platform="cli")
+        assert manager.get_all_tool_names() == before
+        assert len(manager.get_all_tool_schemas()) == 2
+        provider.shutdown()
 
 
 # ---------------------------------------------------------------------------

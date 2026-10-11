@@ -1222,3 +1222,175 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+
+# ---------------------------------------------------------------------------
+# Magic-byte container detection (delegated to tools/audio_container.py)
+# ---------------------------------------------------------------------------
+
+_PAD = b"\x00" * 64
+
+#: Samples where the delegated sniffer answers exactly what the adapter's own
+#: byte rules used to answer. Each row is (id, bytes, expected_ext).
+_EXT_UNCHANGED = [
+    ("silk_v3_bare", b"#!SILK_V3" + _PAD, ".silk"),
+    ("silk_magic_only", b"#!SILK" + _PAD, ".silk"),
+    ("silk_tencent_short_header", b"\x02!" + _PAD, ".silk"),
+    ("ogg", b"OggS\x00\x02" + _PAD, ".ogg"),
+    ("flac", b"fLaC" + _PAD, ".flac"),
+    ("wav_riff_wave", b"RIFF\x24\x08\x00\x00WAVEfmt " + _PAD, ".wav"),
+    ("mp3_frame_fb", b"\xff\xfb\x90\x00" + _PAD, ".mp3"),
+    ("mp3_frame_f3", b"\xff\xf3\x90\x00" + _PAD, ".mp3"),
+    ("mp3_frame_f2", b"\xff\xf2\x90\x00" + _PAD, ".mp3"),
+    # AMR was never matched by magic locally — it reached ".amr" through the
+    # default. Same answer now, but for the right reason.
+    ("amr_nb", b"#!AMR\n" + _PAD, ".amr"),
+    ("amr_wb", b"#!AMR-WB\n" + _PAD, ".amr"),
+    # A bare MP4 box size with no "ftyp" is not a container: the old local rule
+    # mapped these four bytes to ".amr", which is also what the default gives.
+    ("box_size_1c_no_ftyp", b"\x00\x00\x00\x1c" + _PAD, ".amr"),
+    ("box_size_20_no_ftyp", b"\x00\x00\x00\x20" + _PAD, ".amr"),
+    ("empty", b"", ".amr"),
+    ("short", b"#", ".amr"),
+    ("garbage", b"not-audio-at-all" + _PAD, ".amr"),
+]
+
+#: Samples where delegation CHANGES the answer. Each row carries the reason the
+#: change is acceptable — a silent behaviour change here would be a bug.
+_EXT_CHANGED = [
+    # WIDENED. Tencent also ships SILK as one arbitrary prefix byte + the full
+    # "#!SILK" magic. The local rule only knew the truncated "\x02!" spelling,
+    # so this landed on the ".amr" default and was routed to ffmpeg, which
+    # cannot decode SILK. Now it is detected and reaches pilk.
+    ("silk_tencent_prefixed_magic", b"\x02#!SILK_V3" + _PAD, ".amr", ".silk"),
+    # WIDENED. Containers the local rules simply did not know; all of them fell
+    # through to the ".amr" default, which mislabelled the temp file handed to
+    # ffmpeg and the document cached on conversion failure.
+    ("mp3_id3", b"ID3\x04\x00\x00\x00\x00\x00\x00" + _PAD, ".amr", ".mp3"),
+    ("mp3_frame_fa", b"\xff\xfa\x90\x00" + _PAD, ".amr", ".mp3"),
+    ("aac_adts", b"\xff\xf1\x50\x80" + _PAD, ".amr", ".aac"),
+    ("m4a_ftyp", b"\x00\x00\x00\x1cftypM4A " + _PAD, ".amr", ".m4a"),
+    ("mp4_ftyp_isom", b"\x00\x00\x00\x18ftypisom" + _PAD, ".amr", ".m4a"),
+    ("webm", b"\x1a\x45\xdf\xa3" + _PAD, ".amr", ".webm"),
+    # NARROWED, deliberately. "RIFF" alone was claimed as ".wav"; the shared
+    # sniffer requires the "WAVE" form type at bytes 8-11, so RIFF/WEBP and
+    # truncated RIFF now take the ".amr" unknown default. Neither is decodable
+    # audio, and the extension is only a temp-file suffix here — both pilk and
+    # ffmpeg sniff content, not the name. Real RIFF/WAVE is unaffected above.
+    ("riff_webp_not_wave", b"RIFF\x24\x08\x00\x00WEBPVP8 " + _PAD, ".wav", ".amr"),
+    ("riff_truncated", b"RIFFmock-wav-audio-data", ".wav", ".amr"),
+    # NARROWED, deliberately. "\x30\x26\xb2\x75" is the ASF/WMA header, not
+    # Ogg; the old ".ogg" answer was simply wrong and only ever produced a
+    # misleading name on the failure-cache path. ASF is not a container the
+    # shared sniffer claims, so it takes the ".amr" unknown default.
+    ("asf_wma_mislabelled_as_ogg", b"\x30\x26\xb2\x75" + _PAD, ".ogg", ".amr"),
+]
+
+_ALL_EXT_SAMPLES = (
+    [(sid, data, exp) for sid, data, exp in _EXT_UNCHANGED]
+    + [(sid, data, exp) for sid, data, _pre, exp in _EXT_CHANGED]
+)
+
+
+class TestGuessExtFromDataEquivalence:
+    """`_guess_ext_from_data` / `_looks_like_silk` delegate to the shared
+    magic-byte sniffer in ``tools/audio_container.py`` instead of carrying a
+    second copy of the rules. These tables pin the post-delegation answer for
+    every input class the adapter used to handle itself."""
+
+    def _guess(self, data):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter._guess_ext_from_data(data)
+
+    def _silk(self, data):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter._looks_like_silk(data)
+
+    @pytest.mark.parametrize(
+        "data,expected",
+        [(data, exp) for _sid, data, exp in _EXT_UNCHANGED],
+        ids=[sid for sid, _d, _e in _EXT_UNCHANGED],
+    )
+    def test_extension_unchanged_by_delegation(self, data, expected):
+        assert self._guess(data) == expected
+
+    @pytest.mark.parametrize(
+        "data,pre_refactor,expected",
+        [(data, pre, exp) for _sid, data, pre, exp in _EXT_CHANGED],
+        ids=[sid for sid, _d, _p, _e in _EXT_CHANGED],
+    )
+    def test_extension_changed_by_delegation(self, data, pre_refactor, expected):
+        """Every changed answer is documented in _EXT_CHANGED with its reason."""
+        assert self._guess(data) == expected
+        assert expected != pre_refactor, "row belongs in _EXT_UNCHANGED"
+
+    @pytest.mark.parametrize(
+        "data",
+        [b"", b"#", b"not-audio-at-all" + _PAD, b"\x00" * 32],
+        ids=["empty", "short", "garbage", "zeros"],
+    )
+    def test_amr_fallback_survives_for_unrecognisable_data(self, data):
+        """QQ's most common voice format stays the guess when nothing matches.
+
+        The shared sniffer's own default is ``.ogg``; the ``.amr`` fallback is
+        this adapter's, passed in at the call.
+        """
+        assert self._guess(data) == ".amr"
+
+    @pytest.mark.parametrize(
+        "data,expected_ext",
+        [(data, exp) for _sid, data, exp in _ALL_EXT_SAMPLES],
+        ids=[sid for sid, _d, _e in _ALL_EXT_SAMPLES],
+    )
+    def test_looks_like_silk_agrees_with_extension(self, data, expected_ext):
+        """One rule: SILK-ness and the extension can never disagree."""
+        from tools.audio_container import sniff_container
+
+        assert self._silk(data) is (expected_ext == ".silk")
+        assert self._silk(data) is (sniff_container(data) == "silk")
+
+    def test_delegates_to_shared_sniffer(self, monkeypatch):
+        """The adapter must call the shared module, not a private copy."""
+        from gateway.platforms.qqbot import adapter as qqbot_adapter
+
+        ext_calls, silk_calls = [], []
+        real_ext = qqbot_adapter.sniff_audio_ext
+        real_container = qqbot_adapter.sniff_container
+
+        monkeypatch.setattr(
+            qqbot_adapter,
+            "sniff_audio_ext",
+            lambda data, fallback: (ext_calls.append(fallback), real_ext(data, fallback))[1],
+        )
+        monkeypatch.setattr(
+            qqbot_adapter,
+            "sniff_container",
+            lambda data: (silk_calls.append(data[:4]), real_container(data))[1],
+        )
+
+        assert self._guess(b"#!SILK_V3" + _PAD) == ".silk"
+        assert self._silk(b"#!SILK_V3" + _PAD) is True
+        assert ext_calls == [".amr"], "the .amr fallback must be passed to the sniffer"
+        assert silk_calls, "_looks_like_silk did not delegate to the shared sniffer"
+
+    def test_detection_helpers_carry_no_magic_bytes(self):
+        """Extend, don't duplicate: no byte literals may creep back in here.
+
+        Guards the whole point of the refactor — a second copy of the rules
+        starts with one "just this one header" byte literal.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from gateway.platforms.qqbot import QQAdapter
+
+        for fn in (QQAdapter._guess_ext_from_data, QQAdapter._looks_like_silk):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            body = tree.body[0].body
+            if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                body = body[1:]  # drop the docstring; prose may name a magic
+            code = "\n".join(ast.unparse(node) for node in body)
+            assert "b'" not in code and 'b"' not in code, (
+                f"{fn.__name__} grew its own magic bytes: {code}"
+            )

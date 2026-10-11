@@ -1,0 +1,14 @@
+{
+  "provider": "cornna",
+  "primary": "codex",
+  "fallback": "gemini",
+  "timeout_seconds": 45,
+  "codex": {
+    "model": "gpt-6-astra",
+    "path": "/v1/responses"
+  },
+  "gemini": {
+    "model": "gemini-3.8-flash-high",
+    "path": "/antigravity/v1beta/models/{model}:generateContent"
+  }
+}

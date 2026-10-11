@@ -8,6 +8,11 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    "fallback_recovery": {
+        "enabled": False,
+        "probe_interval_seconds": 3600,
+        "probe_timeout_seconds": 30,
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # SQLite journal mode used by every Hermes database opener. WAL is the
@@ -677,6 +682,11 @@ DEFAULT_CONFIG = {
                                       # triggers at the lower of the ratio-based
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
+        "tail_tokens": None,          # optional absolute token budget for the
+                                      # verbatim recent tail after compaction.
+                                      # None keeps target_ratio/tail_mode behavior.
+                                      # Provider-scoped persona policies may set
+                                      # this without affecting other sessions.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "tail_mode": "legacy",        # tail retention policy (#87326):
                                       #   "legacy" — 0.20×window verbatim tail (default)

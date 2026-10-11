@@ -1,0 +1,14 @@
+{
+  "plugins/platforms/onebot/README.md": {
+    "before_sha256": "1f133f1a71f58599dd735615978f3500aa2731389995c42e77e523bd95309c7a",
+    "after_sha256": "b2d2b7d8f2e1c102ea7932835c5f64059c191b8ea0152c9f103e518c424f1df4"
+  },
+  "plugins/platforms/onebot/adapter.py": {
+    "before_sha256": "d41adb9129749d7ea7462be2d001e7e69b48712ec3a17d1743630a588d9f2b08",
+    "after_sha256": "870f86d35044f012b031040f75d54ab90a53e7f55c78b880f5d4aa7fdb8f9dc9"
+  },
+  "plugins/platforms/onebot/client.py": {
+    "before_sha256": "270f5f88088bad21775e3f83e55638de39256a523219e11b5f57934de0219c31",
+    "after_sha256": "1538311f614b09992b3041c4063744ac1b1c3f5cd21dcb79030e78157fb2dfad"
+  }
+}

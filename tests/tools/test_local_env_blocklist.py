@@ -1510,3 +1510,16 @@ class TestHermesInternalDynamicSecrets:
         assert "GATEWAY_RELAY_SECRET" in _HERMES_PROVIDER_ENV_BLOCKLIST
         assert "GATEWAY_RELAY_DELIVERY_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
         assert "GATEWAY_RELAY_ID" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+def test_run_env_carries_configured_timezone(monkeypatch):
+    """A shell ``date`` must answer on the configured clock, not the host's."""
+    from tools.environments.local import _make_run_env
+
+    monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    assert _make_run_env({})["TZ"] == "Asia/Shanghai"
+    assert _make_run_env({"TZ": "UTC"})["TZ"] == "UTC"
+
+    monkeypatch.delenv("HERMES_TIMEZONE")
+    assert _make_run_env({})["TZ"] == "America/Los_Angeles"

@@ -1,0 +1,61 @@
+Command: scripts/run_tests.sh tests/gateway/test_onebot_agent_gate.py tests/gateway/test_onebot_auth_state.py tests/gateway/test_onebot_backend_identity.py tests/gateway/test_onebot_bubble_cap.py tests/gateway/test_onebot_bubble_overflow_merge.py tests/gateway/test_onebot_caption_policy.py tests/gateway/test_onebot_content_gate.py tests/gateway/test_onebot_group_history.py tests/gateway/test_onebot_group_mute.py tests/gateway/test_onebot_inbound_gate.py tests/gateway/test_onebot_main_window.py tests/gateway/test_onebot_media_gate.py tests/gateway/test_onebot_operational_silence.py tests/gateway/test_onebot_outbound_choke_point.py tests/gateway/test_onebot_persona_binding.py tests/gateway/test_onebot_plugin.py tests/gateway/test_onebot_proactive.py tests/gateway/test_onebot_proactive_voice.py tests/gateway/test_onebot_protocol.py tests/gateway/test_onebot_rate_limit.py tests/gateway/test_onebot_reply_batch.py tests/gateway/test_onebot_reply_context.py tests/gateway/test_onebot_reply_quote.py tests/gateway/test_onebot_router.py tests/gateway/test_onebot_sticker_packs.py tests/gateway/test_onebot_stickers.py tests/gateway/test_onebot_system_message_suppression.py tests/gateway/test_onebot_transport.py tests/gateway/test_onebot_voice.py tests/gateway/test_onebot_voice_call.py tests/gateway/test_onebot_voice_call_wiring.py tests/gateway/test_onebot_voice_gaps.py tests/gateway/test_onebot_voice_inbound.py tests/tools/test_onebot_client.py tests/tools/test_onebot_client_bridge.py
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 35 test files (~1271 tests) under ['tests/gateway/test_onebot_agent_gate.py', 'tests/gateway/test_onebot_auth_state.py', 'tests/gateway/test_onebot_backend_identity.py', 'tests/gateway/test_onebot_bubble_cap.py', 'tests/gateway/test_onebot_bubble_overflow_merge.py', 'tests/gateway/test_onebot_caption_policy.py', 'tests/gateway/test_onebot_content_gate.py', 'tests/gateway/test_onebot_group_history.py', 'tests/gateway/test_onebot_group_mute.py', 'tests/gateway/test_onebot_inbound_gate.py', 'tests/gateway/test_onebot_main_window.py', 'tests/gateway/test_onebot_media_gate.py', 'tests/gateway/test_onebot_operational_silence.py', 'tests/gateway/test_onebot_outbound_choke_point.py', 'tests/gateway/test_onebot_persona_binding.py', 'tests/gateway/test_onebot_plugin.py', 'tests/gateway/test_onebot_proactive.py', 'tests/gateway/test_onebot_proactive_voice.py', 'tests/gateway/test_onebot_protocol.py', 'tests/gateway/test_onebot_rate_limit.py', 'tests/gateway/test_onebot_reply_batch.py', 'tests/gateway/test_onebot_reply_context.py', 'tests/gateway/test_onebot_reply_quote.py', 'tests/gateway/test_onebot_router.py', 'tests/gateway/test_onebot_sticker_packs.py', 'tests/gateway/test_onebot_stickers.py', 'tests/gateway/test_onebot_system_message_suppression.py', 'tests/gateway/test_onebot_transport.py', 'tests/gateway/test_onebot_voice.py', 'tests/gateway/test_onebot_voice_call.py', 'tests/gateway/test_onebot_voice_call_wiring.py', 'tests/gateway/test_onebot_voice_gaps.py', 'tests/gateway/test_onebot_voice_inbound.py', 'tests/tools/test_onebot_client.py', 'tests/tools/test_onebot_client_bridge.py']; running with -j 30
+[  0.4% |     5/~1271 | ✓7 | ✗0] ✓ tests/gateway/test_onebot_backend_identity.py (7✓, 5.6s)
+[  1.8% |    23/~1271 | ✓25 | ✗ 0] ✓ tests/gateway/test_onebot_rate_limit.py (18✓, 10.6s)
+[  2.8% |    36/~1271 | ✓44 | ✗ 0] ✓ tests/gateway/test_onebot_sticker_packs.py (19✓, 11.0s)
+[  3.5% |    45/~1271 | ✓59 | ✗ 0] ✓ tests/gateway/test_onebot_bubble_overflow_merge.py (15✓, 11.2s)
+[  5.2% |    66/~1271 | ✓80 | ✗ 0] ✓ tests/gateway/test_onebot_persona_binding.py (21✓, 11.9s)
+[  6.7% |    85/~1271 | ✓99 | ✗ 0] ✓ tests/gateway/test_onebot_outbound_choke_point.py (19✓, 12.0s)
+[  7.9% |   100/~1271 | ✓120 | ✗  0] ✓ tests/gateway/test_onebot_reply_quote.py (21✓, 13.0s)
+[  9.7% |   123/~1271 | ✓143 | ✗  0] ✓ tests/gateway/test_onebot_inbound_gate.py (23✓, 13.4s)
+[ 11.3% |   144/~1271 | ✓167 | ✗  0] ✓ tests/gateway/test_onebot_reply_context.py (24✓, 13.9s)
+[ 12.4% |   158/~1271 | ✓193 | ✗  0] ✓ tests/gateway/test_onebot_auth_state.py (26✓, 14.5s)
+[ 14.4% |   183/~1271 | ✓224 | ✗  0] ✓ tests/gateway/test_onebot_agent_gate.py (31✓, 15.6s)
+[ 15.3% |   195/~1271 | ✓242 | ✗  0] ✓ tests/gateway/test_onebot_reply_batch.py (18✓, 15.7s)
+[ 18.0% |   229/~1271 | ✓276 | ✗  0] ✓ tests/gateway/test_onebot_main_window.py (34✓, 16.1s)
+[ 20.4% |   259/~1271 | ✓306 | ✗  0] ✓ tests/gateway/test_onebot_caption_policy.py (30✓, 16.4s)
+[ 22.6% |   287/~1271 | ✓337 | ✗  0] ✓ tests/gateway/test_onebot_group_mute.py (31✓, 16.4s)
+[ 25.3% |   321/~1271 | ✓371 | ✗  0] ✓ tests/gateway/test_onebot_media_gate.py (34✓, 17.2s)
+[ 26.6% |   338/~1271 | ✓388 | ✗  0] ✓ tests/gateway/test_onebot_voice_inbound.py (17✓, 7.0s)
+[ 27.5% |   350/~1271 | ✓436 | ✗  0] ✓ tests/gateway/test_onebot_operational_silence.py (48✓, 19.9s)
+[ 29.8% |   379/~1271 | ✓465 | ✗  0] ✓ tests/gateway/test_onebot_voice_gaps.py (29✓, 9.8s)
+[ 32.8% |   417/~1271 | ✓511 | ✗  0] ✓ tests/gateway/test_onebot_transport.py (46✓, 20.5s)
+[ 36.7% |   466/~1271 | ✓560 | ✗  0] ✓ tests/gateway/test_onebot_voice.py (49✓, 20.5s)
+[ 38.9% |   495/~1271 | ✓589 | ✗  0] ✓ tests/tools/test_onebot_client.py (29✓, 10.4s)
+[ 42.2% |   536/~1271 | ✓642 | ✗  0] ✓ tests/gateway/test_onebot_system_message_suppression.py (53✓, 22.0s)
+[ 46.2% |   587/~1271 | ✓701 | ✗  0] ✓ tests/gateway/test_onebot_router.py (59✓, 22.1s)
+[ 50.0% |   635/~1271 | ✓761 | ✗  0] ✓ tests/gateway/test_onebot_protocol.py (60✓, 22.4s)
+[ 54.4% |   692/~1271 | ✓819 | ✗  0] ✓ tests/gateway/test_onebot_content_gate.py (58✓, 23.2s)
+[ 59.6% |   757/~1271 | ✓887 | ✗  0] ✓ tests/gateway/test_onebot_bubble_cap.py (68✓, 23.8s)
+[ 65.1% |   827/~1271 | ✓957 | ✗  0] ✓ tests/gateway/test_onebot_stickers.py (70✓, 23.7s)
+[ 70.4% |   895/~1271 | ✓1025 | ✗   0] ✓ tests/gateway/test_onebot_proactive_voice.py (68✓, 23.8s)
+[ 72.8% |   925/~1271 | ✓1091 | ✗   0] ✓ tests/gateway/test_onebot_voice_call_wiring.py (66✓, 18.6s)
+[ 78.4% |   997/~1271 | ✓1172 | ✗   0] ✓ tests/gateway/test_onebot_proactive.py (81✓, 24.9s)
+[ 84.5% |  1074/~1271 | ✓1342 | ✗   0] ✓ tests/gateway/test_onebot_voice_call.py (170✓, 26.0s)
+[ 93.0% |  1182/~1271 | ✓1478 | ✗   0] ✓ tests/gateway/test_onebot_plugin.py (136✓, 27.6s)
+[ 93.6% |  1190/~1271 | ✓1490 | ✗   0] ✓ tests/tools/test_onebot_client_bridge.py (12✓, 17.2s)
+[100.0% |  1271/~1271 | ✓1571 | ✗   0] ✓ tests/gateway/test_onebot_group_history.py (81✓, 35.2s)
+
+=== Summary: 35 files, 1571 tests passed, 0 failed (100% complete) in 35.2s (30 workers) ===
+  Durations cached to test_durations.json (35 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   35
+  Total subprocess CPU-wall: 613.2s  (runner wall: 35.2s, parallelism: 30x)
+  P50: 16.45s  P90: 24.90s  P95: 27.65s  P99: 35.22s  Max: 35.22s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+     35.22s  tests/gateway/test_onebot_group_history.py
+     27.65s  tests/gateway/test_onebot_plugin.py
+     26.04s  tests/gateway/test_onebot_voice_call.py
+     24.90s  tests/gateway/test_onebot_proactive.py
+     23.81s  tests/gateway/test_onebot_proactive_voice.py
+     23.76s  tests/gateway/test_onebot_bubble_cap.py
+     23.68s  tests/gateway/test_onebot_stickers.py
+     23.19s  tests/gateway/test_onebot_content_gate.py
+     22.43s  tests/gateway/test_onebot_protocol.py
+     22.11s  tests/gateway/test_onebot_router.py

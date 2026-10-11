@@ -7,7 +7,7 @@ in isolation and reused by the outbound tool layer
 
 The vocabulary follows the OneBot v11 specification
 (<https://github.com/botuniverse/onebot-11>) as implemented by NapCat /
-Lagrange / go-cqhttp.
+NapCat / Lagrange / go-cqhttp.
 
 Design rules that are load-bearing (do not "simplify" them away):
 
@@ -25,7 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+import re
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
 
 __all__ = [
     "AtSegment",
@@ -33,8 +34,12 @@ __all__ = [
     "FileSegment",
     "ForwardNode",
     "ForwardSegment",
+    "GetAiCharacters",
+    "GetAiRecord",
     "GetChatInfo",
+    "GetRecord",
     "ImageSegment",
+    "image_stickers",
     "MediaRef",
     "MessageEvent",
     "MessageType",
@@ -45,8 +50,10 @@ __all__ = [
     "RecordSegment",
     "ReplySegment",
     "RequestEvent",
+    "SendGroupAiRecord",
     "SendGroupForwardMsg",
     "SendGroupMsg",
+    "SendPoke",
     "SendPrivateForwardMsg",
     "SendPrivateMsg",
     "Sender",
@@ -59,6 +66,8 @@ __all__ = [
     "action_to_wire",
     "is_mentioned",
     "parse_event",
+    "humanize_cq",
+    "parse_segments",
     "segments_to_media",
     "segments_to_text",
     "strip_self_mention",
@@ -68,6 +77,8 @@ __all__ = [
 # ===========================================================================
 # Events
 # ===========================================================================
+
+
 
 
 class MessageType(str, Enum):
@@ -181,10 +192,20 @@ class AtSegment:
 
 @dataclass
 class ImageSegment:
-    """``{"type": "image", "data": {"url": ..., "file": ...}}``."""
+    """``{"type": "image", "data": {"url": ..., "file": ...}}``.
+
+    Inbound only: ``sub_type`` 1 (summary ``[动画表情]``) marks a sticker —
+    a 表情包, frequently a cropped face — rather than a photo somebody took.
+    """
 
     url: str = ""
     file: Optional[str] = None
+    sub_type: int = 0
+    summary: str = ""
+
+    @property
+    def is_sticker(self) -> bool:
+        return self.sub_type == 1 or "表情" in (self.summary or "")
 
 
 @dataclass
@@ -211,7 +232,7 @@ class RecordSegment:
 
 @dataclass
 class VideoSegment:
-    """``{"type": "video", ...}`` — NapCat / gocq short video."""
+    """``{"type": "video", ...}`` — a short video from the backend."""
 
     url: str = ""
     file: Optional[str] = None
@@ -219,7 +240,7 @@ class VideoSegment:
 
 @dataclass
 class FileSegment:
-    """``{"type": "file", ...}`` — NapCat extension: a shared document.
+    """``{"type": "file", ...}`` — a OneBot v11 extension (NapCat / SnowLuma).
 
     Older clients ship the document as a name-only segment with no
     ``url``; :func:`segments_to_media` skips those the same way it skips
@@ -262,10 +283,22 @@ MessageSegment = Union[
 ]
 
 
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 _SEGMENT_PARSERS: Dict[str, Callable[[Dict[str, Any]], MessageSegment]] = {
     "text": lambda d: TextSegment(text=str(d.get("text", ""))),
     "at": lambda d: AtSegment(qq=str(d.get("qq", ""))),
-    "image": lambda d: ImageSegment(url=str(d.get("url", "")), file=d.get("file")),
+    "image": lambda d: ImageSegment(
+        url=str(d.get("url", "")),
+        file=d.get("file"),
+        sub_type=_as_int(d.get("sub_type")),
+        summary=str(d.get("summary") or ""),
+    ),
     "reply": lambda d: ReplySegment(id=str(d.get("id", ""))),
     "face": lambda d: FaceSegment(id=str(d.get("id", ""))),
     "record": lambda d: RecordSegment(url=str(d.get("url", "")), file=d.get("file")),
@@ -286,6 +319,11 @@ def _parse_segment(raw: Dict[str, Any]) -> MessageSegment:
         return OtherSegment(raw=raw)
     return parser(data)
 
+
+
+def parse_segments(raw: Iterable[Any]) -> List[MessageSegment]:
+    """Decode a wire segment array (e.g. a ``get_msg`` reply's ``message``)."""
+    return [_parse_segment(s) for s in raw if isinstance(s, dict)]
 
 def _coerce_int(value: Any, default: int = 0) -> int:
     """Best-effort int coercion that never raises.
@@ -402,6 +440,50 @@ def segments_to_text(segments: Iterable[MessageSegment]) -> str:
     return "".join(out)
 
 
+
+_CQ_CODE = re.compile(r"\[CQ:([A-Za-z_]+)((?:,[^\]]*)?)\]")
+_CQ_PLACEHOLDERS = {
+    "image": "[图片]",
+    "face": "[表情]",
+    "mface": "[表情]",
+    "record": "[语音]",
+    "video": "[视频]",
+    "file": "[文件]",
+    "forward": "[聊天记录]",
+    "json": "[卡片]",
+    "xml": "[卡片]",
+    "reply": "",
+}
+
+
+def humanize_cq(text: str, stickers: Sequence[bool] = ()) -> str:
+    """Replace CQ codes with short placeholders for model-facing transcripts.
+
+    A ``[CQ:image,...,url=...]`` code carries an escaped (``&amp;``), signed
+    download link.  Shown to a model it reads as an invitation to fetch the
+    picture, and the copy it makes is truncated or still escaped, so QQ
+    answers 400 and the bot reports "the link is broken".  The picture itself
+    reaches the model as a real attachment (see ``.turn_media``); the
+    transcript only needs to say that one was there.
+
+    *stickers* says, per image code in order, whether it is a sticker; the CQ
+    text itself does not carry that flag, so the caller reads it from the
+    parsed segments.  A sticker renders as ``[表情包]``, never as a picture
+    somebody posted.
+    """
+    images = iter(stickers)
+
+    def _one(match: "re.Match[str]") -> str:
+        kind, params = match.group(1).lower(), match.group(2)
+        if kind == "image" and next(images, False):
+            return "[表情包]"
+        if kind == "at":
+            qq = re.search(r"qq=([^,\]]+)", params)
+            return f"@{qq.group(1)} " if qq else ""
+        return _CQ_PLACEHOLDERS.get(kind, f"[{kind}]")
+
+    return _CQ_CODE.sub(_one, text or "")
+
 def strip_self_mention(segments: Iterable[MessageSegment], self_id: int) -> str:
     """Agent-facing text: like :func:`segments_to_text` but drops ``@bot``.
 
@@ -429,27 +511,52 @@ class MediaRef:
     Transport-neutral on purpose: the gateway adapter turns these into
     locally cached files via ``gateway.platforms.base.cache_*_from_url``.
     ``kind`` is one of ``image`` / ``audio`` / ``video`` / ``document``.
+
+    An empty ``url`` means one specific thing and only for ``audio``:
+    "resolve me by id, the id is in ``file_name``" — see
+    :func:`segments_to_media`.
     """
 
     kind: str
     url: str
     mime: str
     file_name: Optional[str] = None
+    #: An image that is a sticker (表情包), not a photo — see ImageSegment.
+    sticker: bool = False
+
+
+def image_stickers(segments: Iterable[MessageSegment]) -> List[bool]:
+    """Per image segment, in order: is it a sticker?"""
+    return [seg.is_sticker for seg in segments if isinstance(seg, ImageSegment)]
 
 
 def segments_to_media(segments: Iterable[MessageSegment]) -> List[MediaRef]:
     """Pull image / voice / video / file attachments out of a segment list.
 
     Segments with an empty ``url`` are skipped: gocq ships an empty URL for
-    offline media, and NapCat ships name-only ``file`` segments — neither can
+    offline media, and some backends ship name-only ``file`` segments — neither can
     be downloaded, and emitting a MediaRef for them produces a broken
     attachment rather than a missing one.
+
+    **Voice is the exception**, because voice is the one kind that can still
+    be recovered without a URL: :class:`GetRecord` resolves a ``record`` by
+    its ``file`` id server-side.  So a url-less record with a ``file`` is
+    emitted as ``MediaRef("audio", url="", file_name=<the file id>)`` — the
+    empty ``url`` *is* the "resolve me by id" signal, which is why this needs
+    no extra field.  The adapter's ``_download_media``
+    (``plugins/platforms/onebot/adapter.py``) is the only consumer and knows
+    to call ``get_record`` instead of fetching.  Dropping these instead —
+    what we did before — made a NapCat voice note vanish with no attachment
+    and no log line.
+
+    A record with neither ``url`` nor ``file`` is still skipped: nothing can
+    recover that one, and a phantom attachment is worse than a missing one.
     """
     out: List[MediaRef] = []
     for seg in segments:
         if isinstance(seg, ImageSegment) and seg.url:
-            out.append(MediaRef("image", seg.url, "image/*", seg.file))
-        elif isinstance(seg, RecordSegment) and seg.url:
+            out.append(MediaRef("image", seg.url, "image/*", seg.file, sticker=seg.is_sticker))
+        elif isinstance(seg, RecordSegment) and (seg.url or seg.file):
             out.append(MediaRef("audio", seg.url, "audio/*", seg.file))
         elif isinstance(seg, VideoSegment) and seg.url:
             out.append(MediaRef("video", seg.url, "video/*", seg.file))
@@ -518,7 +625,7 @@ class SendGroupForwardMsg:
 
 @dataclass
 class SendPrivateForwardMsg:
-    """``action = "send_private_forward_msg"`` — NapCat extension."""
+    """``action = "send_private_forward_msg"`` — OneBot v11 extension (NapCat / SnowLuma)."""
 
     user_id: int
     messages: List[ForwardNode]
@@ -526,11 +633,11 @@ class SendPrivateForwardMsg:
 
 @dataclass
 class SetInputStatus:
-    """``action = "set_input_status"`` — NapCat extension ("对方正在输入…").
+    """``action = "set_input_status"`` — OneBot v11 extension (NapCat / SnowLuma).
 
-    ``event_type`` is 1 (typing) or 0 (cancel).  NapCat clears the indicator
-    on its own after ~5 s, so a long turn re-fires it.  Private chats only —
-    QQ group clients do not render a typing state.  Non-NapCat backends
+    ``event_type`` is 1 (typing) or 0 (cancel).  The indicator is transient,
+    so a long turn re-fires it.  Private chats only — QQ group clients do not
+    render a typing state.  Backends that do not implement this extension
     answer with an "unsupported action" envelope; callers treat any failure
     as a no-op.
     """
@@ -541,9 +648,9 @@ class SetInputStatus:
 
 @dataclass
 class UploadPrivateFile:
-    """``action = "upload_private_file"`` — NapCat extension.
+    """``action = "upload_private_file"`` — OneBot v11 extension (NapCat / SnowLuma).
 
-    ``file`` accepts ``base64://…`` (preferred: NapCat usually runs in a
+    ``file`` accepts ``base64://…`` (preferred: the backend may run in a
     different container and cannot read our paths), an absolute path, or an
     ``http(s)://`` URL.
     """
@@ -555,7 +662,7 @@ class UploadPrivateFile:
 
 @dataclass
 class UploadGroupFile:
-    """``action = "upload_group_file"`` — NapCat extension.
+    """``action = "upload_group_file"`` — OneBot v11 extension (NapCat / SnowLuma).
 
     ``folder`` defaults to the root of the group's file area.
     """
@@ -564,6 +671,80 @@ class UploadGroupFile:
     file: str
     name: Optional[str] = None
     folder: Optional[str] = None
+
+
+@dataclass
+class GetRecord:
+    """``action = "get_record"`` — OneBot v11 standard action.
+
+    Inbound voice arrives as SILK/AMR (see :class:`RecordSegment`), which
+    nothing outside a QQ client can decode.  This asks the backend to
+    transcode ``file`` (the segment's ``file`` value) to ``out_format`` so
+    the result can be fed to a normal ASR pipeline.
+    """
+
+    file: str
+    out_format: str = "mp3"
+
+
+@dataclass
+class SendGroupAiRecord:
+    """``action = "send_group_ai_record"`` — OneBot v11 extension (NapCat / SnowLuma).
+
+    Posts a voice message spoken by one of QQ's own built-in AI voice
+    characters (群 AI 声聊), picked by ``character`` (a ``character_id``
+    from :class:`GetAiCharacters`).  Group-only: QQ does not expose an
+    AI-voice equivalent for private chats, so there is no
+    ``send_private_ai_record``.  NapCat and SnowLuma implement this extension;
+    a Lagrange or go-cqhttp backend may reject it.
+    """
+
+    group_id: int
+    character: str
+    text: str
+
+
+@dataclass
+class GetAiRecord:
+    """``action = "get_ai_record"`` — OneBot v11 extension (NapCat / SnowLuma).
+
+    Same inputs as :class:`SendGroupAiRecord`, but returns a URL to the
+    synthesized audio (in the response ``data``) instead of posting it.
+    ``group_id`` is required even though nothing is sent to that group —
+    QQ scopes the AI character list per group.  NapCat and SnowLuma implement
+    this extension; a Lagrange or go-cqhttp backend may reject it.
+    """
+
+    group_id: int
+    character: str
+    text: str
+
+
+@dataclass
+class GetAiCharacters:
+    """``action = "get_ai_characters"`` — OneBot v11 extension (NapCat / SnowLuma).
+
+    Lists the AI voice characters available to a group, grouped by style
+    (``data`` is ``[{"type": "推荐"|"古风"|"现代", "characters": [...]}]``).
+    NapCat and SnowLuma implement this extension; a Lagrange or go-cqhttp
+    backend may reject it.
+    """
+
+    group_id: int
+    chat_type: Optional[int] = None
+
+
+@dataclass
+class SendPoke:
+    """``action = "send_poke"`` — OneBot v11 extension (NapCat / SnowLuma).
+
+    ``group_id`` omitted sends a private poke to ``user_id``; set it to
+    poke someone inside a group instead.  NapCat and SnowLuma implement this
+    extension; a Lagrange or go-cqhttp backend may reject it.
+    """
+
+    user_id: int
+    group_id: Optional[int] = None
 
 
 @dataclass
@@ -594,6 +775,11 @@ Action = Union[
     SetInputStatus,
     UploadPrivateFile,
     UploadGroupFile,
+    GetRecord,
+    SendGroupAiRecord,
+    GetAiRecord,
+    GetAiCharacters,
+    SendPoke,
     RawAction,
 ]
 
@@ -641,9 +827,9 @@ def _segment_to_wire(seg: MessageSegment) -> Dict[str, Any]:
 def _forward_node_to_wire(node: ForwardNode) -> Dict[str, Any]:
     """Serialize one merged-forward node.
 
-    Emits BOTH the go-cqhttp key pair (``name`` / ``uin``) and the NapCat
-    pair (``nickname`` / ``user_id``).  Backends read whichever dialect they
-    know and ignore the other, so one wire shape covers both — this is
+    Emits BOTH the go-cqhttp key pair (``name`` / ``uin``) and the NapCat /
+    NapCat pair (``nickname`` / ``user_id``).  Backends read whichever
+    dialect they know and ignore the other, so one wire shape covers both — this is
     cheaper and far less fragile than sniffing the backend at runtime.
     """
     return {
@@ -706,6 +892,57 @@ def action_to_wire(action: Action) -> Dict[str, Any]:
                 "messages": [_forward_node_to_wire(n) for n in action.messages],
             },
         }
+    if isinstance(action, GetRecord):
+        return {
+            "action": "get_record",
+            "params": {"file": action.file, "out_format": action.out_format},
+        }
+    if isinstance(action, SendGroupAiRecord):
+        # NapCat's own docs disagree with themselves on this field's name:
+        # the live API doc (https://napneko.github.io/develop/api/doc) says
+        # "text", the commit that introduced those docs
+        # (github.com/NapNeko/NapCatDocs commit 42538ddf) says "test" — an
+        # upstream typo that may or may not match what actually shipped.
+        # NapCat's generated action catalog
+        # (packages/mcp/src/generated/catalog.json) names the canonical
+        # parameter "text" and sets additionalProperties to true, so the
+        # redundant "test" key is harmless there too.  Keep both spellings
+        # with the same value for compatibility with older NapCat builds.
+        # Do not "clean up" the duplicate; it is deliberate.
+        return {
+            "action": "send_group_ai_record",
+            "params": {
+                "group_id": action.group_id,
+                "character": action.character,
+                "text": action.text,
+                "test": action.text,
+            },
+        }
+    if isinstance(action, GetAiRecord):
+        # NapCat's generated action catalog
+        # (packages/mcp/src/generated/catalog.json) names the canonical
+        # parameter "text" and sets additionalProperties to true, so the
+        # redundant "test" key is harmless there too.  Keep both spellings
+        # with the same value for compatibility with older NapCat builds.
+        return {
+            "action": "get_ai_record",
+            "params": {
+                "group_id": action.group_id,
+                "character": action.character,
+                "text": action.text,
+                "test": action.text,
+            },
+        }
+    if isinstance(action, GetAiCharacters):
+        aiparams: Dict[str, Any] = {"group_id": action.group_id}
+        if action.chat_type is not None:
+            aiparams["chat_type"] = action.chat_type
+        return {"action": "get_ai_characters", "params": aiparams}
+    if isinstance(action, SendPoke):
+        pokeparams: Dict[str, Any] = {"user_id": action.user_id}
+        if action.group_id is not None:
+            pokeparams["group_id"] = action.group_id
+        return {"action": "send_poke", "params": pokeparams}
     # SendGroupForwardMsg
     return {
         "action": "send_group_forward_msg",
