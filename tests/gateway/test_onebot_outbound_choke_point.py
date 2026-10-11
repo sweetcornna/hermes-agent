@@ -50,6 +50,16 @@ TABLE_BLOCKED = "QQ解冻教程"
 AGENT_BLOCKED = "那件事你懂的，我们私下说，别在群里提"
 BENIGN = "今天天气不错，一起去吃饭吗"
 
+# Same untagged format as the Gemini fallback reply that reached production
+# QQ on 2026-10-11. No private chat text or sender IDs are needed to reproduce.
+REASONING_DRAFT = (
+    "思维过程\n"
+    "1. 分析输入：\n   - 群友在说跑步很快\n"
+    "2. 说话风格与规则检查：\n   - 群里打字短，不用句号\n"
+    "3. 构思回复：\n   - 试试：腿跑这么快[MSG_BREAK]谁追得上啊\n"
+    "腿跑这么快[MSG_BREAK]谁追得上啊"
+)
+
 
 def test_the_fixtures_are_what_this_file_claims():
     """Guard the guard: every assertion below is vacuous if these drift."""
@@ -382,3 +392,106 @@ class TestTheTwoStagesCompose:
         assert res.success is False
         assert A.is_agent_gate_blocked_send_result(res) is True
         assert ad._client.actions == []
+
+
+class TestReasoningDraftsStayOffTheWire:
+    """Untagged reply planning is rejected before any bubble is delivered."""
+
+    @pytest.mark.parametrize("chat_id", [f"g{GROUP}", str(DM_PEER)])
+    @pytest.mark.asyncio
+    async def test_reply_and_formatting_fallback_are_both_blocked(self, chat_id):
+        ad = make_adapter()
+        result = await ad._send_with_retry(chat_id, REASONING_DRAFT)
+        assert result.success is False
+        assert result.retryable is False
+        assert result.error_kind == "unknown"
+        assert result.raw_response.get("onebot_reasoning_blocked") is True
+        assert ad._client.actions == []
+
+    @pytest.mark.asyncio
+    async def test_no_agent_judge_or_source_text_logging(self, monkeypatch, caplog):
+        async def _unexpected_judge(*_args, **_kwargs):
+            pytest.fail("Internal drafts must be rejected before a model audit")
+
+        monkeypatch.setattr(A, "judge_outbound", _unexpected_judge)
+        ad = make_adapter()
+        result = await ad.send(f"g{GROUP}", REASONING_DRAFT)
+        assert result.raw_response.get("onebot_reasoning_blocked") is True
+        assert "群友在说跑步很快" not in caplog.text
+        assert "腿跑这么快" not in str(result)
+        assert ad._client.actions == []
+
+    @pytest.mark.asyncio
+    async def test_attachment_captions_are_blocked(self, png):
+        ad = make_adapter()
+        for result in (
+            await ad.send_image_file(f"g{GROUP}", png, caption=REASONING_DRAFT),
+            await ad.send_image(
+                f"g{GROUP}", "https://example.invalid/a.png", caption=REASONING_DRAFT
+            ),
+        ):
+            assert result.raw_response.get("onebot_reasoning_blocked") is True
+        assert ad._client.actions == []
+
+    @pytest.mark.asyncio
+    async def test_standalone_delivery_is_blocked_before_connecting(self):
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"ws_url": "ws://127.0.0.1:3001", "group_replies_enabled": True},
+        )
+        result = await A._standalone_send(cfg, f"g{GROUP}", REASONING_DRAFT)
+        assert result.get("onebot_reasoning_blocked") is True
+
+    @pytest.mark.parametrize("use_caption", [False, True])
+    @pytest.mark.asyncio
+    async def test_voice_is_blocked_before_synthesis(self, monkeypatch, use_caption):
+        def _unexpected_tts(*_args, **_kwargs):
+            pytest.fail("Internal drafts must never be synthesized")
+
+        monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", _unexpected_tts)
+        ad = make_adapter()
+        outcome = await V.speak(
+            ad,
+            f"g{GROUP}",
+            BENIGN if use_caption else REASONING_DRAFT,
+            caption=REASONING_DRAFT if use_caption else None,
+        )
+        assert outcome.spoke is False
+        assert outcome.failure.raw_response.get("onebot_reasoning_blocked") is True
+        assert ad._client.actions == []
+
+    @pytest.mark.asyncio
+    async def test_ai_voice_is_blocked_before_normalization(self):
+        ad = make_adapter()
+        outcome = await V.speak_ai_character(
+            ad, f"g{GROUP}", REASONING_DRAFT, "test-character"
+        )
+        assert outcome.spoke is False
+        assert outcome.failure.raw_response.get("onebot_reasoning_blocked") is True
+        assert ad._client.actions == []
+
+    @pytest.mark.parametrize(
+        "heading", ["思维过程", "### **思考过程：**", "Thought Process:"]
+    )
+    @pytest.mark.asyncio
+    async def test_heading_variants(self, heading):
+        draft = REASONING_DRAFT.replace("思维过程", heading, 1)
+        result = await A.guard_outbound_text(draft, target=GROUP, is_group=True)
+        assert result is not None
+        assert result.raw_response.get("onebot_reasoning_blocked") is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            BENIGN,
+            "你刚才怎么把思维过程发出来了？",
+            "思维过程\n1. 先算距离，再除以时间\n2. 得到速度",
+            "这里的构思回复指的是写作练习",
+            "> 思维过程\n> 3. 构思回复：这是引用的例子",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_ordinary_replies_and_explanations_still_send(self, text):
+        ad = make_adapter()
+        assert (await ad.send(f"g{GROUP}", text)).success is True
+        assert ad._client.actions

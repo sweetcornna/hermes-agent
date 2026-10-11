@@ -358,6 +358,8 @@ async def _policy_refusal(
     target: int,
     is_group: bool,
     texts: Sequence[str],
+    *,
+    source_text: Optional[str] = None,
 ) -> Optional[SendResult]:
     """The refusal for the first text either gate blocks, else ``None``.
 
@@ -378,6 +380,7 @@ async def _policy_refusal(
         target=target,
         is_group=is_group,
         agent_config=getattr(adapter, "config", None),
+        source_text=source_text,
     )
 
 
@@ -454,7 +457,9 @@ async def speak(
     if not script:
         return _not_spoken("nothing to say (empty text after cleanup)")
 
-    refusal = await _policy_refusal(adapter, target, is_group, (script, caption or ""))
+    refusal = await _policy_refusal(
+        adapter, target, is_group, (script, caption or ""), source_text=text
+    )
     if refusal is not None:
         return _not_spoken(refusal.error or "refused by the content policy", refusal)
 
@@ -611,7 +616,7 @@ async def speak_ai_character(
     script = spoken_script(text)
     if not script:
         return _not_spoken("nothing to say (empty text after cleanup)")
-    refusal = await _policy_refusal(adapter, target, True, (script,))
+    refusal = await _policy_refusal(adapter, target, True, (script,), source_text=text)
     if refusal is not None:
         return _not_spoken(refusal.error or "refused by the content policy", refusal)
 

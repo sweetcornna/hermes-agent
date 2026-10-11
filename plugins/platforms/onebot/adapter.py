@@ -721,11 +721,46 @@ def is_agent_gate_blocked_send_result(result: Any) -> bool:
 # block of code next to five call sites that do not have one.
 
 
+_REASONING_DRAFT_HEADING_RE = re.compile(
+    r"\A\s*(?:#{1,6}[ \t]*)?(?:\*\*)?"
+    r"(?:思维过程|思考过程|推理过程|内部思考|thinking process|thought process|internal reasoning)"
+    r"[ \t]*[:：]?[ \t]*(?:\*\*)?[ \t]*[:：]?[ \t]*\r?\n",
+    re.IGNORECASE,
+)
+_REASONING_DRAFT_STEP_RE = re.compile(
+    r"^[ \t]*(?:\d+[.)、]|[-*])[ \t]*"
+    r"(?:构思(?:回复|回答)|拟定(?:回复|回答)|说话风格与规则检查|"
+    r"(?:draft(?:ing)?|compos(?:e|ing)|plan(?:ning)?|refin(?:e|ing))"
+    r"[ \t]+(?:the[ \t]+)?(?:reply|response))",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _is_internal_reply_draft(text: str) -> bool:
+    """Recognize explicit, untagged reply planning, not ordinary explanations.
+
+    Some OpenAI-compatible fallbacks put their draft in ``content`` without
+    ``<think>`` tags or a separate reasoning field. Require both a leading
+    reasoning heading and a reply-planning step. There is no trustworthy
+    final-answer delimiter, so callers must reject the whole draft.
+    """
+    text = str(text).lstrip()
+    # BasePlatformAdapter retries a rejected reply with this exact wrapper.
+    # Inspect the original body too, or the formatting fallback bypasses us.
+    text = text.removeprefix("(Response formatting failed, plain text:)\n\n")
+    text = text.removeprefix(LONG_REPLY_MARKER).lstrip()
+    return bool(
+        _REASONING_DRAFT_HEADING_RE.match(text)
+        and _REASONING_DRAFT_STEP_RE.search(text)
+    )
+
+
 async def guard_outbound_text(
     *texts: Optional[str],
     target: Any,
     is_group: bool,
     agent_config: Any = None,
+    source_text: Optional[str] = None,
 ) -> Optional[SendResult]:
     """Run both gates over every outbound string.  ``None`` means allowed.
 
@@ -751,10 +786,30 @@ async def guard_outbound_text(
     No ``is_group`` condition on either stage.  The mute is about speaking in a
     room full of people; the freeze risk these gates contain is account-level,
     and Tencent's risk control does not care which window the words appeared in.
+
+    ``source_text`` preserves drafting markers before voice normalization
+    removes headings and list boundaries. Policy still audits the wire text.
     """
     candidates = [t for t in texts if t and str(t).strip()]
     if not candidates:
         return None
+
+    # Reject internal drafting before model audits, speech synthesis or
+    # bubble splitting. This shared boundary also covers captions and cron.
+    for candidate in (*candidates, source_text):
+        if candidate and _is_internal_reply_draft(candidate):
+            logger.warning("OneBot: blocked internal reply planning to %s", target)
+            return SendResult(
+                success=False,
+                error="OneBot: internal reply planning was withheld; nothing was sent",
+                error_kind="unknown",
+                retryable=False,
+                raw_response={
+                    "onebot_reasoning_blocked": True,
+                    "reason": "internal_reply_planning",
+                    ("group_id" if is_group else "user_id"): target,
+                },
+            )
 
     gate_cfg = resolve_agent_gate_config(
         agent_config.get("agent_gate") if isinstance(agent_config, dict) else None
