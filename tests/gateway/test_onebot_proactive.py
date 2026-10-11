@@ -740,6 +740,45 @@ class TestLoopGates:
         assert sent_texts(ad) == ["大家下午好呀"]
 
     @pytest.mark.asyncio
+    async def test_a_beat_goes_to_a_room_we_can_see(self, monkeypatch):
+        """A quiet group with an empty buffer can only end at ``no_context``."""
+        one_beat(monkeypatch)
+        freeze_clock(monkeypatch)
+        judged: List[str] = []
+
+        async def _judge(adapter, group, cfg):  # noqa: ANN001
+            judged.append(group)
+            return PJ.JudgeVerdict(speak=True)
+
+        monkeypatch.setattr(PR, "judge_room", _judge)
+        # Always take the first candidate, so the empty group listed first
+        # would win if it were still offered.
+        monkeypatch.setattr(PR.random, "choice", lambda seq: seq[0])
+        ad = make_adapter(
+            {
+                "proactive_enabled": True,
+                "group_whitelist": ["200", GROUP],
+                "proactive_groups": ["200", GROUP],
+            },
+            handler=FakeHandler("好嘞"),
+        )
+        A.record_group_message("default", GROUP, "张三", "今晚打球吗", False)
+        await run_one_beat(ad)
+        assert judged == [GROUP]
+        assert sent_texts(ad) == ["好嘞"]
+
+    def test_rooms_in_view_falls_back_to_every_eligible_group(self):
+        """Nothing in view leaves the choice exactly as it was."""
+        assert PR._rooms_in_view("default", ["200", GROUP]) == ["200", GROUP]
+        A.record_group_message("default", GROUP, "张三", "在吗", False)
+        assert PR._rooms_in_view("default", ["200", GROUP]) == [GROUP]
+
+    def test_rooms_in_view_ignores_blank_entries(self):
+        """A sticker or a recall is not chatter we can read the room from."""
+        A.record_group_message("default", GROUP, "张三", "   ", False)
+        assert PR._rooms_in_view("default", ["200", GROUP]) == ["200", GROUP]
+
+    @pytest.mark.asyncio
     async def test_min_gap_blocks_a_repeat(self, monkeypatch):
         one_beat(monkeypatch)
         freeze_clock(monkeypatch)

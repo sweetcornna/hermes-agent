@@ -47,6 +47,10 @@ The gate ladder, in order (the order is the contract; the tests pin it):
 7. **per-group eligibility** — daily budget, minimum gap since our last post,
    the *shared* speech cap, and "somebody has spoken since we last did".
 
+Among the eligible groups, one whose recent chatter we can actually see is
+picked before one we cannot (:func:`_rooms_in_view`); that changes which room
+the pre-judge is asked about, never whether a gate above lets the beat through.
+
 Modality is **not** a gate.  Whether a post goes out as text or as a voice
 bubble is decided *after* gate 7, next to retrieval, precisely so it can never
 change *which* group hears from us — only how this one post is delivered.  It
@@ -1202,6 +1206,21 @@ def _eligible_groups(
     return eligible
 
 
+def _rooms_in_view(instance_id: str, groups: List[str]) -> List[str]:
+    """The eligible groups we can actually see chatter in, else all of them.
+
+    The chatter buffer lives in memory, so after a restart the quiet groups
+    have nothing in it, and a beat that lands on one of those always ends at
+    the pre-judge's ``no_context`` — a spent beat that could have gone to a
+    room where a post might be welcome.  This only reorders the odds of which
+    group is asked about; it adds no post, and when no eligible group is in
+    view the list comes back unchanged, so a disabled judge behaves exactly as
+    before.
+    """
+    in_view = [group for group in groups if _visible_buffer(instance_id, group)]
+    return in_view or groups
+
+
 class VoiceVerdict(str, Enum):
     """What the voice modality did with one post — the degrade matrix.
 
@@ -1443,7 +1462,7 @@ async def proactive_loop(
         eligible = _eligible_groups(adapter, cfg, day, time.monotonic())
         if not eligible:
             continue
-        group = random.choice(eligible)
+        group = random.choice(_rooms_in_view(adapter.instance_id, eligible))
 
         # A separate model reads the room before the persona is asked to
         # speak: an in-character turn told "say something" rarely says SKIP.
