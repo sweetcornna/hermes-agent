@@ -53,9 +53,24 @@ and onto one of two shapes, selected by ``image_gen.cornna.refs_backend``:
     ``POST {base_url}/images/edits`` — plain multipart, references in the
     ``image`` field. Closer to an edit of the source than a new scene.
 
-Both are exercised against the live endpoint. Which one is right depends
-on whether the caller wants "a new picture *of* this character" (the
-former) or "this picture, changed" (the latter).
+``composed``
+    A chat model looks at the references first and rewrites the scene with
+    every named character's markings, colors, build and outfit spelled out;
+    the result is then drawn through the ``edits`` shape. The chat step is
+    the auxiliary task ``image_refs_host`` (:data:`REFS_HOST_TASK`), so it
+    follows the main agent's model and its ``fallback_providers`` chain
+    unless ``auxiliary.image_refs_host`` pins something else — production
+    runs it claude first, gemini second. When every model in the chain
+    fails, the caller's own scene is drawn unchanged, exactly as ``edits``
+    would. This is the backend for an endpoint whose ``/responses`` host
+    model (``gpt-5.5``) is unavailable or unwanted: Claude and Gemini
+    cannot call the hosted ``image_generation`` tool themselves (verified
+    2026-10-11 — both answer in prose), so they direct and the image model
+    draws.
+
+All three are exercised against the live endpoint. Which one is right
+depends on whether the caller wants "a new picture *of* this character"
+(``responses``/``composed``) or "this picture, changed" (``edits``).
 
 References come in three forms, mixed freely in ``reference_image_urls``:
 a ``character:<short name>`` entry resolved through the allowlist in
@@ -113,6 +128,7 @@ import base64
 import io
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
@@ -225,9 +241,25 @@ REQUEST_TIMEOUT = 180
 REFS_BACKEND_ENV = "CORNNA_IMAGE_REFS_BACKEND"
 
 #: ``responses`` builds a new scene anchored on the references; ``edits``
-#: edits the references themselves. Both work against the live endpoint.
-REFS_BACKENDS: Tuple[str, ...] = ("responses", "edits")
+#: edits the references themselves; ``composed`` has a chat model describe
+#: the characters before ``edits`` draws. All work against the live endpoint.
+REFS_BACKENDS: Tuple[str, ...] = ("responses", "edits", "composed")
 DEFAULT_REFS_BACKEND = "responses"
+
+#: Auxiliary task the ``composed`` backend's host step runs under. With no
+#: ``auxiliary.image_refs_host`` block it resolves like any unconfigured
+#: task: the main agent's model, then the top-level ``fallback_providers``.
+REFS_HOST_TASK = "image_refs_host"
+REFS_HOST_TIMEOUT = 180
+REFS_HOST_MAX_TOKENS = 2048
+
+#: Long edge of the copy of each reference the host model sees. The host
+#: only has to read markings and clothing; the draw step still gets the
+#: original bytes.
+REFS_HOST_PREVIEW_EDGE = 1024
+
+#: A runaway host answer is cut here rather than sent to the image model.
+REFS_HOST_MAX_PROMPT_CHARS = 6000
 
 #: The Responses-API host model that issues the ``image_generation`` tool
 #: call. The picture itself is drawn by the resolved image model
@@ -308,6 +340,32 @@ _REF_ANCHOR_PREAMBLE = (
 _REFS_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
+)
+
+#: System prompt for the ``composed`` backend's host step. The anchoring
+#: preamble and the orientation instruction are added by
+#: :func:`_build_ref_prompt` afterwards, so the host only has to get the
+#: scene and the characters' looks right.
+_REFS_HOST_SYSTEM = (
+    "You write the prompt for an image model that will receive the same "
+    "reference portraits you are shown, attached in the same order. The user "
+    "message gives the scene the picture must show, the short name of the "
+    "character in each reference portrait, and the required orientation.\n"
+    "Look at every reference carefully, then write ONE self-contained image "
+    "prompt that:\n"
+    "- stages the scene exactly as asked: action, setting, time of day, mood "
+    "and framing. Add concrete visual detail, but nothing that contradicts it;\n"
+    "- for every character who appears, names them as '<name> (reference "
+    "image N)' and spells out what the reference shows: species, fur or skin "
+    "colors and markings, eye color, ear, horn and head-fur shape, build, and "
+    "their reference outfit unless the scene changes it;\n"
+    "- leaves out any character the scene does not include.\n"
+    "Keep any text that must appear in the picture verbatim. Answer with the "
+    "prompt only: no preamble, no headings, no commentary, under 350 words."
+)
+
+_THINK_BLOCK_RE = re.compile(
+    r"<(think|thinking|reasoning|thought)>.*?</\1>", re.DOTALL | re.IGNORECASE
 )
 
 #: Verified against the live endpoint (2026-08-19): once a reference image
@@ -610,6 +668,123 @@ def _build_ref_prompt(prompt: str, refs: Sequence[_RefImage], aspect: str) -> st
     intro += f"Reference characters provided in order: {', '.join(named)}.\n\n"
     intro += _REF_ASPECT_INSTRUCTIONS.get(aspect, "")
     return f"{intro}Scene:\n\n{prompt}"
+
+
+def _host_preview_data_url(ref: _RefImage) -> str:
+    """A data URL of *ref* no larger than :data:`REFS_HOST_PREVIEW_EDGE`.
+
+    A full-resolution 立绘 is megabytes of base64 per request on a metered
+    chat model that only needs to read the character's markings. Transparent
+    art is flattened onto white because the JPEG copy has no alpha. Any
+    decoding problem falls back to the original bytes, which were already
+    validated when the reference was loaded.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(ref.data)) as source:
+            if max(source.size) <= REFS_HOST_PREVIEW_EDGE:
+                return ref.data_url()
+            image = source.convert("RGBA")
+        image.thumbnail((REFS_HOST_PREVIEW_EDGE, REFS_HOST_PREVIEW_EDGE))
+        canvas = Image.new("RGB", image.size, (255, 255, 255))
+        canvas.paste(image, mask=image.getchannel("A"))
+        buffer = io.BytesIO()
+        canvas.save(buffer, format="JPEG", quality=90)
+    except Exception as exc:  # noqa: BLE001 — a preview is never worth failing over
+        logger.debug("Cornna: could not shrink reference for the host: %s", exc)
+        return ref.data_url()
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _host_answer_text(response: Any) -> str:
+    """The host's reply text, without reasoning.
+
+    Unlike ``extract_content_or_reasoning`` this never falls back to the
+    reasoning fields: a model's thinking about the scene is not a prompt,
+    and drawing from it would be worse than drawing from the caller's own.
+    """
+    try:
+        content = response.choices[0].message.content
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return ""
+    if isinstance(content, list):
+        content = "".join(
+            str(part.get("text") or "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    if not isinstance(content, str):
+        return ""
+    return _THINK_BLOCK_RE.sub("", content).strip()
+
+
+def _compose_scene_with_host(
+    prompt: str, refs: Sequence[_RefImage], aspect: str
+) -> Tuple[str, Dict[str, Any]]:
+    """Have the ``image_refs_host`` model rewrite *prompt* for the image model.
+
+    Returns ``(scene, extra)``. Never raises: when the whole model chain
+    fails, the caller's scene comes back unchanged with ``refs_host_error``
+    set, so the picture is still drawn from the references and the
+    anchoring preamble, the same as the ``edits`` backend.
+    """
+    labels = "\n".join(
+        f"{index}. {ref.character or 'unnamed reference'}"
+        for index, ref in enumerate(refs, start=1)
+    )
+    content: List[Dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                f"Scene:\n{prompt}\n\n"
+                f"Reference portraits, in attachment order:\n{labels}\n\n"
+                f"Orientation: {aspect}"
+            ),
+        }
+    ]
+    for ref in refs:
+        content.append(
+            {"type": "image_url", "image_url": {"url": _host_preview_data_url(ref)}}
+        )
+    messages = [
+        {"role": "system", "content": _REFS_HOST_SYSTEM},
+        {"role": "user", "content": content},
+    ]
+
+    route: Dict[str, str] = {}
+    try:
+        from agent.auxiliary_client import call_llm  # noqa: PLC0415 — heavy import
+
+        response = call_llm(
+            task=REFS_HOST_TASK,
+            messages=messages,
+            max_tokens=REFS_HOST_MAX_TOKENS,
+            timeout=REFS_HOST_TIMEOUT,
+            route_info=route,
+        )
+        scene = _host_answer_text(response)
+    except Exception as exc:  # noqa: BLE001 — every chain failure degrades the same way
+        logger.warning(
+            "Cornna: reference host failed (%s: %s) — drawing from the caller's scene",
+            type(exc).__name__,
+            exc,
+        )
+        return prompt, {"refs_host_error": f"{type(exc).__name__}: {exc}"[:300]}
+
+    route_extra = {
+        f"refs_host_{key}": value
+        for key, value in route.items()
+        if key in ("provider", "model") and value
+    }
+    if not scene:
+        logger.warning(
+            "Cornna: reference host %s returned no text — drawing from the caller's scene",
+            route.get("model") or "model",
+        )
+        return prompt, {"refs_host_error": "empty answer", **route_extra}
+    if len(scene) > REFS_HOST_MAX_PROMPT_CHARS:
+        scene = scene[:REFS_HOST_MAX_PROMPT_CHARS]
+    return scene, {"composed_prompt": scene, **route_extra}
 
 
 def _image_b64_from_responses_output(body: Any) -> Optional[str]:
@@ -1194,10 +1369,16 @@ class CornnaImageGenProvider(ImageGenProvider):
                 RECOMMENDED_REFERENCE_IMAGES,
             )
 
-        full_prompt = _build_ref_prompt(prompt, refs, aspect)
         characters = [ref.character for ref in refs if ref.character]
+        scene = prompt
+        host_extra: Dict[str, Any] = {}
+        # A plain image-to-image call has no character for the host to
+        # describe, so it is drawn exactly as ``edits`` would draw it.
+        if backend == "composed" and characters:
+            scene, host_extra = _compose_scene_with_host(prompt, refs, aspect)
+        full_prompt = _build_ref_prompt(scene, refs, aspect)
 
-        if backend == "edits":
+        if backend in ("edits", "composed"):
             outcome = self._refs_via_edits(
                 prompt=full_prompt,
                 refs=refs,
@@ -1241,6 +1422,7 @@ class CornnaImageGenProvider(ImageGenProvider):
             extra["characters"] = characters
         if missing_characters:
             extra["missing_characters"] = missing_characters
+        extra.update(host_extra)
         revised = entry.get("revised_prompt")
         if isinstance(revised, str) and revised:
             extra["revised_prompt"] = revised

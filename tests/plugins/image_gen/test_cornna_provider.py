@@ -858,6 +858,12 @@ class TestRefsBackendSelection:
     def test_config_selects_edits(self):
         assert cornna_plugin._resolve_refs_backend({"refs_backend": "edits"}) == "edits"
 
+    def test_config_selects_composed(self):
+        assert (
+            cornna_plugin._resolve_refs_backend({"refs_backend": "composed"})
+            == "composed"
+        )
+
     def test_env_beats_config(self, monkeypatch):
         monkeypatch.setenv("CORNNA_IMAGE_REFS_BACKEND", "EDITS")
         assert (
@@ -1036,6 +1042,130 @@ class TestRefsViaEdits:
         assert result["refs_backend"] == "edits"
         assert result["modality"] == "image"
         assert os.path.isfile(result["image"])
+
+
+_CALL_LLM = "agent.auxiliary_client.call_llm"
+
+
+def _host_reply(text) -> MagicMock:
+    """An OpenAI-shaped chat completion carrying *text* as the answer."""
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = text
+    return response
+
+
+class TestRefsViaComposed:
+    @pytest.fixture(autouse=True)
+    def _use_composed(self, monkeypatch):
+        monkeypatch.setenv("CORNNA_IMAGE_REFS_BACKEND", "composed")
+
+    @staticmethod
+    def _ok():
+        return _resp(json_body={"data": [{"b64_json": _b64_png()}]})
+
+    def test_host_scene_is_drawn_through_edits(self, character_dir):
+        def fake_call_llm(**kwargs):
+            kwargs["route_info"].update(provider="cornna-claude", model="claude-opus-5-5")
+            return _host_reply(
+                "<think>who is in it</think>Grantley (reference image 1) pours tea "
+                "for Algo (reference image 2) by a rainy window."
+            )
+
+        with patch(_CALL_LLM, side_effect=fake_call_llm) as host, patch(
+            _POST, return_value=self._ok()
+        ) as post:
+            result = CornnaImageGenProvider().generate(
+                prompt="窗边喝茶",
+                aspect_ratio="landscape",
+                reference_characters=["grantley", "algo"],
+            )
+
+        assert result["success"] is True, result
+        host_kwargs = host.call_args.kwargs
+        assert host_kwargs["task"] == "image_refs_host"
+        system, user = host_kwargs["messages"]
+        assert system["role"] == "system"
+        text = user["content"][0]["text"]
+        for expected in ("窗边喝茶", "1. grantley", "2. algo", "landscape"):
+            assert expected in text
+        assert [part["image_url"]["url"] for part in user["content"][1:]] == [
+            "data:image/png;base64," + _b64_png()
+        ] * 2
+
+        assert post.call_args[0][0] == "https://api.cornna.xyz/v1/images/edits"
+        drawn = post.call_args[1]["data"]["prompt"]
+        assert "pours tea" in drawn
+        assert "who is in it" not in drawn
+        assert "窗边喝茶" not in drawn
+        # The verified anchoring and orientation steering still wrap it.
+        assert "strictly match their species" in drawn
+        assert "landscape-oriented" in drawn
+        assert len(post.call_args[1]["files"]) == 2
+
+        assert result["refs_backend"] == "composed"
+        assert result["refs_host_provider"] == "cornna-claude"
+        assert result["refs_host_model"] == "claude-opus-5-5"
+        assert result["composed_prompt"].startswith("Grantley (reference image 1)")
+        assert result["prompt"] == "窗边喝茶"
+
+    def test_chain_failure_draws_the_callers_scene(self, character_dir):
+        with patch(_CALL_LLM, side_effect=RuntimeError("all providers down")), patch(
+            _POST, return_value=self._ok()
+        ) as post:
+            result = CornnaImageGenProvider().generate(
+                prompt="窗边喝茶", reference_characters=["grantley"]
+            )
+
+        assert result["success"] is True, result
+        assert "窗边喝茶" in post.call_args[1]["data"]["prompt"]
+        assert result["refs_host_error"] == "RuntimeError: all providers down"
+        assert "composed_prompt" not in result
+
+    def test_reasoning_only_answer_draws_the_callers_scene(self, character_dir):
+        with patch(
+            _CALL_LLM, return_value=_host_reply("<think>only thinking</think>")
+        ), patch(_POST, return_value=self._ok()) as post:
+            result = CornnaImageGenProvider().generate(
+                prompt="窗边喝茶", reference_characters=["grantley"]
+            )
+
+        assert result["success"] is True, result
+        assert "窗边喝茶" in post.call_args[1]["data"]["prompt"]
+        assert result["refs_host_error"] == "empty answer"
+
+    def test_plain_image_reference_skips_the_host(self, tmp_path):
+        photo = tmp_path / "photo.png"
+        photo.write_bytes(bytes.fromhex(_PNG_HEX))
+        with patch(_CALL_LLM, side_effect=AssertionError("host must not run")), patch(
+            _POST, return_value=self._ok()
+        ) as post:
+            result = CornnaImageGenProvider().generate(
+                prompt="make it winter", reference_image_urls=[str(photo)]
+            )
+
+        assert result["success"] is True, result
+        assert post.call_args[1]["data"]["prompt"] == "make it winter"
+
+    def test_large_reference_is_shrunk_for_the_host_only(self, character_dir):
+        big = io.BytesIO()
+        Image.new("RGBA", (3000, 1500), (10, 20, 30, 0)).save(big, format="PNG")
+        (character_dir / "02_grantley_bell.png").write_bytes(big.getvalue())
+
+        with patch(_CALL_LLM, return_value=_host_reply("Grantley waves.")) as host, patch(
+            _POST, return_value=self._ok()
+        ) as post:
+            result = CornnaImageGenProvider().generate(
+                prompt="p", reference_characters=["grantley"]
+            )
+
+        assert result["success"] is True, result
+        url = host.call_args.kwargs["messages"][1]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/jpeg;base64,")
+        with Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))) as preview:
+            assert max(preview.size) == cornna_plugin.REFS_HOST_PREVIEW_EDGE
+        # The image model still gets the original bytes.
+        assert post.call_args[1]["files"][0][1][1] == big.getvalue()
 
 
 class TestReferenceSourceForms:
