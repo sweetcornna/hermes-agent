@@ -9,7 +9,7 @@ translates whatever the persona wrote into an image segment.
 That split is the whole design.  A keyword table matching the reply text
 against sticker descriptions was the obvious cheap version, and it is wrong
 here: it re-derives an intent the writer already had, from the words it chose
-to express something else.  "我哪知道" deserves ``shrug``; a keyword matcher
+to express something else.  "我哪知道" deserves ``unimpressed``; a keyword matcher
 reading it for the token 知道 has no way to know that, while the thing that
 wrote the sentence does.  So the roll gates *availability*, and selection is
 the persona's.
@@ -22,7 +22,7 @@ sentence in the prompt would be negotiated with on every single turn.
 
 How the choice comes back
 -------------------------
-As an inline marker, ``[STICKER:thumbs-up]``, structurally identical to the
+As an inline marker, ``[STICKER:smug]``, structurally identical to the
 ``[MSG_BREAK]`` the persona already writes.  Reusing that shape costs nothing:
 no tool-call plumbing, no second model round-trip, no schema for the model to
 get wrong — and the adapter is already in the business of lifting control
@@ -32,6 +32,9 @@ Unknown slugs are dropped in silence.  A model that invents
 ``[STICKER:happy]`` has made a mistake the reader must never be shown; the
 alternatives are worse in both directions — raising loses the whole reply
 over a flourish, and passing it through prints raw syntax into a QQ window.
+The one exception is the handful of slugs the first set used: history from
+before the swap still carries them, so they resolve to the nearest new face
+(see ``_RETIRED_SLUGS``).
 
 Wire form
 ---------
@@ -40,8 +43,8 @@ Wire form
 The reason is recorded on ``BASE64_MAX_BYTES`` there: the OneBot backend
 normally runs in its own container and cannot read this process's filesystem,
 so a host path handed across that boundary resolves to nothing.  These files
-are ~25 KB each, three orders of magnitude under the 8 MiB inlining ceiling,
-so they always take the base64 branch and never the literal-path fallback.
+are ~130 KB each, well under the 8 MiB inlining ceiling, so they always take
+the base64 branch and never the literal-path fallback.
 """
 
 from __future__ import annotations
@@ -89,64 +92,104 @@ DEFAULT_STICKER_PROBABILITY = 0.18
 #: The descriptions are the *only* thing the model sees about each image, so
 #: they carry both halves: the drawing (so it can tell them apart) and the
 #: occasion (so it can choose). Slugs match the filenames in the asset dir.
+#:
+#: Every image is Grantley's own face from Knights College 2, cut from one of
+#: his uniform sprites with the face-icon rectangle the game itself uses; the
+#: pattern behind each slug and the build script are recorded in
+#: ``docs/personas/grantley-kc2-20261010``. The set follows the expressions he
+#: actually wears most often in the KC2 script, and each ``when`` comes from
+#: the lines spoken with that face, not from what the picture suggests.
 STICKER_CATALOG: List[dict] = [
     {
-        "slug": "heart-hug",
-        "file": "heart-hug.jpg",
-        "scene": "抱着一颗爱心，闭眼微笑",
-        "when": "喜欢、感动、心软、被戳中",
-    },
-    {
-        "slug": "fired-up",
-        "file": "fired-up.jpg",
-        "scene": "握拳，神情认真，旁边冒星星",
-        "when": "有干劲、包在我身上、来吧",
-    },
-    {
-        "slug": "unimpressed",
-        "file": "unimpressed.jpg",
-        "scene": "撇嘴别过脸，头顶叹气云",
-        "when": "无语、不屑、懒得理",
-    },
-    {
-        "slug": "flustered",
-        "file": "flustered.jpg",
-        "scene": "抓着头，脸红",
-        "when": "害羞、尴尬、被看穿",
-    },
-    {
-        "slug": "thumbs-up",
-        "file": "thumbs-up.jpg",
-        "scene": "竖起大拇指，旁边冒星星",
-        "when": "赞、没问题、干得好",
-    },
-    {
-        "slug": "shrug",
-        "file": "shrug.jpg",
-        "scene": "摊开双手，头顶叹气云",
-        "when": "无奈、我哪知道、随便",
-    },
-    {
-        "slug": "angry",
-        "file": "angry.jpg",
-        "scene": "抱着手臂生气，头上冒怒气符号",
-        "when": "生气、不爽、别惹我",
+        "slug": "grin",
+        "file": "grin.png",
+        "scene": "眯着眼咧嘴笑",
+        "when": "高兴、打招呼、好耶",
     },
     {
         "slug": "laughing",
-        "file": "laughing.jpg",
-        "scene": "张嘴大笑，旁边一个感叹号",
-        "when": "大笑、开心、嘲笑",
+        "file": "laughing.png",
+        "scene": "眯着眼张大嘴笑",
+        "when": "哇哈哈、乐坏了、笑别人出糗",
     },
     {
-        "slug": "thinking",
-        "file": "thinking.jpg",
-        "scene": "托着下巴思考，旁边冒星星",
-        "when": "思考、有主意、在想",
+        "slug": "smug",
+        "file": "smug.png",
+        "scene": "直直看着你，嘴角挑起露出虎牙",
+        "when": "交给我、得意、就这？",
+    },
+    {
+        "slug": "fired-up",
+        "file": "fired-up.png",
+        "scene": "竖着眉毛张嘴喊",
+        "when": "来劲、走走走、不服再比",
+    },
+    {
+        "slug": "angry",
+        "file": "angry.png",
+        "scene": "竖眉瞪眼吼，额角冒汗",
+        "when": "被损了顶回去、说谁呢、吵死了",
+    },
+    {
+        "slug": "unimpressed",
+        "file": "unimpressed.png",
+        "scene": "半眯着眼，额角一滴汗",
+        "when": "无语、你认真的？、懒得理",
+    },
+    {
+        "slug": "doubtful",
+        "file": "doubtful.png",
+        "scene": "挑着眉毛半眯眼看人",
+        "when": "嗯？、真的假的、不太信",
+    },
+    {
+        "slug": "shocked",
+        "file": "shocked.png",
+        "scene": "眼睛瞪成两个圆点，张嘴冒汗",
+        "when": "啥？！、吓一跳、出事了",
+    },
+    {
+        "slug": "flustered",
+        "file": "flustered.png",
+        "scene": "圆点眼张着嘴，脸红冒汗",
+        "when": "被说中、才没有、慌了",
+    },
+    {
+        "slug": "shy",
+        "file": "shy.png",
+        "scene": "眯着眼笑，脸颊发红",
+        "when": "被夸、被亚戈逗、开心又不好意思",
+    },
+    {
+        "slug": "sheepish",
+        "file": "sheepish.png",
+        "scene": "皱着眉闭眼干笑，额角冒汗",
+        "when": "抱歉抱歉、心虚、被抓包",
+    },
+    {
+        "slug": "aggrieved",
+        "file": "aggrieved.png",
+        "scene": "皱眉瞪圆眼喊，额角冒汗",
+        "when": "好过分！、冤枉、不甘心",
     },
 ]
 
 _BY_SLUG = {entry["slug"]: entry for entry in STICKER_CATALOG}
+
+#: Slugs from the first bundled set that the KC2 set dropped → nearest face.
+#:
+#: Session history written before 2026-10-10 still has these markers in it,
+#: and a model imitating its own earlier turns will write them again; losing
+#: the sticker in silence there is a regression the reader would notice. Only
+#: the bundled catalogue honours them — a pack with its own ``catalog.json``
+#: names its own slugs — and every target is itself catalogued, so this never
+#: widens the allowlist.
+_RETIRED_SLUGS = {
+    "thumbs-up": "smug",
+    "shrug": "sheepish",
+    "heart-hug": "shy",
+    "thinking": "doubtful",
+}
 
 #: ``[STICKER:slug]``.  Case-insensitive on the tag and forgiving about
 #: internal spaces, because those are the ways a model gets the shape
@@ -313,11 +356,15 @@ def sticker_path(slug: str, directory: Optional[str] = None) -> Optional[str]:
     The catalogue is the allowlist, checked before the filesystem is touched:
     the slug arrives from model output, and resolving arbitrary model-authored
     text against a directory is how a traversal gets read off disk.  A name
-    that is not one of the nine is not a path at all.
+    that is not in the catalogue is not a path at all.
     """
     base = directory or default_sticker_dir()
-    by_slug = {e["slug"]: e for e in load_catalog(base)}
-    entry = by_slug.get(str(slug or "").strip().lower())
+    catalog = load_catalog(base)
+    by_slug = {e["slug"]: e for e in catalog}
+    key = str(slug or "").strip().lower()
+    if key not in by_slug and catalog is STICKER_CATALOG:
+        key = _RETIRED_SLUGS.get(key, key)
+    entry = by_slug.get(key)
     if entry is None:
         return None
     path = Path(base) / entry["file"]
@@ -364,13 +411,13 @@ def render_menu(entries: Sequence[dict]) -> str:
     lines = [
         "## 可用表情",
         "",
-        "你有下面这几张自己的表情图。想用的时候，在回复里单独起一行写 "
-        "`[STICKER:名字]`，这一行会被换成对应的图片发出去；不想用就一个字都不用提。",
-        "一条回复最多用一张，不要连发。",
+        "下面是我自己的几张表情。想发就在回复里单独一行写 `[STICKER:名字]`，"
+        "这一行会换成那张图发出去；不想发就提都别提。",
+        "一条回复最多一张，别连发。",
         "",
     ]
     for entry in entries:
-        lines.append(f"- `{entry['slug']}` — {entry['scene']}。用于：{entry['when']}")
+        lines.append(f"- `{entry['slug']}` — {entry['scene']}。适合：{entry['when']}")
     return "\n".join(lines)
 
 

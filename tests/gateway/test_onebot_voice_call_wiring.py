@@ -605,7 +605,7 @@ class TestActiveRepliesAreSpoken:
         ad = make_adapter()
         active(ad)
 
-        result = await ad.send(DM_CHAT, "好呀[MSG_BREAK]我这就来 [STICKER:thumbs-up]")
+        result = await ad.send(DM_CHAT, "好呀[MSG_BREAK]我这就来 [STICKER:smug]")
 
         assert result.success is True
         # The bubble break survives as a pause (``spoken_script`` turns the

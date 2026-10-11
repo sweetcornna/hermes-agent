@@ -669,7 +669,7 @@ class TestWiring:
 
 
 class TestCharacterRegistry:
-    def test_all_eleven_keys_carried_over(self):
+    def test_registered_keys_and_their_deployed_filenames(self):
         assert set(characters.CHARACTER_KEYS) == {
             "grantley",
             "algo",
@@ -682,8 +682,14 @@ class TestCharacterRegistry:
             "helio",
             "shayat",
             "bating",
+            # KC2's new main cast
+            "felix",
+            "gamir",
+            "bayfleet",
         }
         assert characters.CHARACTER_KEYS["grantley"] == "02_grantley_bell.png"
+        # Deployed files are found by these names; renaming one orphans it.
+        assert characters.CHARACTER_KEYS["bating"] == "11_bating.png"
 
     def test_dir_defaults_to_profile_aware_characters_directory(
         self, tmp_path, monkeypatch

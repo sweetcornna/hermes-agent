@@ -1,0 +1,453 @@
+{
+ "export": "骑士学院1和2_图片与台词全集.zip",
+ "assets": [
+  {
+   "kind": "sticker",
+   "slug": "grin",
+   "file": "grin.png",
+   "pattern": "11050",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/11050.png",
+   "source_crc32": "3a10c802",
+   "source_sha256": "04710d79ec29da7b0c05690542c22ccbcc1d55f3ceeb04723f15061f1bccbb68",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "be323a7d7db30e9436ead68ef1f76cda023ff1f89878eedf4b499d2e356a304b",
+   "bytes": 124911
+  },
+  {
+   "kind": "sticker",
+   "slug": "laughing",
+   "file": "laughing.png",
+   "pattern": "13050",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/13050.png",
+   "source_crc32": "6ac9937b",
+   "source_sha256": "8bf880106ae45ee2b1c0c5f77f65e33937d806fd56b25e2bea292a5877d2d51a",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "f848d6fa378865bc9849a5e502f7b1a3a0da28023339d83a0ba56353c85b8e5a",
+   "bytes": 129662
+  },
+  {
+   "kind": "sticker",
+   "slug": "smug",
+   "file": "smug.png",
+   "pattern": "10000",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "e93dd0c0",
+   "source_sha256": "fa32a78938184689b73adcdb54f939184a6f43c1c5657a41f8796c0484cbf8f9",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "66fc14b11e455867e05488addf90093d41876ddfc8083240fccf2887cca674f2",
+   "bytes": 115281
+  },
+  {
+   "kind": "sticker",
+   "slug": "fired-up",
+   "file": "fired-up.png",
+   "pattern": "13200",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/13200.png",
+   "source_crc32": "910447bc",
+   "source_sha256": "151be1e21a472dfa824007781d804b0233e60c6e7a92a9f041c23656d485bc2a",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "d1af92e8ef89eb6f07bf0dc47b9ed1807e40578788baab73b1f3e9ad617e13ab",
+   "bytes": 131059
+  },
+  {
+   "kind": "sticker",
+   "slug": "angry",
+   "file": "angry.png",
+   "pattern": "12221",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/12221.png",
+   "source_crc32": "104b641d",
+   "source_sha256": "fd59204d9252140af2acb6270c39e85a1e098b3fb7b60a41d0ade394d17f7e9b",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "d41cf558efefe4a228bbfac5a6f66404bca4220e98ad878164bd156c9b1f722b",
+   "bytes": 131037
+  },
+  {
+   "kind": "sticker",
+   "slug": "unimpressed",
+   "file": "unimpressed.png",
+   "pattern": "10031",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/10031.png",
+   "source_crc32": "508a0803",
+   "source_sha256": "759225b89650f771812588eb50d27a6f20f99d261bc5e6593207038eace07b11",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "4cd0302f3abe2cc7e441aa83e7945cac299d61167d2246e6c4847bd44e88380c",
+   "bytes": 125674
+  },
+  {
+   "kind": "sticker",
+   "slug": "doubtful",
+   "file": "doubtful.png",
+   "pattern": "10131",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/10131.png",
+   "source_crc32": "afcdcd88",
+   "source_sha256": "8327b08f05b1b36802606756b71752c67fd14245b6434b7ab7c7bd8181093ba7",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "6b8f1d2001c6228fe0d2630557855b121994c99b5deb2d84bd57ae8a04a68506",
+   "bytes": 124981
+  },
+  {
+   "kind": "sticker",
+   "slug": "shocked",
+   "file": "shocked.png",
+   "pattern": "12071",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/12071.png",
+   "source_crc32": "a820552b",
+   "source_sha256": "625df6fd920ec61947a60c3f25ce8fc31dea21809817592670a6213ef4a84b0e",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "ee7e7fd4c9abdb217049f3a374b1895bd33dfbc75e35fd3854752c22104fab31",
+   "bytes": 130050
+  },
+  {
+   "kind": "sticker",
+   "slug": "flustered",
+   "file": "flustered.png",
+   "pattern": "12073",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/12073.png",
+   "source_crc32": "c171e24b",
+   "source_sha256": "413c396fbba1519d917a205806a0d64ef2e7d1ab74ed31a5aa4e3e7de6943d83",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "a244b1ca3b303d28cdb071a7c16b5578348cc47d5c96ad4b0760c215b884e8e0",
+   "bytes": 130824
+  },
+  {
+   "kind": "sticker",
+   "slug": "shy",
+   "file": "shy.png",
+   "pattern": "11052",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/11052.png",
+   "source_crc32": "ff6b58e0",
+   "source_sha256": "a00b45d6fc05032e666c8621ca002db8fdd098072f3b0c63d71b072c7e25a160",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "60fed11cefcf797f1ecf28a6814a8e0233db031adba5252bb197b0f4b526dabe",
+   "bytes": 125505
+  },
+  {
+   "kind": "sticker",
+   "slug": "sheepish",
+   "file": "sheepish.png",
+   "pattern": "10351",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/10351.png",
+   "source_crc32": "8b60a10c",
+   "source_sha256": "ef747c20ff4c104c049ed7c5434c1966477ea4f0cbc5948b20ad533277571e2d",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "9ed8a740b8b71ce45da22a3ccf912df21e846d861cd99a3cded167d1c5d4af12",
+   "bytes": 124705
+  },
+  {
+   "kind": "sticker",
+   "slug": "aggrieved",
+   "file": "aggrieved.png",
+   "pattern": "12371",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/12371.png",
+   "source_crc32": "c98bf03e",
+   "source_sha256": "fd1ce403fbcba4075903617fe32992644719ea9ab32197f1a14e446d493d306e",
+   "icon_rect": [
+    385,
+    100,
+    822,
+    385
+   ],
+   "size": [
+    437,
+    285
+   ],
+   "sha256": "83ef1fcaed6c8c2c5caaf3f1abaa34412ba44f288c6ef5930e0510e799470cbd",
+   "bytes": 129224
+  },
+  {
+   "kind": "portrait",
+   "key": "algo",
+   "file": "01_algo_northrop.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/亚戈/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "913068c9",
+   "size": [
+    1224,
+    1080
+   ],
+   "sha256": "e2de6a0dea697f781d77790db7a3f2e74408f9869d3387903f5473b2af4e709a",
+   "bytes": 638444
+  },
+  {
+   "kind": "portrait",
+   "key": "grantley",
+   "file": "02_grantley_bell.png",
+   "pattern": "10000",
+   "source": "图片/格兰特利/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "e93dd0c0",
+   "size": [
+    1168,
+    1125
+   ],
+   "sha256": "fa32a78938184689b73adcdb54f939184a6f43c1c5657a41f8796c0484cbf8f9",
+   "bytes": 853247
+  },
+  {
+   "kind": "portrait",
+   "key": "oscar",
+   "file": "03_oscar_lawrence.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/奥斯卡/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "c47a3fd8",
+   "size": [
+    1168,
+    1032
+   ],
+   "sha256": "d78251cd7197bf8adcaa70df6ceb7c01b12da85695bb28b333398e9102929469",
+   "bytes": 513926
+  },
+  {
+   "kind": "portrait",
+   "key": "diedrich",
+   "file": "04_diedrich_olsen.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/迪德里奇/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "a5648573",
+   "size": [
+    1472,
+    1080
+   ],
+   "sha256": "44c72ff9e9e8cb10828dc02c04fb69922d72900380e2af69c604128cce2412f9",
+   "bytes": 723988
+  },
+  {
+   "kind": "portrait",
+   "key": "paul",
+   "file": "05_paul_pfizner.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/保罗/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "6de0aad5",
+   "size": [
+    1168,
+    1160
+   ],
+   "sha256": "97d8f63e889f6e97efce866c5cb1ad60e26e0cd921650dc58c7a6b6fb73c6259",
+   "bytes": 649997
+  },
+  {
+   "kind": "portrait",
+   "key": "theo",
+   "file": "06_theo_prince.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/西奥/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "e7bee836",
+   "size": [
+    1256,
+    1080
+   ],
+   "sha256": "671c840c2b71b4b5efe2a7091a68868b7f78fdc1fd1521fbfad8b3b96217e769",
+   "bytes": 514348
+  },
+  {
+   "kind": "portrait",
+   "key": "julius",
+   "file": "07_julius_kinial.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/尤利乌斯/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "7cfb29f7",
+   "size": [
+    1168,
+    1122
+   ],
+   "sha256": "b17c5cda8205f7d310380eb4a572fa4b4f62a71e1f046b992b2a17b932649a45",
+   "bytes": 847507
+  },
+  {
+   "kind": "portrait",
+   "key": "hermann",
+   "file": "08_hermann_furst.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/赫尔曼/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "d47be891",
+   "size": [
+    1100,
+    1117
+   ],
+   "sha256": "7d1f51be4e7eb872032051c2f15b8e5fb704101f282a8da3dbf0265364355e48",
+   "bytes": 698006
+  },
+  {
+   "kind": "portrait",
+   "key": "helio",
+   "file": "09_helio_delatre.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/希利欧/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "0df1189e",
+   "size": [
+    1256,
+    1120
+   ],
+   "sha256": "f066912395f1e11184bcad1292af83c53c3541414567cface30f9c729bd5da44",
+   "bytes": 605909
+  },
+  {
+   "kind": "portrait",
+   "key": "shayat",
+   "file": "10_shayat.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/沙亚特/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "ca2067a1",
+   "size": [
+    1216,
+    1155
+   ],
+   "sha256": "a5bbcd9dd753bbeffe0a03dbadca9aa2703eba122d2386af2a362e50f179fc4b",
+   "bytes": 772087
+  },
+  {
+   "kind": "portrait",
+   "key": "bating",
+   "file": "11_bating.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/巴亭/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "ee0db674",
+   "size": [
+    1621,
+    1110
+   ],
+   "sha256": "7843848c014ce195c45050cd5965e536ee074d84c53622aca3425cf45b901a0d",
+   "bytes": 881624
+  },
+  {
+   "kind": "portrait",
+   "key": "felix",
+   "file": "12_felix.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/菲力克斯/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "2cc0c468",
+   "size": [
+    1556,
+    1100
+   ],
+   "sha256": "c30b4c5031b3bd938070c15b19ce446f1e9cf821307aab5186128e47d8f4225d",
+   "bytes": 488419
+  },
+  {
+   "kind": "portrait",
+   "key": "gamir",
+   "file": "13_gamir.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/伽米尔/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "5a36a22e",
+   "size": [
+    1140,
+    1080
+   ],
+   "sha256": "b3f04e45b9670182f46aa02f7497d35a2541976a547143dec902364d3181ab7d",
+   "bytes": 558287
+  },
+  {
+   "kind": "portrait",
+   "key": "bayfleet",
+   "file": "14_bayfleet.png",
+   "pattern": "10000",
+   "source": "图片/其他角色/贝弗利特/骑士学院2/完整立绘_全部差分/10000.png",
+   "source_crc32": "a31a68f4",
+   "size": [
+    1556,
+    1080
+   ],
+   "sha256": "2037ef5f83f89897d3b92f4ee256393a9f1d1fb69bbe51b387918f38022ecf2e",
+   "bytes": 726171
+  }
+ ]
+}

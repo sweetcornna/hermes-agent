@@ -1,75 +1,85 @@
-# KC2 new-term daily-life extensions, NOT official chapter events.
-# Names match assets/grantley.md; evidence: docs/personas/grantley-EVIDENCE.md.
-# Populate every sampled category: partial/empty packs fall back to GENERIC_SEEDS.
-# Operators may override via persona_life/grantley.events.yaml.
+# 格兰二年级新学期的日常素材，原创，不是原作章节。
+# 场景都照两作剧本里他真会干的事挑；名字用 KC2 简中译名，和 assets/grantley.md 对得上。
+# 出处见 docs/personas/grantley-kc2-20261010/CANON.md。
+# 每个类别都要有内容，缺了会退回 GENERIC_SEEDS。
+# 运营方可以用 persona_life/grantley.events.yaml 覆盖。
 
 mission_scenario:
-  - 帮忙整理训练器材
-  - 替同学把借来的书还到图书馆
-  - 帮食堂搬一小筐食材
-  - 去附近买当天要用的东西
-  - 陪同学找落在操场的水壶
+  - 帮迪德里奇教官收拾训练器材
+  - 替奥斯卡把借的书还回图书馆
+  - 帮厨房搬一筐海鲜
+  - 去小卖部买当天要用的东西
+  - 陪伽米尔找落在运动场的东西
+  - 给保罗跑腿买做饭的材料
 
 travel_destination:
-  - 学院附近的散步小路
-  - 学院附近的小店
-  - 学院附近的集市
+  - 岛上的景观公园
+  - 岛上的书店和咖啡厅
+  - 学院后面的海岸
+  - 岛上的小镇
 
 academy_scene:
-  - 练一会儿剑术
-  - 在食堂吃饭
-  - 听西利欧讲课，差点打瞌睡
-  - 洗完澡，和室友聊今天的事
-  - 被亚戈拉去洗澡，嘴上嫌麻烦
-  - 在宿舍和室友闲聊
-  - 绕操场跑圈
-  - 训练后坐下歇一会儿
-  - 准备明天上课要用的东西
-  - 和同学商量晚饭吃什么
+  - 在训练室做力量训练
+  - 去学院后面的海岸练剑
+  - 在餐厅又添了一份
+  - 去休息厅找三明治垫肚子
+  - 听希利欧教官讲课，打瞌睡被点名
+  - 借奥斯卡的笔记补抄
+  - 和赫尔曼在游戏室打台球
+  - 在顶楼晒太阳睡午觉
+  - 训练完冲个澡
+  - 在宿舍和室友瞎聊
+  - 绕运动场跑圈
+  - 和西奥商量怎么赢巴亭陛下
+  - 拉大家去景观公园打羽毛球
+  - 蹭保罗做的饭
 
 companion:
   - 亚戈
   - 奥斯卡
-  - 提奥
-  - 尤利乌斯
+  - 西奥
   - 赫尔曼
-  - 保尔
+  - 保罗
+  - 尤利乌斯
   - 伽米尔
-  - 菲利克斯
+  - 菲力克斯
   - 独自一人
 
-# Teachers, not classmates; not a sampled companion pool.
+# 教官，不是同学，不进同伴抽样。
 mentor:
-  - 戴德里克
-  - 西利欧
+  - 迪德里奇
+  - 希利欧
 
 tension:
-  - 下课比预想的晚了一点
+  - 下课比预想的晚
   - 忘带水壶
-  - 临时下了一阵雨
+  - 突然下了阵雨
   - 等的人还没来
-  - 大家对晚饭吃什么意见不同
+  - 大家对晚饭吃什么意见不一样
+  - 肚子饿得比预想的早
+  - 想去的店今天没开
 
 weather:
   - 晴
   - 阴
   - 小雨
-  - 凉风
+  - 海风大
 
 mood:
   - 兴奋
+  - 来劲
+  - 心情好
   - 犯困
   - 无聊
   - 懒洋洋
-  - 认真
-  - 轻松
+  - 不服气
   - 有点急躁
 
 duration_hint:
   - 一会儿
   - 一节课的工夫
-  - 半天内
+  - 半天
   - 当天回来
 
 season_hint:
-  - 新学期，季节未定
+  - 新学期，季节没定

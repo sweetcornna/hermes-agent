@@ -427,7 +427,7 @@ class TestEveryTextToWirePathIsGated:
         *before* the audit, so a refused sentence takes its sticker with it.
         """
         ad = make_adapter()
-        res = await ad.send(f"g{GROUP}", f"{BLOCKED_TEXT}[STICKER:thumbs-up]")
+        res = await ad.send(f"g{GROUP}", f"{BLOCKED_TEXT}[STICKER:smug]")
         assert res.success is False
         assert ad._client.actions == []
 

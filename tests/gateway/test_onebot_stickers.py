@@ -207,16 +207,16 @@ class TestMarkerExtraction:
     """``extract_markers`` lifts syntax out of prose without scarring it."""
 
     def test_a_marker_on_its_own_line_leaves_no_hole(self):
-        body, slugs = S.extract_markers("第一句\n\n[STICKER:thumbs-up]\n\n第二句")
-        assert slugs == ["thumbs-up"]
+        body, slugs = S.extract_markers("第一句\n\n[STICKER:smug]\n\n第二句")
+        assert slugs == ["smug"]
         assert body == "第一句\n\n第二句", "removal left a phantom paragraph break"
 
     def test_an_inline_marker_is_lifted_too(self):
-        body, slugs = S.extract_markers("干得漂亮[STICKER:thumbs-up]")
-        assert (body, slugs) == ("干得漂亮", ["thumbs-up"])
+        body, slugs = S.extract_markers("干得漂亮[STICKER:smug]")
+        assert (body, slugs) == ("干得漂亮", ["smug"])
 
     def test_a_marker_only_body_becomes_empty(self):
-        assert S.extract_markers("[STICKER:shrug]") == ("", ["shrug"])
+        assert S.extract_markers("[STICKER:sheepish]") == ("", ["sheepish"])
 
     def test_an_unknown_slug_is_still_stripped(self):
         """Validity is the caller's question; syntax never reaches a reader."""
@@ -230,12 +230,12 @@ class TestMarkerExtraction:
         assert (body, slugs) == ("就是一句普通的话\n\n带个空行", [])
 
     def test_case_and_inner_spacing_are_forgiven(self):
-        body, slugs = S.extract_markers("好[sticker: Thumbs-Up ]")
-        assert (body, slugs) == ("好", ["thumbs-up"])
+        body, slugs = S.extract_markers("好[sticker: Fired-Up ]")
+        assert (body, slugs) == ("好", ["fired-up"])
 
     def test_several_markers_are_all_reported_in_order(self):
-        _, slugs = S.extract_markers("[STICKER:shrug]a[STICKER:angry]")
-        assert slugs == ["shrug", "angry"]
+        _, slugs = S.extract_markers("[STICKER:sheepish]a[STICKER:angry]")
+        assert slugs == ["sheepish", "angry"]
 
     def test_empty_input_is_safe(self):
         assert S.extract_markers("") == ("", [])
@@ -251,8 +251,25 @@ class TestSlugResolution:
         ]
         assert missing == [], f"catalogued but absent: {missing}"
 
-    def test_all_nine_are_catalogued(self):
-        assert len(S.STICKER_CATALOG) == 9
+    def test_all_twelve_are_catalogued(self):
+        assert len(S.STICKER_CATALOG) == 12
+
+    def test_retired_slugs_resolve_to_their_replacement_face(self):
+        """History from before the KC2 swap still carries the old markers."""
+        for old, new in S._RETIRED_SLUGS.items():
+            assert old not in S._BY_SLUG
+            assert new in S._BY_SLUG
+            assert S.sticker_path(old) == S.sticker_path(new)
+        assert S.sticker_path("Thumbs-Up").endswith("smug.png")
+
+    def test_retired_slugs_mean_nothing_to_a_pack_of_its_own(self, tmp_path):
+        (tmp_path / "smug.png").write_bytes(b"\x89PNG")
+        (tmp_path / "catalog.json").write_text(
+            '[{"slug": "smug", "file": "smug.png", "scene": "s", "when": "w"}]',
+            "utf-8",
+        )
+        assert S.sticker_path("smug", str(tmp_path))
+        assert S.sticker_path("thumbs-up", str(tmp_path)) is None
 
     def test_an_unknown_slug_resolves_to_nothing(self):
         assert S.sticker_path("nonexistent") is None
@@ -266,8 +283,8 @@ class TestSlugResolution:
         assert S.available_stickers(str(tmp_path / "nope")) == []
 
     def test_a_partial_directory_offers_only_what_is_there(self, tmp_path):
-        (tmp_path / "shrug.jpg").write_bytes(b"\xff\xd8\xff")
-        assert [e["slug"] for e in S.available_stickers(str(tmp_path))] == ["shrug"]
+        (tmp_path / "sheepish.png").write_bytes(b"\x89PNG")
+        assert [e["slug"] for e in S.available_stickers(str(tmp_path))] == ["sheepish"]
 
 
 # ---------------------------------------------------------------------------
@@ -359,20 +376,20 @@ class TestZeroIsAbsolute:
     @pytest.mark.asyncio
     async def test_a_hallucinated_marker_sends_no_image(self):
         ad = make_adapter({"sticker_probability": 0})
-        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
         assert image_segments(ad) == [], "a switched-off feature sent a sticker"
 
     @pytest.mark.asyncio
     async def test_the_marker_is_still_stripped_when_switched_off(self):
         """Off must not mean "print the syntax instead"."""
         ad = make_adapter({"sticker_probability": 0})
-        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
         assert text_messages(ad) == ["在的"]
 
     @pytest.mark.asyncio
     async def test_a_marker_only_reply_when_off_sends_nothing_at_all(self):
         ad = make_adapter({"sticker_probability": 0})
-        res = await ad.send(str(DM_PEER), "[STICKER:shrug]")
+        res = await ad.send(str(DM_PEER), "[STICKER:sheepish]")
         assert res.success is True
         assert ad._client.actions == []
 
@@ -382,7 +399,7 @@ class TestZeroIsAbsolute:
         ad = make_adapter({"sticker_probability": 1})
         ad.config.extra["sticker_probability"] = 0
 
-        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
 
         assert image_segments(ad) == []
         assert text_messages(ad) == ["在的"]
@@ -392,7 +409,7 @@ class TestZeroIsAbsolute:
         ad = make_adapter({"sticker_probability": 0})
         ad.config.extra["sticker_probability"] = 1
 
-        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
 
         assert len(image_segments(ad)) == 1
 
@@ -406,7 +423,7 @@ class TestTheStickerRidesTheLastBubble:
     @pytest.mark.asyncio
     async def test_the_marker_is_replaced_by_an_image_segment(self):
         ad = make_adapter()
-        res = await ad.send(str(DM_PEER), "干得漂亮\n[STICKER:thumbs-up]")
+        res = await ad.send(str(DM_PEER), "干得漂亮\n[STICKER:smug]")
         assert res.success is True
         assert text_messages(ad) == ["干得漂亮"]
         assert len(image_segments(ad)) == 1
@@ -422,7 +439,7 @@ class TestTheStickerRidesTheLastBubble:
     @pytest.mark.asyncio
     async def test_the_image_follows_the_text_within_that_bubble(self):
         ad = make_adapter()
-        await ad.send(str(DM_PEER), "好啊\n[STICKER:heart-hug]")
+        await ad.send(str(DM_PEER), "好啊\n[STICKER:shy]")
         kinds = [type(s).__name__ for s in segments_of(ad, 0)]
         assert kinds == ["TextSegment", "ImageSegment"]
 
@@ -430,7 +447,7 @@ class TestTheStickerRidesTheLastBubble:
     async def test_a_marker_at_the_top_still_rides_the_last_bubble(self):
         """Position in the body is syntax, not intent about ordering."""
         ad = make_adapter()
-        await ad.send(str(DM_PEER), f"[STICKER:shrug]\n第一句{SEP}第二句")
+        await ad.send(str(DM_PEER), f"[STICKER:sheepish]\n第一句{SEP}第二句")
         assert not any(isinstance(s, P.ImageSegment) for s in segments_of(ad, 0))
         assert any(isinstance(s, P.ImageSegment) for s in segments_of(ad, 1))
 
@@ -438,7 +455,7 @@ class TestTheStickerRidesTheLastBubble:
     async def test_the_image_is_shipped_inline_as_base64(self):
         """The backend runs in its own container and cannot read our disk."""
         ad = make_adapter()
-        await ad.send(str(DM_PEER), "好\n[STICKER:thinking]")
+        await ad.send(str(DM_PEER), "好\n[STICKER:doubtful]")
         seg = image_segments(ad)[0]
         assert seg.file.startswith("base64://")
         assert len(seg.file) > len("base64://") + 100, "payload looks empty"
@@ -448,7 +465,7 @@ class TestTheStickerRidesTheLastBubble:
         """One flourish; a wall of stickers is the noise we exist to prevent."""
         ad = make_adapter()
         await ad.send(
-            str(DM_PEER), "话\n[STICKER:shrug]\n[STICKER:angry]\n[STICKER:laughing]"
+            str(DM_PEER), "话\n[STICKER:sheepish]\n[STICKER:angry]\n[STICKER:laughing]"
         )
         assert len(image_segments(ad)) == 1
 
@@ -493,7 +510,7 @@ class TestUnknownSlugsAreDroppedQuietly:
     async def test_a_missing_file_degrades_to_text_only(self, tmp_path):
         """The deployed box lost the assets; the answer still arrives."""
         ad = make_adapter({"sticker_dir": str(tmp_path)})
-        res = await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        res = await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
         assert res.success is True
         assert text_messages(ad) == ["在的"]
         assert image_segments(ad) == []
@@ -509,7 +526,7 @@ class TestUnknownSlugsAreDroppedQuietly:
         )
         ad = make_adapter(client=client)
 
-        res = await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        res = await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
 
         assert res.success is True
         assert len(client.actions) == 2
@@ -535,7 +552,7 @@ class TestUnknownSlugsAreDroppedQuietly:
         )
         ad = make_adapter(client=client)
 
-        res = await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        res = await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
 
         assert res.success is False
         assert res.error_kind == "not_found"
@@ -560,7 +577,7 @@ class TestTheStickerCannotReshapeTheReply:
         plain = make_adapter()
         await plain.send(str(DM_PEER), body)
         marked = make_adapter()
-        await marked.send(str(DM_PEER), body + "\n[STICKER:thinking]")
+        await marked.send(str(DM_PEER), body + "\n[STICKER:doubtful]")
         assert len(marked._client.actions) == len(plain._client.actions) == 3
         assert text_messages(marked) == text_messages(plain)
 
@@ -569,7 +586,7 @@ class TestTheStickerCannotReshapeTheReply:
         """Routing measures the STRIPPED text, so the syntax cannot count."""
         # Just under the fold threshold once the marker is removed, but over
         # it if the marker's own characters were (wrongly) counted.
-        body = "话" * (A.FORWARD_TEXT_THRESHOLD - 5) + "\n[STICKER:thumbs-up]"
+        body = "话" * (A.FORWARD_TEXT_THRESHOLD - 5) + "\n[STICKER:smug]"
         assert len(body) > A.FORWARD_TEXT_THRESHOLD
         ad = make_adapter()
         await ad.send(str(DM_PEER), body)
@@ -580,7 +597,7 @@ class TestTheStickerCannotReshapeTheReply:
     async def test_a_marker_cannot_tip_a_reply_over_the_bubble_cap(self):
         """A marker on its own line is not a bubble."""
         ad = make_adapter()
-        await ad.send(str(DM_PEER), f"一{SEP}二{SEP}三\n[STICKER:shrug]")
+        await ad.send(str(DM_PEER), f"一{SEP}二{SEP}三\n[STICKER:sheepish]")
         assert cards(ad) == []
         assert len(ad._client.actions) == 3
 
@@ -607,7 +624,7 @@ class TestTheCardLaneIsStickerFree:
     @pytest.mark.asyncio
     async def test_a_long_reply_folds_without_an_image(self):
         ad = make_adapter()
-        res = await ad.send(str(DM_PEER), LONG_BODY + "\n[STICKER:thumbs-up]")
+        res = await ad.send(str(DM_PEER), LONG_BODY + "\n[STICKER:smug]")
         assert res.success is True
         assert len(cards(ad)) == 1
         assert image_segments(ad) == []
@@ -628,7 +645,7 @@ class TestTheCardLaneIsStickerFree:
     @pytest.mark.asyncio
     async def test_a_many_bubble_reply_becomes_a_sticker_free_card(self):
         """Count overflow follows the same no-sticker card contract as length."""
-        body = SEP.join(f"第{i}句" for i in range(1, 9)) + "\n[STICKER:shrug]"
+        body = SEP.join(f"第{i}句" for i in range(1, 9)) + "\n[STICKER:sheepish]"
         ad = make_adapter()
         await ad.send(str(DM_PEER), body)
         assert len(cards(ad)) == 1
@@ -648,7 +665,7 @@ class TestStickerOnlyReplies:
     @pytest.mark.asyncio
     async def test_one_message_carrying_only_the_image(self):
         ad = make_adapter()
-        res = await ad.send(str(DM_PEER), "[STICKER:shrug]")
+        res = await ad.send(str(DM_PEER), "[STICKER:sheepish]")
         assert res.success is True
         assert len(ad._client.actions) == 1
         kinds = [type(s).__name__ for s in segments_of(ad, 0)]
@@ -665,7 +682,7 @@ class TestStickerOnlyReplies:
     @pytest.mark.asyncio
     async def test_whitespace_around_the_marker_does_not_create_a_bubble(self):
         ad = make_adapter()
-        await ad.send(str(DM_PEER), "\n\n  [STICKER:shrug]  \n\n")
+        await ad.send(str(DM_PEER), "\n\n  [STICKER:sheepish]  \n\n")
         assert len(ad._client.actions) == 1
         assert not any(isinstance(s, P.TextSegment) for s in segments_of(ad, 0))
 
@@ -681,7 +698,7 @@ class TestStickerOnlyReplies:
     async def test_a_sticker_only_group_reply_still_carries_the_mention(self):
         ad = make_adapter()
         await ad.send(
-            f"g{GROUP}", "[STICKER:heart-hug]", metadata={"onebot_at_user_id": "777"}
+            f"g{GROUP}", "[STICKER:shy]", metadata={"onebot_at_user_id": "777"}
         )
         kinds = [type(s).__name__ for s in segments_of(ad, 0)]
         assert kinds == ["AtSegment", "ImageSegment"]
@@ -701,7 +718,7 @@ class TestTheContentGateIsUnbypassed:
     @pytest.mark.asyncio
     async def test_a_refused_reply_leaks_neither_text_nor_image(self):
         ad = make_adapter()
-        res = await ad.send(str(DM_PEER), BLOCKED_TEXT + "\n[STICKER:thumbs-up]")
+        res = await ad.send(str(DM_PEER), BLOCKED_TEXT + "\n[STICKER:smug]")
         assert res.success is False
         assert ad._client.actions == [], "refused content escaped via the sticker path"
 
@@ -714,7 +731,7 @@ class TestTheContentGateIsUnbypassed:
 
     @pytest.mark.asyncio
     async def test_a_refused_long_reply_still_reaches_no_lane(self):
-        body = BLOCKED_TEXT + "。" + LONG_BODY + "\n[STICKER:shrug]"
+        body = BLOCKED_TEXT + "。" + LONG_BODY + "\n[STICKER:sheepish]"
         ad = make_adapter()
         res = await ad.send(str(DM_PEER), body)
         assert res.success is False
@@ -729,7 +746,7 @@ class TestTheContentGateIsUnbypassed:
         phrase, because by then the marker is gone.
         """
         ad = make_adapter()
-        spliced = BLOCKED_TEXT[:2] + "[STICKER:shrug]" + BLOCKED_TEXT[2:]
+        spliced = BLOCKED_TEXT[:2] + "[STICKER:sheepish]" + BLOCKED_TEXT[2:]
         res = await ad.send(str(DM_PEER), spliced)
         assert res.success is False, "a marker was used to smuggle refused text"
         assert ad._client.actions == []
@@ -746,7 +763,7 @@ class TestQuoteAndMentionAreUntouched:
         ad = make_adapter()
         await ad.send(
             f"g{GROUP}",
-            f"先说这个{SEP}再说那个\n[STICKER:thumbs-up]",
+            f"先说这个{SEP}再说那个\n[STICKER:smug]",
             reply_to="9001",
             metadata={"onebot_at_user_id": "777"},
         )
@@ -831,7 +848,7 @@ class TestFrameComposition:
         ad = make_adapter({"sticker_probability": 0.18})
         monkeypatch.setattr(S, "should_offer", lambda probability, rng=None: False)
 
-        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
 
         assert image_segments(ad) == []
         assert text_messages(ad) == ["在的"]
@@ -841,7 +858,7 @@ class TestFrameComposition:
         ad = make_adapter({"sticker_probability": 0.18})
         monkeypatch.setattr(S, "should_offer", lambda probability, rng=None: True)
 
-        await ad.send(str(DM_PEER), "在的\n[STICKER:thumbs-up]")
+        await ad.send(str(DM_PEER), "在的\n[STICKER:smug]")
 
         assert len(image_segments(ad)) == 1
 

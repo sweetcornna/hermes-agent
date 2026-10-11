@@ -84,7 +84,7 @@ def test_pack_catalog_is_read_from_its_own_directory(pack_dir):
 def test_pack_slugs_resolve_only_inside_their_own_pack(pack_dir):
     assert sticker.sticker_path("sulk", str(pack_dir)) == str(pack_dir / "sulk.jpg")
     # A slug from the OTHER persona's catalogue is not a path here.
-    assert sticker.sticker_path("thumbs-up", str(pack_dir)) is None
+    assert sticker.sticker_path("smug", str(pack_dir)) is None
     # ...and the second persona's slug is not a path in the bundled pack.
     assert sticker.sticker_path("sulk") is None
 
@@ -103,7 +103,7 @@ def test_offer_menu_uses_the_channel_pack(pack_dir):
     menu = sticker.offer_menu(extra, chat_id="g894800697")
     assert menu is not None
     assert "sulk" in menu and "撒娇" in menu
-    assert "thumbs-up" not in menu
+    assert "smug" not in menu
 
 
 # ── a malformed pack degrades, it does not explode ───────────────────────

@@ -427,7 +427,7 @@ def voice_script(content: str) -> str:
 
     ``voice.spoken_script`` knows about markdown; it does not know about the
     two markers this plugin invents.  Left in, a provider reads
-    "[MSG_BREAK]" and "[STICKER:thumbs-up]" out loud — the single most
+    "[MSG_BREAK]" and "[STICKER:smug]" out loud — the single most
     obvious way a voice reply gives itself away.  So the same three steps
     ``send()`` runs, in the same order (strip markdown → lift the sticker →
     split bubbles), and then one utterance whose line breaks carry the
@@ -4049,7 +4049,7 @@ class OneBotAdapter(BasePlatformAdapter):
         # After stripping, because a marker that arrived wrapped in markdown
         # emphasis has to be unwrapped before it is recognisable.
         #
-        # BEFORE the policy, because ``[STICKER:thumbs-up]`` is machine
+        # BEFORE the policy, because ``[STICKER:smug]`` is machine
         # syntax the reader never sees.  The gate's whole job is to audit the
         # sentence a human will read; auditing a string with control tokens
         # still embedded in it means auditing something nobody receives, and

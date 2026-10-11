@@ -2,11 +2,16 @@
 
 What this is
 ------------
-A fixed, eleven-entry allowlist mapping a short name (``grantley``) to the
-PNG that holds that character's canonical 立绘 (``02_grantley_bell.png``).
-Ported from ``personal_hermes``'s ``tools/image_with_refs.py``, where the
-same table let the model anchor a generated scene to the real characters
-instead of inventing its own anthro defaults.
+A fixed allowlist mapping a short name (``grantley``) to the PNG that holds
+that character's canonical 立绘 (``02_grantley_bell.png``). Ported from
+``personal_hermes``'s ``tools/image_with_refs.py``, where the same table let
+the model anchor a generated scene to the real characters instead of
+inventing its own anthro defaults.
+
+The art itself is each character's Knights College 2 ``10000`` sprite
+(uniform, neutral face), copied unchanged from the game export by
+``docs/personas/grantley-kc2-20261010/build_assets.py``. The first eleven keys
+predate KC2; ``felix``, ``gamir`` and ``bayfleet`` are KC2's new main cast.
 
 Why an allowlist and not a path
 -------------------------------
@@ -15,7 +20,7 @@ of this provider, from model output. Joining caller-authored text onto a
 directory is exactly how ``../../etc/passwd`` gets read off disk, so the
 name is checked against :data:`CHARACTER_KEYS` **before** a
 :class:`~pathlib.Path` is built and long before the filesystem is touched.
-A name that is not one of the eleven is not a path at all. Same shape as
+A name that is not in the table is not a path at all. Same shape as
 ``plugins/platforms/onebot/sticker.py``'s ``sticker_path()``, for the same
 reason.
 
@@ -53,22 +58,27 @@ __all__ = [
 ]
 
 
-#: Short name → filename under the character directory. Carried over
-#: verbatim from ``image_with_refs.CHARACTER_KEYS`` — the filenames are
-#: numbered because that is how they are stored, and renaming them here
-#: would silently orphan every existing deployment's assets.
+#: Short name → filename under the character directory. The first eleven are
+#: carried over verbatim from ``image_with_refs.CHARACTER_KEYS`` — the
+#: filenames are numbered because that is how they are stored, and renaming
+#: them here would silently orphan every existing deployment's assets. Some
+#: keys predate the official KC2 romanisation (Celio, Scheat, Baten); the
+#: comments give the KC2 zh-Hans name.
 CHARACTER_KEYS: dict = {
-    "grantley": "02_grantley_bell.png",  # the tiger persona himself
-    "algo": "01_algo_northrop.png",  # 艾尔戈, owner
-    "oscar": "03_oscar_lawrence.png",  # 铁三角
-    "diedrich": "04_diedrich_olsen.png",
-    "paul": "05_paul_pfizner.png",
-    "theo": "06_theo_prince.png",
-    "julius": "07_julius_kinial.png",
-    "hermann": "08_hermann_furst.png",
-    "helio": "09_helio_delatre.png",
-    "shayat": "10_shayat.png",
-    "bating": "11_bating.png",
+    "grantley": "02_grantley_bell.png",  # 格兰特利, the tiger persona himself
+    "algo": "01_algo_northrop.png",  # 亚戈, owner
+    "oscar": "03_oscar_lawrence.png",  # 奥斯卡, 铁三角
+    "diedrich": "04_diedrich_olsen.png",  # 迪德里奇
+    "paul": "05_paul_pfizner.png",  # 保罗
+    "theo": "06_theo_prince.png",  # 西奥
+    "julius": "07_julius_kinial.png",  # 尤利乌斯
+    "hermann": "08_hermann_furst.png",  # 赫尔曼
+    "helio": "09_helio_delatre.png",  # 希利欧 (Celio)
+    "shayat": "10_shayat.png",  # 沙亚特 (Scheat)
+    "bating": "11_bating.png",  # 巴亭 (Baten)
+    "felix": "12_felix.png",  # 菲力克斯
+    "gamir": "13_gamir.png",  # 伽米尔
+    "bayfleet": "14_bayfleet.png",  # 贝弗利特
 }
 
 _MIME_BY_FORMAT = {
